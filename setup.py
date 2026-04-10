@@ -69,14 +69,22 @@ def check_prerequisites():
         errors.append("node")
 
     # npm
+    npm_cmd = "npm"
     try:
-        result = subprocess.run(["npm", "--version"], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            print(f"  {GREEN}✓{RESET} npm: {DIM}v{result.stdout.strip()}{RESET}")
-        else:
-            errors.append("npm")
+        result = subprocess.run([npm_cmd, "--version"], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            raise FileNotFoundError
+        print(f"  {GREEN}✓{RESET} npm: {DIM}v{result.stdout.strip()}{RESET}")
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        errors.append("npm")
+        try:
+            npm_cmd = "npm.cmd"
+            result = subprocess.run([npm_cmd, "--version"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                print(f"  {GREEN}✓{RESET} npm: {DIM}v{result.stdout.strip()}{RESET}")
+            else:
+                errors.append("npm")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            errors.append("npm")
 
     print()
 
@@ -88,8 +96,10 @@ def check_prerequisites():
         if "uv" in errors:
             print(f"    {RED}•{RESET} uv (Python package manager) — {BOLD}https://docs.astral.sh/uv/{RESET}")
             print(f"      {DIM}curl -LsSf https://astral.sh/uv/install.sh | sh{RESET}")
-        if "node" in errors or "npm" in errors:
+        if "node" in errors:
             print(f"    {RED}•{RESET} Node.js 18+ — {BOLD}https://nodejs.org{RESET}")
+        if "npm" in errors:
+            print(f"    {RED}•{RESET} npm not found (Node.js installed but npm missing from PATH) — {BOLD}https://nodejs.org{RESET}")
         print()
         print(f"  {YELLOW}Install the missing tools and run setup again.{RESET}")
         sys.exit(1)
