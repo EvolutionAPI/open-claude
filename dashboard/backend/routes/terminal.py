@@ -1,13 +1,7 @@
 """Terminal endpoint — WebSocket PTY for real terminal sessions."""
 
 import os
-import pty
-import select
-import signal
-import struct
-import fcntl
-import termios
-import subprocess
+import sys
 import json
 import threading
 import time
@@ -21,6 +15,18 @@ from routes._helpers import WORKSPACE
 
 bp = Blueprint("terminal", __name__)
 sock = Sock()
+
+_WINDOWS = sys.platform == "win32"
+
+if _WINDOWS:
+    from winpty import PtyProcess
+else:
+    import pty
+    import select
+    import signal
+    import struct
+    import fcntl
+    import termios
 
 # Store active sessions: {session_id: {pid, fd}}
 sessions = {}
@@ -94,7 +100,7 @@ def _parse_session_file(filepath, max_lines=20):
 
 
 def _spawn_pty(cmd, cwd):
-    """Spawn a process in a PTY and return (pid, fd)."""
+    """Spawn a process in a PTY and return (pid, fd). Unix only."""
     env = os.environ.copy()
     env["TERM"] = "xterm-256color"
     env["COLUMNS"] = "120"
@@ -109,9 +115,16 @@ def _spawn_pty(cmd, cwd):
 
 
 def _set_winsize(fd, rows, cols):
-    """Set terminal window size."""
+    """Set terminal window size. Unix only."""
     winsize = struct.pack("HHHH", rows, cols, 0, 0)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
+
+def _spawn_conpty(cmd, cwd):
+    """Spawn a process in a Windows ConPTY and return a PtyProcess."""
+    env = os.environ.copy()
+    env["TERM"] = "xterm-256color"
+    return PtyProcess.spawn(cmd, cwd=str(cwd), env=env, dimensions=(40, 120))
 
 
 @bp.route("/api/terminal/sessions")
@@ -120,11 +133,16 @@ def list_sessions():
     """List active terminal sessions."""
     result = []
     for sid, info in sessions.items():
-        try:
-            os.kill(info["pid"], 0)  # Check if alive
-            result.append({"id": sid, "cmd": info["cmd"], "alive": True})
-        except OSError:
-            result.append({"id": sid, "cmd": info["cmd"], "alive": False})
+        if _WINDOWS:
+            proc = info.get("process")
+            alive = proc.isalive() if proc else False
+        else:
+            try:
+                os.kill(info["pid"], 0)
+                alive = True
+            except OSError:
+                alive = False
+        result.append({"id": sid, "cmd": info["cmd"], "alive": alive})
     return {"sessions": result}
 
 
@@ -184,15 +202,19 @@ def create_session():
                 return {"error": "Session not found"}, 404
             cmd.extend(["--resume", resume_id])
     elif cmd_type == "shell":
-        cmd = [os.environ.get("SHELL", "/bin/zsh")]
+        cmd = ["cmd.exe"] if _WINDOWS else [os.environ.get("SHELL", "/bin/zsh")]
     else:
         cmd = ["claude", "--dangerously-skip-permissions"]
 
     try:
-        pid, fd = _spawn_pty(cmd, WORKSPACE)
         session_counter += 1
         sid = f"term-{session_counter}"
-        sessions[sid] = {"pid": pid, "fd": fd, "cmd": " ".join(cmd)}
+        if _WINDOWS:
+            proc = _spawn_conpty(cmd, WORKSPACE)
+            sessions[sid] = {"process": proc, "cmd": " ".join(cmd)}
+        else:
+            pid, fd = _spawn_pty(cmd, WORKSPACE)
+            sessions[sid] = {"pid": pid, "fd": fd, "cmd": " ".join(cmd)}
         return {"id": sid, "cmd": " ".join(cmd)}
     except Exception as e:
         return {"error": str(e)}, 500
@@ -206,8 +228,11 @@ def kill_session(session_id):
     if not info:
         return {"error": "Session not found"}, 404
     try:
-        os.kill(info["pid"], signal.SIGTERM)
-        os.close(info["fd"])
+        if _WINDOWS:
+            info["process"].terminate(force=True)
+        else:
+            os.kill(info["pid"], signal.SIGTERM)
+            os.close(info["fd"])
     except OSError:
         pass
     del sessions[session_id]
@@ -231,73 +256,127 @@ def init_websocket(app):
             ws.send(json.dumps({"error": "Session not found"}))
             return
 
-        fd = info["fd"]
+        if _WINDOWS:
+            proc = info["process"]
 
-        # Set non-blocking
-        import fcntl
-        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-        def read_output():
-            """Read from PTY and send to WebSocket."""
-            while True:
-                try:
-                    r, _, _ = select.select([fd], [], [], 0.1)
-                    if r:
-                        data = os.read(fd, 4096)
-                        if data:
-                            ws.send(data.decode("utf-8", errors="replace"))
-                        else:
+            def read_output():
+                """Read from ConPTY and send to WebSocket."""
+                while True:
+                    try:
+                        if not proc.isalive():
                             break
-                except (OSError, EOFError):
-                    break
+                        data = proc.read(4096)
+                        if data:
+                            ws.send(data if isinstance(data, str) else data.decode("utf-8", errors="replace"))
+                        else:
+                            time.sleep(0.01)
+                    except Exception:
+                        break
+                try:
+                    ws.send("\r\n[Process exited]\r\n")
                 except Exception:
-                    break
+                    pass
+
+            reader = threading.Thread(target=read_output, daemon=True)
+            reader.start()
+
             try:
-                ws.send("\r\n[Process exited]\r\n")
+                while True:
+                    try:
+                        msg = ws.receive(timeout=300)
+                    except Exception:
+                        break
+
+                    if msg is None:
+                        break
+
+                    if isinstance(msg, str) and msg.startswith('{"resize":'):
+                        try:
+                            data = json.loads(msg)
+                            proc.setwinsize(data["resize"]["rows"], data["resize"]["cols"])
+                        except Exception:
+                            pass
+                        continue
+
+                    if isinstance(msg, str) and msg == '{"ping":true}':
+                        try:
+                            ws.send('{"pong":true}')
+                        except Exception:
+                            pass
+                        continue
+
+                    try:
+                        proc.write(msg if isinstance(msg, str) else msg.decode("utf-8"))
+                    except Exception:
+                        break
             except Exception:
                 pass
+            finally:
+                reader.join(timeout=1)
 
-        # Start reader thread
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
+        else:
+            fd = info["fd"]
 
-        # Main loop: read from WebSocket, write to PTY
-        try:
-            while True:
+            # Set non-blocking
+            import fcntl
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+            def read_output():
+                """Read from PTY and send to WebSocket."""
+                while True:
+                    try:
+                        r, _, _ = select.select([fd], [], [], 0.1)
+                        if r:
+                            data = os.read(fd, 4096)
+                            if data:
+                                ws.send(data.decode("utf-8", errors="replace"))
+                            else:
+                                break
+                    except (OSError, EOFError):
+                        break
+                    except Exception:
+                        break
                 try:
-                    msg = ws.receive(timeout=300)  # 5 min timeout
+                    ws.send("\r\n[Process exited]\r\n")
                 except Exception:
-                    break
+                    pass
 
-                if msg is None:
-                    break
+            reader = threading.Thread(target=read_output, daemon=True)
+            reader.start()
 
-                # Handle resize messages
-                if isinstance(msg, str) and msg.startswith('{"resize":'):
+            try:
+                while True:
                     try:
-                        data = json.loads(msg)
-                        rows = data["resize"]["rows"]
-                        cols = data["resize"]["cols"]
-                        _set_winsize(fd, rows, cols)
+                        msg = ws.receive(timeout=300)
                     except Exception:
-                        pass
-                    continue
+                        break
 
-                # Handle ping/keepalive
-                if isinstance(msg, str) and msg == '{"ping":true}':
+                    if msg is None:
+                        break
+
+                    if isinstance(msg, str) and msg.startswith('{"resize":'):
+                        try:
+                            data = json.loads(msg)
+                            rows = data["resize"]["rows"]
+                            cols = data["resize"]["cols"]
+                            _set_winsize(fd, rows, cols)
+                        except Exception:
+                            pass
+                        continue
+
+                    if isinstance(msg, str) and msg == '{"ping":true}':
+                        try:
+                            ws.send('{"pong":true}')
+                        except Exception:
+                            pass
+                        continue
+
                     try:
-                        ws.send('{"pong":true}')
-                    except Exception:
-                        pass
-                    continue
-
-                # Write input to PTY
-                try:
-                    os.write(fd, msg.encode("utf-8") if isinstance(msg, str) else msg)
-                except OSError:
-                    break
-        except Exception:
-            pass
-        finally:
-            reader.join(timeout=1)
+                        os.write(fd, msg.encode("utf-8") if isinstance(msg, str) else msg)
+                    except OSError:
+                        break
+            except Exception:
+                pass
+            finally:
+                reader.join(timeout=1)
