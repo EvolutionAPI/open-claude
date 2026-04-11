@@ -26,6 +26,7 @@ import Docs from './pages/Docs'
 import MemPalace from './pages/MemPalace'
 import Triggers from './pages/Triggers'
 import Backups from './pages/Backups'
+import Providers from './pages/Providers'
 
 function AppContent() {
   const location = useLocation()
@@ -92,6 +93,7 @@ function AppContent() {
           <Route path="/files" element={<Files />} />
           <Route path="/systems" element={<Systems />} />
           {hasPermission('config', 'view') && <Route path="/backups" element={<Backups />} />}
+          <Route path="/providers" element={<Providers />} />
           {hasPermission('users', 'view') && <Route path="/users" element={<Users />} />}
           {hasPermission('audit', 'view') && <Route path="/audit" element={<Audit />} />}
           {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}

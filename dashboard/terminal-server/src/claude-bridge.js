@@ -5,24 +5,67 @@ const fs = require('fs');
 class ClaudeBridge {
   constructor() {
     this.sessions = new Map();
+    this.providerConfig = this._loadProviderConfig();
+    this.claudeCommand = this.findClaudeCommand();
+  }
+
+  /**
+   * Load active provider config from config/providers.json.
+   * Returns the CLI command to use and env vars to inject.
+   */
+  _loadProviderConfig() {
+    try {
+      const configPath = path.resolve(process.cwd(), 'config', 'providers.json');
+      if (!fs.existsSync(configPath)) return { cli_command: 'claude', env_vars: {} };
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const active = config.active_provider || 'anthropic';
+      const provider = config.providers?.[active] || {};
+      const envVars = Object.fromEntries(
+        Object.entries(provider.env_vars || {}).filter(([, v]) => v !== '')
+      );
+      console.log(`[provider] Active provider: ${active} (cli: ${provider.cli_command || 'claude'})`);
+      if (Object.keys(envVars).length > 0) {
+        console.log(`[provider] Injecting env vars: ${Object.keys(envVars).join(', ')}`);
+      }
+      return { cli_command: provider.cli_command || 'claude', env_vars: envVars };
+    } catch (err) {
+      console.warn(`[provider] Could not read providers.json: ${err.message}`);
+      return { cli_command: 'claude', env_vars: {} };
+    }
+  }
+
+  /**
+   * Reload provider config (called when provider changes via API).
+   */
+  reloadProviderConfig() {
+    this.providerConfig = this._loadProviderConfig();
     this.claudeCommand = this.findClaudeCommand();
   }
 
   findClaudeCommand() {
-    const possibleCommands = [
-      '/home/ec2-user/.claude/local/claude',
-      'claude',
-      'claude-code',
-      path.join(process.env.HOME || '/', '.claude', 'local', 'claude'),
-      path.join(process.env.HOME || '/', '.local', 'bin', 'claude'),
-      '/usr/local/bin/claude',
-      '/usr/bin/claude'
-    ];
+    const cliCommand = this.providerConfig?.cli_command || 'claude';
+
+    const possibleCommands = cliCommand === 'openclaude'
+      ? [
+          'openclaude',
+          path.join(process.env.HOME || '/', '.local', 'bin', 'openclaude'),
+          '/usr/local/bin/openclaude',
+          '/usr/bin/openclaude',
+        ]
+      : [
+          '/home/ec2-user/.claude/local/claude',
+          'claude',
+          'claude-code',
+          path.join(process.env.HOME || '/', '.claude', 'local', 'claude'),
+          path.join(process.env.HOME || '/', '.local', 'bin', 'claude'),
+          '/usr/local/bin/claude',
+          '/usr/bin/claude',
+        ];
 
     for (const cmd of possibleCommands) {
       try {
         if (fs.existsSync(cmd) || this.commandExists(cmd)) {
-          console.log(`Found Claude command at: ${cmd}`);
+          console.log(`Found ${cliCommand} command at: ${cmd}`);
           return cmd;
         }
       } catch (error) {
@@ -30,8 +73,8 @@ class ClaudeBridge {
       }
     }
 
-    console.error('Claude command not found, using default "claude"');
-    return 'claude';
+    console.error(`${cliCommand} command not found, using default "${cliCommand}"`);
+    return cliCommand;
   }
 
   commandExists(command) {
@@ -72,10 +115,12 @@ class ClaudeBridge {
       if (agent) {
         args.push('--agent', agent);
       }
+      const providerEnv = this.providerConfig?.env_vars || {};
       const claudeProcess = spawn(this.claudeCommand, args, {
         cwd: workingDir,
         env: {
           ...process.env,
+          ...providerEnv,
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
           COLORTERM: 'truecolor'

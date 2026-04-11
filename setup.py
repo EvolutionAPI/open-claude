@@ -107,6 +107,91 @@ def check_prerequisites():
     return True
 
 
+def choose_provider() -> str:
+    """Ask the user which AI provider to use."""
+    print(f"""
+  Choose your AI provider:
+
+    {BOLD}1{RESET}) Anthropic (Claude nativo)         — default, no extra config
+    {BOLD}2{RESET}) OpenRouter (200+ models)           — requires API key + openclaude
+    {BOLD}3{RESET}) OpenAI (GPT-4o, GPT-4.1, o3)      — requires API key + openclaude
+    {BOLD}4{RESET}) Google Gemini                      — requires API key + openclaude
+    {BOLD}5{RESET}) Codex Auth (OpenAI via OAuth)      — requires codex login + openclaude
+    {BOLD}6{RESET}) AWS Bedrock                        — requires AWS creds + openclaude
+    {BOLD}7{RESET}) Google Vertex AI                   — requires GCP creds + openclaude
+""")
+    choice = ask("Provider (1-7)", "1")
+    provider_map = {
+        "1": "anthropic", "2": "openrouter", "3": "openai",
+        "4": "gemini", "5": "codex_auth", "6": "bedrock", "7": "vertex",
+    }
+    provider_id = provider_map.get(choice, "anthropic")
+
+    # Check if openclaude is needed
+    if provider_id != "anthropic":
+        try:
+            result = subprocess.run(["openclaude", "--version"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                print(f"  {GREEN}✓{RESET} openclaude: {DIM}{result.stdout.strip()}{RESET}")
+            else:
+                raise FileNotFoundError
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            print(f"  {YELLOW}!{RESET} openclaude not found — needed for {provider_id}")
+            print(f"    {DIM}npm install -g @gitlawb/openclaude{RESET}")
+            install = ask("Install now? (y/n)", "y")
+            if install.lower() == "y":
+                os.system("npm install -g @gitlawb/openclaude")
+
+    # Load base config
+    providers_file = WORKSPACE / "config" / "providers.json"
+    if providers_file.exists():
+        import json as _json
+        config = _json.loads(providers_file.read_text(encoding="utf-8"))
+    else:
+        # Read from template
+        config = {
+            "active_provider": "anthropic",
+            "providers": {
+                "anthropic": {"name": "Anthropic (Claude nativo)", "cli_command": "claude", "env_vars": {}, "requires_logout": False},
+                "openrouter": {"name": "OpenRouter", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}, "default_base_url": "https://openrouter.ai/api/v1", "default_model": "anthropic/claude-sonnet-4", "requires_logout": True},
+                "openai": {"name": "OpenAI", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}, "default_model": "gpt-4.1", "requires_logout": True},
+                "gemini": {"name": "Google Gemini", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_GEMINI": "1", "GEMINI_API_KEY": "", "GEMINI_MODEL": ""}, "default_model": "gemini-2.5-pro", "requires_logout": True},
+                "codex_auth": {"name": "Codex Auth", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_API_KEY": ""}, "requires_logout": True, "setup_hint": "Run 'codex login' first"},
+                "bedrock": {"name": "AWS Bedrock", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": "", "AWS_BEARER_TOKEN_BEDROCK": ""}, "requires_logout": True},
+                "vertex": {"name": "Google Vertex AI", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "", "CLOUD_ML_REGION": ""}, "default_region": "us-east5", "requires_logout": True},
+            }
+        }
+
+    # Collect env vars for the chosen provider
+    prov = config["providers"].get(provider_id, {})
+    env_vars = prov.get("env_vars", {})
+
+    if provider_id != "anthropic":
+        print(f"\n  {BOLD}Configure {prov.get('name', provider_id)}{RESET}")
+        for key, current in env_vars.items():
+            if key.startswith("CLAUDE_CODE_USE_"):
+                continue  # Flags are automatic
+            default = prov.get("default_base_url", "") if key == "OPENAI_BASE_URL" else prov.get("default_model", "") if "MODEL" in key else prov.get("default_region", "") if "REGION" in key else current
+            value = ask(f"  {key}", default)
+            env_vars[key] = value
+
+        prov["env_vars"] = env_vars
+
+    # Save
+    config["active_provider"] = provider_id
+    import json as _json
+    (WORKSPACE / "config").mkdir(exist_ok=True)
+    (WORKSPACE / "config" / "providers.json").write_text(
+        _json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"  {GREEN}✓{RESET} Saved provider config: {provider_id}")
+
+    if prov.get("requires_logout"):
+        print(f"  {YELLOW}!{RESET} Remember to run /logout in Claude Code if previously logged into Anthropic")
+
+    return provider_id
+
+
 def ask(prompt: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     val = input(f"  {CYAN}>{RESET} {prompt}{suffix}: ").strip()
@@ -383,6 +468,11 @@ def main():
     # Prerequisites check
     print(f"  {BOLD}Checking prerequisites...{RESET}")
     check_prerequisites()
+
+    # Provider choice
+    print(f"  {BOLD}AI Provider{RESET}")
+    provider_choice = choose_provider()
+    print()
 
     # Who are you?
     print(f"  {BOLD}About you{RESET}")

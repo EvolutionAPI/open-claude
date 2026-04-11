@@ -129,6 +129,7 @@ from routes.mempalace import bp as mempalace_bp
 from routes.tasks import bp as tasks_bp
 from routes.triggers import bp as triggers_bp
 from routes.backups import bp as backups_bp
+from routes.providers import bp as providers_bp
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(reports_bp)
@@ -150,6 +151,7 @@ app.register_blueprint(mempalace_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(backups_bp)
+app.register_blueprint(providers_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp
