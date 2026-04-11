@@ -257,7 +257,7 @@ export default function AgentTerminal({ agent, workingDir, accentColor = '#00FFA
           }}
         />
         <code className="font-mono text-[10.5px] text-[#8b949e] truncate">
-          claude --agent {agent}
+          @{agent}
         </code>
         <span className="text-[#21262d]">·</span>
         <span className="text-[10px] uppercase tracking-[0.12em] text-[#667085]">

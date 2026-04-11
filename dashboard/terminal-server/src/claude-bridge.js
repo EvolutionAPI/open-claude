@@ -24,8 +24,13 @@ class ClaudeBridge {
     ]);
 
     try {
-      const configPath = path.resolve(process.cwd(), 'config', 'providers.json');
-      if (!fs.existsSync(configPath)) return { cli_command: 'claude', env_vars: {} };
+      // Resolve config relative to this file (src/ → terminal-server/ → dashboard/ → root)
+      const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
+      const configPath = path.join(workspaceRoot, 'config', 'providers.json');
+      if (!fs.existsSync(configPath)) {
+        console.log(`[provider] providers.json not found at ${configPath}, using defaults`);
+        return { cli_command: 'claude', env_vars: {} };
+      }
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const active = config.active_provider || 'anthropic';
       const provider = config.providers?.[active] || {};
@@ -61,6 +66,10 @@ class ClaudeBridge {
           path.join(process.env.HOME || '/', '.local', 'bin', 'openclaude'),
           '/usr/local/bin/openclaude',
           '/usr/bin/openclaude',
+          // npm global paths (nvm, fnm, volta, etc.)
+          path.join(process.env.HOME || '/', '.nvm', 'versions', 'node', '*', 'bin', 'openclaude'),
+          path.join(process.env.NVM_BIN || '/dev/null', 'openclaude'),
+          path.join(process.env.HOME || '/', '.npm-global', 'bin', 'openclaude'),
         ]
       : [
           '/home/ec2-user/.claude/local/claude',
