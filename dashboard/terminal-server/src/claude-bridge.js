@@ -153,28 +153,27 @@ class ClaudeBridge {
       }
       const providerEnv = providerConfig.env_vars || {};
 
-      // Build clean environment for the spawned process.
-      // Start with process.env but REMOVE conflicting vars when using Codex OAuth.
-      const baseEnv = { ...process.env };
-      const active = providerConfig.active || 'anthropic';
-
-      // If using OpenAI provider with Codex OAuth (auth.json), we must remove
-      // OPENAI_API_KEY from the environment entirely — otherwise it overrides
-      // the auth.json token and causes "Incorrect API key" errors.
-      if (active === 'openai' || active === 'codex_auth') {
-        const userHome = baseEnv.HOME || '/';
-        const codexAuthPath = path.join(userHome, '.codex', 'auth.json');
-        if (fs.existsSync(codexAuthPath)) {
-          delete baseEnv['OPENAI_API_KEY'];
-          delete providerEnv['OPENAI_API_KEY'];
-          console.log(`[provider] Codex auth.json found at ${codexAuthPath} — removed OPENAI_API_KEY from env`);
-        }
+      // Build a CLEAN environment for the spawned CLI process.
+      // We DON'T spread process.env — it may contain stale/cached vars
+      // (OPENAI_API_KEY, etc.) that override Codex OAuth auth.json.
+      // Instead, whitelist only essential system vars + provider config.
+      const SYSTEM_VARS = [
+        'HOME', 'USER', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+        'LOGNAME', 'HOSTNAME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME',
+        'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR',
+        'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+        'NVM_DIR', 'NVM_BIN', 'NVM_INC',
+        'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+      ];
+      const cleanEnv = {};
+      for (const key of SYSTEM_VARS) {
+        if (process.env[key]) cleanEnv[key] = process.env[key];
       }
 
       const claudeProcess = spawn(cliCommand, args, {
         cwd: workingDir,
         env: {
-          ...baseEnv,
+          ...cleanEnv,
           ...providerEnv,
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
