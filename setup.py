@@ -701,9 +701,9 @@ def main():
     os.system("pkill -f 'terminal-server/bin/server.js' 2>/dev/null")
     os.system("pkill -f 'dashboard/backend.*app.py' 2>/dev/null")
     # Start terminal-server
-    os.system(f"cd {WORKSPACE} && node dashboard/terminal-server/bin/server.js > logs/terminal-server.log 2>&1 &")
+    os.system(f"cd {WORKSPACE} && node dashboard/terminal-server/bin/server.js > {logs_dir}/terminal-server.log 2>&1 &")
     # Start Flask dashboard
-    os.system(f"cd {WORKSPACE}/dashboard/backend && nohup uv run python app.py > logs/dashboard.log 2>&1 &")
+    os.system(f"cd {WORKSPACE}/dashboard/backend && nohup uv run python app.py > {logs_dir}/dashboard.log 2>&1 &")
     import time as _time
     _time.sleep(3)
     # Verify
