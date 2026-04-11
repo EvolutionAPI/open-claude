@@ -687,17 +687,39 @@ def main():
     # Data dir for SQLite
     (WORKSPACE / "dashboard" / "data").mkdir(parents=True, exist_ok=True)
 
-    print(f"""
+    dashboard_url = access_config.get('url', f'http://localhost:{dashboard_port}')
+
+    if is_remote:
+        print(f"""
+  {GREEN}{'='*50}{RESET}
+  {GREEN}Setup concluido!{RESET}
+  {GREEN}{'='*50}{RESET}
+
+  Para completar a configuracao, acesse:
+
+    {BOLD}{dashboard_url}{RESET}
+
+  O que falta fazer no Dashboard:
+    1. Criar sua conta de administrador
+    2. Configurar o AI Provider (Providers → Login com OpenAI)
+    3. Configurar suas integracoes (.env)
+
+  Inicie o dashboard agora com:
+    {BOLD}make dashboard-app{RESET}
+
+  Depois acesse: {BOLD}{dashboard_url}{RESET}
+""")
+    else:
+        print(f"""
   {GREEN}Done!{RESET} Next steps:
   1. Edit {BOLD}.env{RESET} with your API keys
   2. Run: {BOLD}make dashboard-app{RESET}
-  3. Open {BOLD}{access_config.get('url', f'http://localhost:{dashboard_port}')}{RESET} to create your admin account
+  3. Open {BOLD}{dashboard_url}{RESET} to create your admin account
   4. Run: {BOLD}make scheduler{RESET}    — start automated routines
   5. Run: {BOLD}make help{RESET}         — see all commands
 
   {YELLOW}Note:{RESET} The admin account is created via the web dashboard,
-  not via CLI. This allows us to collect anonymous telemetry
-  (geo, version) for the open source project.
+  not via CLI.
 """)
 
 
