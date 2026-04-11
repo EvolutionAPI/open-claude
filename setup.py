@@ -100,21 +100,15 @@ def check_prerequisites():
                         install_cmd="curl -LsSf https://astral.sh/uv/install.sh | sh"):
         missing.append("uv")
 
-    # Claude Code CLI (or openclaude)
-    claude_ok = False
-    for name, cmd in [("Claude Code", ["claude", "--version"]), ("OpenClaude", ["openclaude", "--version"])]:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                print(f"  {GREEN}✓{RESET} {name}: {DIM}{result.stdout.strip()}{RESET}")
-                claude_ok = True
-                break
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    if not claude_ok:
-        if not _check_tool("Claude Code CLI", ["claude", "--version"],
-                            install_cmd="npm install -g @anthropic-ai/claude-code"):
-            missing.append("claude")
+    # Claude Code CLI
+    if not _check_tool("Claude Code CLI", ["claude", "--version"],
+                        install_cmd="npm install -g @anthropic-ai/claude-code"):
+        missing.append("claude")
+
+    # OpenClaude (required for non-Anthropic providers)
+    if not _check_tool("OpenClaude", ["openclaude", "--version"],
+                        install_cmd="npm install -g @gitlawb/openclaude"):
+        missing.append("openclaude")
 
     print()
 
