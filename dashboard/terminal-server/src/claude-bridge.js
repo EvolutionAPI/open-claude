@@ -170,6 +170,15 @@ class ClaudeBridge {
         if (process.env[key]) cleanEnv[key] = process.env[key];
       }
 
+      // Ensure OPENAI_MODEL is set when using OpenAI provider.
+      // Without it, OpenClaude can't resolve which model to use and
+      // falls back to API key auth instead of Codex OAuth auth.json.
+      const active = providerConfig.active || 'anthropic';
+      if ((active === 'openai' || active === 'codex_auth') && !providerEnv['OPENAI_MODEL']) {
+        providerEnv['OPENAI_MODEL'] = 'gpt-5.4-mini';
+        console.log('[provider] OPENAI_MODEL not set — defaulting to gpt-5.4-mini');
+      }
+
       const claudeProcess = spawn(cliCommand, args, {
         cwd: workingDir,
         env: {

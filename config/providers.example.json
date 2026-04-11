@@ -29,7 +29,7 @@
       "env_vars": {
         "CLAUDE_CODE_USE_OPENAI": "1",
         "OPENAI_API_KEY": "",
-        "OPENAI_MODEL": ""
+        "OPENAI_MODEL": "gpt-5.4-mini"
       },
       "default_model": "gpt-4.1",
       "requires_logout": true
