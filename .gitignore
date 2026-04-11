@@ -30,6 +30,9 @@ memory/**
 # ── Custom routines (user-specific, all in one place) ─
 ADWs/routines/custom/
 
+# ── Provider config (user-specific, has API keys) ─
+config/providers.json
+
 # ── Runtime data & logs ───────────────────
 backups/
 ADWs/logs/

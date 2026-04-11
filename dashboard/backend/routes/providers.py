@@ -43,8 +43,13 @@ ALLOWED_ENV_VARS = frozenset({
 
 
 def _read_config() -> dict:
-    """Read providers.json."""
+    """Read providers.json. If missing, copy from providers.example.json."""
     try:
+        if not PROVIDERS_CONFIG.is_file():
+            example = PROVIDERS_CONFIG.parent / "providers.example.json"
+            if example.is_file():
+                import shutil as _shutil
+                _shutil.copy2(example, PROVIDERS_CONFIG)
         if PROVIDERS_CONFIG.is_file():
             return json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
