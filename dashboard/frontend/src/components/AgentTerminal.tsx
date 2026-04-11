@@ -12,11 +12,11 @@ interface AgentTerminalProps {
 
 const CC_WEB_HTTP = import.meta.env.DEV
   ? 'http://localhost:32352'
-  : `${window.location.protocol}//${window.location.hostname}:32352`
+  : `${window.location.origin}/terminal`
 
 const CC_WEB_WS = import.meta.env.DEV
   ? 'ws://localhost:32352'
-  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:32352`
+  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/terminal`
 
 type Status = 'connecting' | 'ready' | 'starting' | 'running' | 'error' | 'exited'
 

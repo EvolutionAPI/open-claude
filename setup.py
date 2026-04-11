@@ -690,13 +690,28 @@ def main():
     # Start dashboard automatically in remote mode
     if is_remote:
         print(f"\n  {DIM}Starting dashboard services...{RESET}")
+        # Install terminal-server dependencies
+        ts_dir = WORKSPACE / "dashboard" / "terminal-server"
+        if (ts_dir / "package.json").exists():
+            os.system(f"cd {ts_dir} && npm install --silent 2>/dev/null")
         # Start terminal-server in background
-        os.system(f"pkill -f 'terminal-server/bin/server.js' 2>/dev/null; node {WORKSPACE}/dashboard/terminal-server/bin/server.js > /tmp/terminal-server.log 2>&1 &")
+        os.system(f"pkill -f 'terminal-server/bin/server.js' 2>/dev/null; cd {WORKSPACE} && node dashboard/terminal-server/bin/server.js > /tmp/terminal-server.log 2>&1 &")
         # Start Flask dashboard in background
         os.system(f"cd {WORKSPACE}/dashboard/backend && nohup uv run python app.py > /tmp/evonexus-dashboard.log 2>&1 &")
         import time as _time
-        _time.sleep(2)
-        print(f"  {GREEN}✓{RESET} Dashboard services started")
+        _time.sleep(3)
+        # Verify services started
+        import urllib.request as _urllib
+        try:
+            _urllib.urlopen("http://localhost:32352/health", timeout=3)
+            print(f"  {GREEN}✓{RESET} Terminal server started (port 32352)")
+        except Exception:
+            print(f"  {YELLOW}!{RESET} Terminal server may not have started — check /tmp/terminal-server.log")
+        try:
+            _urllib.urlopen("http://localhost:8080", timeout=3)
+            print(f"  {GREEN}✓{RESET} Dashboard started (port 8080)")
+        except Exception:
+            print(f"  {YELLOW}!{RESET} Dashboard may not have started — check /tmp/evonexus-dashboard.log")
 
     dashboard_url = access_config.get('url', f'http://localhost:{dashboard_port}')
 
