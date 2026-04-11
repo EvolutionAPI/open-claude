@@ -673,8 +673,14 @@ def main():
     create_folders(config)
 
     # Install Python dependencies
+    # Must run as the ORIGINAL user (not root) so .venv symlinks
+    # point to user's Python, not /root/.local/share/uv/python/
     print(f"  {DIM}Installing Python dependencies...{RESET}")
-    os.system(f"cd {WORKSPACE} && uv sync -q 2>/dev/null")
+    _sudo_user = os.environ.get("SUDO_USER", "")
+    if _sudo_user and os.getuid() == 0:
+        os.system(f"su - {_sudo_user} -c 'cd {WORKSPACE} && uv sync -q 2>/dev/null'")
+    else:
+        os.system(f"cd {WORKSPACE} && uv sync -q 2>/dev/null")
     print(f"  {GREEN}✓{RESET} Installed Python dependencies")
 
     # Dashboard build
