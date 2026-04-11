@@ -5,8 +5,6 @@ const fs = require('fs');
 class ClaudeBridge {
   constructor() {
     this.sessions = new Map();
-    this.providerConfig = this._loadProviderConfig();
-    this.claudeCommand = this.findClaudeCommand();
   }
 
   /**
@@ -55,16 +53,7 @@ class ClaudeBridge {
     }
   }
 
-  /**
-   * Reload provider config (called when provider changes via API).
-   */
-  reloadProviderConfig() {
-    this.providerConfig = this._loadProviderConfig();
-    this.claudeCommand = this.findClaudeCommand();
-  }
-
-  findClaudeCommand() {
-    const cliCommand = this.providerConfig?.cli_command || 'claude';
+  findClaudeCommand(cliCommand = 'claude') {
 
     const possibleCommands = cliCommand === 'openclaude'
       ? [
@@ -124,8 +113,13 @@ class ClaudeBridge {
     } = options;
 
     try {
-      console.log(`Starting Claude session ${sessionId}`);
-      console.log(`Command: ${this.claudeCommand}`);
+      // Reload provider config fresh on every session start
+      // so switching provider in the dashboard takes effect immediately
+      const providerConfig = this._loadProviderConfig();
+      const cliCommand = this.findClaudeCommand(providerConfig.cli_command);
+
+      console.log(`Starting session ${sessionId} with ${providerConfig.cli_command}`);
+      console.log(`Command: ${cliCommand}`);
       console.log(`Working directory: ${workingDir}`);
       console.log(`Terminal size: ${cols}x${rows}`);
       if (dangerouslySkipPermissions) {
@@ -136,8 +130,8 @@ class ClaudeBridge {
       if (agent) {
         args.push('--agent', agent);
       }
-      const providerEnv = this.providerConfig?.env_vars || {};
-      const claudeProcess = spawn(this.claudeCommand, args, {
+      const providerEnv = providerConfig.env_vars || {};
+      const claudeProcess = spawn(cliCommand, args, {
         cwd: workingDir,
         env: {
           ...process.env,
