@@ -445,7 +445,7 @@ Claude reads this file at the start of every session. It's your persistent memor
 
 This workspace exists to produce things, not just store them. Everything here is oriented around a loop: **define a goal → break it into problems → solve those problems → deliver the output.**
 
-Claude's role is to keep {config['owner_name'].split()[0]} moving through this loop. If there's no goal yet, help define one. If there's a goal but no clear problems, help break it down. If there are problems, help solve the next one. Always push toward the next concrete thing to do or deliver.
+Claude's role is to keep {(config['owner_name'].split()[0] if config['owner_name'].strip() else 'the user')} moving through this loop. If there's no goal yet, help define one. If there's a goal but no clear problems, help break it down. If there are problems, help solve the next one. Always push toward the next concrete thing to do or deliver.
 
 ---
 
