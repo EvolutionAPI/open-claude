@@ -89,7 +89,7 @@ export default function Providers() {
   const [editVars, setEditVars] = useState<ProviderEnvVars>({})
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState<string | null>(null)
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, { success: boolean; message: string }>>({})
   const [claudeInstalled, setClaudeInstalled] = useState(false)
   const [openclaudeInstalled, setOpenclaudeInstalled] = useState(false)
 
@@ -120,7 +120,6 @@ export default function Providers() {
   const openConfig = (prov: Provider) => {
     // Load real env var values (API will return masked values for secrets)
     setConfigOpen(prov.id)
-    setTestResult(null)
     // Initialize with current values, replacing masked with empty for editing
     const vars: ProviderEnvVars = {}
     for (const [k, v] of Object.entries(prov.env_vars)) {
@@ -161,17 +160,19 @@ export default function Providers() {
 
   const handleTest = async (id: string) => {
     setTesting(id)
-    setTestResult(null)
     try {
       const result = await api.post(`/providers/${id}/test`) as any
-      setTestResult({
-        success: result.success,
-        message: result.success
-          ? `${result.cli} ${result.version}`
-          : result.error || 'Test failed',
-      })
+      setTestResults(prev => ({
+        ...prev,
+        [id]: {
+          success: result.success,
+          message: result.success
+            ? `${result.cli} ${result.version}`
+            : result.error || 'Test failed',
+        },
+      }))
     } catch (e) {
-      setTestResult({ success: false, message: 'Request failed' })
+      setTestResults(prev => ({ ...prev, [id]: { success: false, message: 'Request failed' } }))
     } finally {
       setTesting(null)
     }
@@ -349,13 +350,13 @@ export default function Providers() {
                 </div>
 
                 {/* Test result inline */}
-                {testResult && configOpen !== prov.id && testing !== prov.id && (
+                {testResults[prov.id] && configOpen !== prov.id && testing !== prov.id && (
                   <div className={`mt-2 text-[10px] px-2 py-1 rounded ${
-                    testResult.success
+                    testResults[prov.id].success
                       ? 'bg-[#00FFA7]/10 text-[#00FFA7]'
                       : 'bg-red-500/10 text-red-400'
                   }`}>
-                    {testResult.message}
+                    {testResults[prov.id].message}
                   </div>
                 )}
               </div>
@@ -385,7 +386,7 @@ export default function Providers() {
                   </h2>
                 </div>
                 <button
-                  onClick={() => { setConfigOpen(null); setTestResult(null) }}
+                  onClick={() => setConfigOpen(null)}
                   className="p-1 rounded-lg hover:bg-white/[0.08] text-[#667085] hover:text-white transition-colors"
                 >
                   <X size={18} />
@@ -450,14 +451,14 @@ export default function Providers() {
                 )}
 
                 {/* Test result */}
-                {testResult && (
+                {testResults[prov.id] && (
                   <div className={`rounded-lg p-3 text-xs ${
-                    testResult.success
+                    testResults[prov.id].success
                       ? 'bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/25'
                       : 'bg-red-500/10 text-red-400 border border-red-500/25'
                   }`}>
-                    {testResult.success ? <CheckCircle2 size={12} className="inline mr-1" /> : <AlertCircle size={12} className="inline mr-1" />}
-                    {testResult.message}
+                    {testResults[prov.id].success ? <CheckCircle2 size={12} className="inline mr-1" /> : <AlertCircle size={12} className="inline mr-1" />}
+                    {testResults[prov.id].message}
                   </div>
                 )}
               </div>
@@ -474,7 +475,7 @@ export default function Providers() {
                 </button>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => { setConfigOpen(null); setTestResult(null) }}
+                    onClick={() => setConfigOpen(null)}
                     className="text-xs px-4 py-1.5 rounded-full bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all"
                   >
                     Cancel

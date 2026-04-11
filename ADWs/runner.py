@@ -171,7 +171,12 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
         agent: Agent name (.claude/agents/*.md) — if None, runs without agent
     """
     cli_command, provider_env = _get_provider_config()
-    cmd = [cli_command, "--print", "--dangerously-skip-permissions", "--output-format", "json"]
+
+    # Resolve to absolute path — cli_command is already validated by _get_provider_config
+    import shutil as _shutil
+    cli_path = _shutil.which(cli_command) or cli_command
+
+    cmd = [cli_path, "--print", "--dangerously-skip-permissions", "--output-format", "json"]
 
     if agent:
         cmd.extend(["--agent", agent])

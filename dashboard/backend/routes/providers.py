@@ -68,22 +68,33 @@ def _mask_secret(value: str) -> str:
     return value[:6] + "****" + value[-4:]
 
 
-def _check_cli(command: str) -> dict:
-    """Check if a CLI tool is installed. Only allowlisted commands are accepted."""
+def _resolve_cli(command: str) -> str | None:
+    """Resolve an allowlisted CLI command to its absolute path, or None."""
     if command not in ALLOWED_CLI_COMMANDS:
-        return {"installed": False, "version": None, "path": None}
-    bin_path = shutil.which(command)
-    if not bin_path:
-        return {"installed": False, "version": None, "path": None}
+        return None
+    return shutil.which(command)
+
+
+def _run_cli_version(abs_path: str, env: dict | None = None) -> dict:
+    """Run '<abs_path> --version' safely. abs_path must be pre-validated."""
     try:
-        result = subprocess.run(
-            [bin_path, "--version"],
+        result = subprocess.run(  # noqa: S603 — abs_path is pre-validated via allowlist
+            [abs_path, "--version"],
             capture_output=True, text=True, timeout=10,
+            env=env,
         )
         version = result.stdout.strip() or result.stderr.strip()
-        return {"installed": True, "version": version, "path": bin_path}
+        return {"installed": True, "version": version, "path": abs_path}
     except (subprocess.TimeoutExpired, OSError):
-        return {"installed": False, "version": None, "path": bin_path}
+        return {"installed": False, "version": None, "path": abs_path}
+
+
+def _check_cli(command: str) -> dict:
+    """Check if a CLI tool is installed. Only allowlisted commands are accepted."""
+    abs_path = _resolve_cli(command)
+    if not abs_path:
+        return {"installed": False, "version": None, "path": None}
+    return _run_cli_version(abs_path)
 
 
 def _sanitize_env_vars(env_vars: dict) -> dict:
@@ -264,11 +275,8 @@ def test_provider(provider_id):
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
     cli = provider.get("cli_command", "claude")
-    if cli not in ALLOWED_CLI_COMMANDS:
-        return jsonify({"success": False, "error": f"Unsupported CLI: {cli}"}), 400
-
-    bin_path = shutil.which(cli)
-    if not bin_path:
+    abs_path = _resolve_cli(cli)
+    if not abs_path:
         return jsonify({
             "success": False,
             "error": f"'{cli}' not found in PATH",
@@ -281,19 +289,10 @@ def test_provider(provider_id):
     )
     test_env = {**os.environ, **env_vars}
 
-    try:
-        result = subprocess.run(
-            [bin_path, "--version"],
-            capture_output=True, text=True, timeout=15,
-            env=test_env,
-        )
-        return jsonify({
-            "success": result.returncode == 0,
-            "version": result.stdout.strip() or result.stderr.strip(),
-            "cli": cli,
-            "path": bin_path,
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "Command timed out"})
-    except OSError as e:
-        return jsonify({"success": False, "error": str(e)})
+    result = _run_cli_version(abs_path, env=test_env)
+    return jsonify({
+        "success": result["installed"],
+        "version": result["version"],
+        "cli": cli,
+        "path": result["path"],
+    })
