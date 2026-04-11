@@ -128,17 +128,41 @@ def _sanitize_env_vars(env_vars: dict) -> dict:
 
 
 def _save_codex_auth(tokens: dict):
-    """Save tokens to ~/.codex/auth.json in OpenClaude format."""
-    expires_ms = int((time.time() + tokens.get("expires_in", 3600)) * 1000)
+    """Save tokens to ~/.codex/auth.json in the format OpenClaude/Codex expects.
+
+    The correct format uses auth_mode + tokens object, NOT the old
+    openai-codex wrapper that OpenClaude doesn't recognize.
+    """
+    import base64 as _b64
+
+    access_token = tokens["access_token"]
+    refresh_token = tokens.get("refresh_token", "")
+    id_token = tokens.get("id_token", access_token)
+
+    # Extract chatgpt_account_id from the access token JWT
+    account_id = ""
+    try:
+        payload_b64 = access_token.split(".")[1]
+        # Add padding
+        payload_b64 += "=" * (4 - len(payload_b64) % 4)
+        payload = json.loads(_b64.urlsafe_b64decode(payload_b64))
+        account_id = payload.get("https://api.openai.com/auth", {}).get("chatgpt_account_id", "")
+    except Exception:
+        pass
+
+    auth_data = {
+        "auth_mode": "Chatgpt",
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": id_token,
+            "account_id": account_id,
+        },
+        "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
     CODEX_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CODEX_AUTH_FILE.write_text(json.dumps({
-        "openai-codex": {
-            "type": "oauth",
-            "access": tokens["access_token"],
-            "refresh": tokens.get("refresh_token", ""),
-            "expires": expires_ms,
-        }
-    }, indent=2), encoding="utf-8")
+    CODEX_AUTH_FILE.write_text(json.dumps(auth_data, indent=2), encoding="utf-8")
 
 
 # ── Endpoints ──────────────────────────────────────────────
@@ -478,13 +502,13 @@ def openai_status():
 
     try:
         auth = json.loads(CODEX_AUTH_FILE.read_text(encoding="utf-8"))
-        codex = auth.get("openai-codex", {})
-        expires = codex.get("expires", 0)
-        is_valid = expires > time.time() * 1000
+        # Support both new format (auth_mode+tokens) and old format (openai-codex)
+        tokens = auth.get("tokens", {})
+        has_access = bool(tokens.get("access_token") or auth.get("openai-codex", {}).get("access"))
         return jsonify({
-            "authenticated": is_valid,
+            "authenticated": has_access,
             "method": "codex_oauth",
-            "expires": expires,
+            "auth_mode": auth.get("auth_mode", "unknown"),
         })
     except (json.JSONDecodeError, OSError):
         return jsonify({"authenticated": False, "method": "none"})
