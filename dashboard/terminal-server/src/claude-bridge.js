@@ -157,17 +157,31 @@ class ClaudeBridge {
         args.push('--agent', agent);
       }
 
-      // For non-Anthropic providers, reinforce agent persona via --append-system-prompt.
-      // GPT and other models don't follow agent system prompts as strongly as Claude.
-      // This appends a critical instruction to force persona embodiment.
+      // For non-Anthropic providers, use --system-prompt to force agent persona.
+      // --append-system-prompt is too weak — GPT models ignore appended instructions.
+      // --system-prompt REPLACES the default system prompt, ensuring the agent persona
+      // takes priority over CLAUDE.md and other context that mentions "Claude".
       const active = providerConfig.active || 'anthropic';
       if (active !== 'anthropic' && agent) {
-        args.push('--append-system-prompt',
-          'CRITICAL: You MUST fully embody the agent persona defined in your system prompt. ' +
-          'You are NOT Claude or a generic assistant — you ARE the specific agent loaded via --agent. ' +
-          'When asked who you are, ALWAYS respond as the agent persona (name, role, behavior). ' +
-          'Never break character. Follow ALL instructions from the agent definition.'
-        );
+        // Read the agent definition file to build a strong system prompt
+        const agentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        let agentPrompt = '';
+        try {
+          const content = fs.readFileSync(agentFile, 'utf8');
+          // Extract body (after YAML frontmatter ---)
+          const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+          agentPrompt = match ? match[1].trim() : content;
+        } catch {
+          agentPrompt = `You are the ${agent} agent.`;
+        }
+
+        const enforcePrompt = agentPrompt + '\n\n' +
+          'CRITICAL: You MUST fully embody this agent persona. ' +
+          'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
+          'When asked who you are, ALWAYS respond as ' + agent + '. ' +
+          'Never break character. Follow ALL instructions above.';
+
+        args.push('--system-prompt', enforcePrompt);
       }
       const providerEnv = providerConfig.env_vars || {};
 
