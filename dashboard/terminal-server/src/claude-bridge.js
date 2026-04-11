@@ -12,22 +12,43 @@ class ClaudeBridge {
   /**
    * Load active provider config from config/providers.json.
    * Returns the CLI command to use and env vars to inject.
+   * Only allowlisted CLI commands and env var names are accepted.
    */
   _loadProviderConfig() {
+    const ALLOWED_CLI = new Set(['claude', 'openclaude']);
+    const ALLOWED_VARS = new Set([
+      'CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_GEMINI',
+      'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
+      'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL',
+      'GEMINI_API_KEY', 'GEMINI_MODEL',
+      'AWS_REGION', 'AWS_BEARER_TOKEN_BEDROCK',
+      'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION',
+    ]);
+
     try {
       const configPath = path.resolve(process.cwd(), 'config', 'providers.json');
       if (!fs.existsSync(configPath)) return { cli_command: 'claude', env_vars: {} };
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const active = config.active_provider || 'anthropic';
       const provider = config.providers?.[active] || {};
+
+      let cliCommand = provider.cli_command || 'claude';
+      if (!ALLOWED_CLI.has(cliCommand)) {
+        console.warn(`[provider] Rejected non-allowlisted CLI: ${cliCommand}, using claude`);
+        cliCommand = 'claude';
+      }
+
       const envVars = Object.fromEntries(
-        Object.entries(provider.env_vars || {}).filter(([, v]) => v !== '')
+        Object.entries(provider.env_vars || {}).filter(
+          ([k, v]) => v !== '' && ALLOWED_VARS.has(k)
+        )
       );
-      console.log(`[provider] Active provider: ${active} (cli: ${provider.cli_command || 'claude'})`);
+
+      console.log(`[provider] Active provider: ${active} (cli: ${cliCommand})`);
       if (Object.keys(envVars).length > 0) {
         console.log(`[provider] Injecting env vars: ${Object.keys(envVars).join(', ')}`);
       }
-      return { cli_command: provider.cli_command || 'claude', env_vars: envVars };
+      return { cli_command: cliCommand, env_vars: envVars };
     } catch (err) {
       console.warn(`[provider] Could not read providers.json: ${err.message}`);
       return { cli_command: 'claude', env_vars: {} };

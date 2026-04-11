@@ -7,6 +7,7 @@ injected when spawning sessions.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +20,26 @@ from routes._helpers import WORKSPACE
 bp = Blueprint("providers", __name__)
 
 PROVIDERS_CONFIG = WORKSPACE / "config" / "providers.json"
+
+# Allowlisted CLI commands — only these binaries can be spawned
+ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
+
+# Allowlisted env var names — only these can be injected into subprocess
+ALLOWED_ENV_VARS = frozenset({
+    "CLAUDE_CODE_USE_OPENAI",
+    "CLAUDE_CODE_USE_GEMINI",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "AWS_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+})
 
 
 def _read_config() -> dict:
@@ -48,7 +69,9 @@ def _mask_secret(value: str) -> str:
 
 
 def _check_cli(command: str) -> dict:
-    """Check if a CLI tool is installed."""
+    """Check if a CLI tool is installed. Only allowlisted commands are accepted."""
+    if command not in ALLOWED_CLI_COMMANDS:
+        return {"installed": False, "version": None, "path": None}
     bin_path = shutil.which(command)
     if not bin_path:
         return {"installed": False, "version": None, "path": None}
@@ -61,6 +84,19 @@ def _check_cli(command: str) -> dict:
         return {"installed": True, "version": version, "path": bin_path}
     except (subprocess.TimeoutExpired, OSError):
         return {"installed": False, "version": None, "path": bin_path}
+
+
+def _sanitize_env_vars(env_vars: dict) -> dict:
+    """Filter env vars to only allowlisted names and safe values."""
+    safe = {}
+    for k, v in env_vars.items():
+        if k not in ALLOWED_ENV_VARS:
+            continue
+        # Reject values with shell metacharacters
+        if not isinstance(v, str) or re.search(r'[;&|`$\n\r]', v):
+            continue
+        safe[k] = v
+    return safe
 
 
 # ── Endpoints ──────────────────────────────────────────────
@@ -81,6 +117,8 @@ def list_providers():
     result = []
     for key, prov in providers.items():
         cli = prov.get("cli_command", "claude")
+        if cli not in ALLOWED_CLI_COMMANDS:
+            continue
         cli_status = claude_status if cli == "claude" else openclaude_status
 
         # Mask env var values for API response
@@ -195,14 +233,20 @@ def update_provider_config(provider_id):
     if not provider:
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
-    # Merge: only update vars that are provided and not masked
+    # Merge: only update allowlisted vars that are provided and not masked
     existing = provider.get("env_vars", {})
     for key, value in new_env_vars.items():
-        if key in existing:
-            # Skip if value looks masked (contains ****)
-            if "****" in str(value):
-                continue
-            existing[key] = value
+        if key not in ALLOWED_ENV_VARS:
+            continue
+        if key not in existing:
+            continue
+        # Skip if value looks masked (contains ****)
+        if "****" in str(value):
+            continue
+        # Reject values with shell metacharacters
+        if not isinstance(value, str) or re.search(r'[;&|`$\n\r]', value):
+            continue
+        existing[key] = value
 
     provider["env_vars"] = existing
     _write_config(config)
@@ -220,6 +264,9 @@ def test_provider(provider_id):
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
     cli = provider.get("cli_command", "claude")
+    if cli not in ALLOWED_CLI_COMMANDS:
+        return jsonify({"success": False, "error": f"Unsupported CLI: {cli}"}), 400
+
     bin_path = shutil.which(cli)
     if not bin_path:
         return jsonify({
@@ -228,8 +275,10 @@ def test_provider(provider_id):
             "hint": f"npm install -g {'@gitlawb/openclaude' if cli == 'openclaude' else '@anthropic-ai/claude-code'}",
         })
 
-    # Build env with provider vars
-    env_vars = {k: v for k, v in provider.get("env_vars", {}).items() if v}
+    # Build env with sanitized provider vars
+    env_vars = _sanitize_env_vars(
+        {k: v for k, v in provider.get("env_vars", {}).items() if v}
+    )
     test_env = {**os.environ, **env_vars}
 
     try:
