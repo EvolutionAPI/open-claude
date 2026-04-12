@@ -70,10 +70,10 @@ def check_prerequisites():
     """Check and auto-install required tools."""
     # Update system packages first (ensures fresh package lists)
     if os.getuid() == 0:
-        print(f"  {DIM}Updating system packages...{RESET}")
-        os.system("DEBIAN_FRONTEND=noninteractive apt-get update -y -qq")
-        os.system("DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'")
-        print(f"  {GREEN}✓{RESET} System packages updated")
+        print(f"  {DIM}Updating system packages...{RESET}", end="", flush=True)
+        os.system("DEBIAN_FRONTEND=noninteractive apt-get update -y -qq > /dev/null 2>&1")
+        os.system("DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' > /dev/null 2>&1")
+        print(f"\r  {GREEN}✓{RESET} System packages updated       ")
 
     missing = []
 
@@ -85,8 +85,8 @@ def check_prerequisites():
         else:
             raise FileNotFoundError
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        print(f"  {DIM}Installing build-essential (required for native modules)...{RESET}")
-        os.system("apt install -y build-essential 2>/dev/null || yum groupinstall -y 'Development Tools' 2>/dev/null")
+        print(f"  {DIM}Installing build-essential...{RESET}", end="", flush=True)
+        os.system("apt install -y build-essential > /dev/null 2>&1 || yum groupinstall -y 'Development Tools' > /dev/null 2>&1")
         try:
             result = subprocess.run(["g++", "--version"], capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
@@ -120,26 +120,27 @@ def check_prerequisites():
         missing.append("npm")
 
     # uv (Python package manager)
-    # When running with sudo, install uv for BOTH root and the original user
-    # so that `su - $SUDO_USER -c 'uv sync'` works later
-    home_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
-    if home_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{home_bin}:{os.environ.get('PATH', '')}"
+    # When running with sudo, install for the original user and add their
+    # ~/.local/bin to root's PATH BEFORE verification
     _sudo_user_uv = os.environ.get("SUDO_USER", "")
     if _sudo_user_uv and os.getuid() == 0:
-        # Install for the original user (services run as this user)
-        if not _check_tool("uv", ["uv", "--version"],
-                            install_cmd=f"su - {_sudo_user_uv} -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'"):
-            missing.append("uv")
-        # Also ensure root has uv in PATH for the rest of setup
+        # Resolve user home FIRST so we can find uv after install
         try:
             user_home = subprocess.run(["getent", "passwd", _sudo_user_uv], capture_output=True, text=True).stdout.split(":")[5]
         except (IndexError, Exception):
             user_home = f"/home/{_sudo_user_uv}"
-        user_uv = os.path.join(user_home, ".local", "bin") if user_home else ""
-        if user_uv and user_uv not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = f"{user_uv}:{os.environ.get('PATH', '')}"
+        user_uv_bin = os.path.join(user_home, ".local", "bin")
+        # Add user's bin to PATH before any uv checks
+        if user_uv_bin not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{user_uv_bin}:{os.environ.get('PATH', '')}"
+        # Now check/install
+        if not _check_tool("uv", ["uv", "--version"],
+                            install_cmd=f"su - {_sudo_user_uv} -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'"):
+            missing.append("uv")
     else:
+        home_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
+        if home_bin not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{home_bin}:{os.environ.get('PATH', '')}"
         if not _check_tool("uv", ["uv", "--version"],
                             install_cmd="curl -LsSf https://astral.sh/uv/install.sh | sh"):
             missing.append("uv")
