@@ -1,64 +1,85 @@
-import { useState, useEffect, type FormEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { api } from '../lib/api'
-import { User, Building2, Globe, Languages, KeyRound, Mail, ArrowRight, ArrowLeft, Sparkles } from 'lucide-react'
 
-function AnimatedBackground() {
-  return (
-    <div className="fixed inset-0 overflow-hidden pointer-events-none">
-      {/* Base gradient */}
-      <div className="absolute inset-0 bg-[#060a13]" />
+/* ── Animated mesh background ── */
+function NetworkCanvas() {
+  const ref = useRef<HTMLCanvasElement>(null)
 
-      {/* Animated gradient orbs */}
-      <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-[#00FFA7]/[0.07] blur-[120px] animate-[float_20s_ease-in-out_infinite]" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-[#00FFA7]/[0.05] blur-[100px] animate-[float_25s_ease-in-out_infinite_reverse]" />
-      <div className="absolute top-[40%] right-[20%] w-[300px] h-[300px] rounded-full bg-[#0ea5e9]/[0.04] blur-[80px] animate-[float_18s_ease-in-out_infinite_2s]" />
+  useEffect(() => {
+    const canvas = ref.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
 
-      {/* Grid pattern overlay */}
-      <div
-        className="absolute inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage: `linear-gradient(rgba(0,255,167,0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,167,0.3) 1px, transparent 1px)`,
-          backgroundSize: '60px 60px',
-        }}
-      />
+    let animId: number
+    let particles: { x: number; y: number; vx: number; vy: number }[] = []
 
-      {/* Radial vignette */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_0%,#060a13_70%)]" />
-    </div>
-  )
+    const resize = () => {
+      canvas.width = window.innerWidth
+      canvas.height = window.innerHeight
+    }
+
+    const init = () => {
+      resize()
+      const count = Math.floor((canvas.width * canvas.height) / 18000)
+      particles = Array.from({ length: Math.min(count, 80) }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+      }))
+    }
+
+    const draw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      const maxDist = 150
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i]
+        p.x += p.vx
+        p.y += p.vy
+        if (p.x < 0 || p.x > canvas.width) p.vx *= -1
+        if (p.y < 0 || p.y > canvas.height) p.vy *= -1
+
+        // Node
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(0, 255, 167, 0.25)'
+        ctx.fill()
+
+        // Edges
+        for (let j = i + 1; j < particles.length; j++) {
+          const q = particles[j]
+          const dx = p.x - q.x
+          const dy = p.y - q.y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          if (dist < maxDist) {
+            ctx.beginPath()
+            ctx.moveTo(p.x, p.y)
+            ctx.lineTo(q.x, q.y)
+            ctx.strokeStyle = `rgba(0, 255, 167, ${0.06 * (1 - dist / maxDist)})`
+            ctx.lineWidth = 0.5
+            ctx.stroke()
+          }
+        }
+      }
+      animId = requestAnimationFrame(draw)
+    }
+
+    init()
+    draw()
+    window.addEventListener('resize', init)
+    return () => {
+      cancelAnimationFrame(animId)
+      window.removeEventListener('resize', init)
+    }
+  }, [])
+
+  return <canvas ref={ref} className="fixed inset-0 pointer-events-none" style={{ zIndex: 0 }} />
 }
 
-function StepIndicator({ current, total }: { current: number; total: number }) {
-  return (
-    <div className="flex items-center gap-3 justify-center mt-5">
-      {Array.from({ length: total }, (_, i) => (
-        <div key={i} className="flex items-center gap-3">
-          <div className={`
-            relative flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-500
-            ${i + 1 <= current
-              ? 'bg-[#00FFA7]/20 text-[#00FFA7] border border-[#00FFA7]/40 shadow-[0_0_15px_rgba(0,255,167,0.15)]'
-              : 'bg-white/[0.03] text-[#667085] border border-white/[0.06]'
-            }
-          `}>
-            {i + 1 < current ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            ) : (
-              i + 1
-            )}
-            {i + 1 === current && (
-              <div className="absolute inset-0 rounded-full border border-[#00FFA7]/30 animate-ping" />
-            )}
-          </div>
-          {i < total - 1 && (
-            <div className={`w-12 h-[2px] rounded-full transition-all duration-500 ${i + 1 < current ? 'bg-[#00FFA7]/40' : 'bg-white/[0.06]'}`} />
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
+/* ── Main ── */
 export default function Setup() {
   const { refreshUser } = useAuth()
   const [hasConfig, setHasConfig] = useState<boolean | null>(null)
@@ -77,7 +98,6 @@ export default function Setup() {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState(1)
-  const [slideDir, setSlideDir] = useState<'left' | 'right'>('left')
 
   useEffect(() => {
     api.get('/config/workspace-status').then((data: { configured: boolean }) => {
@@ -89,20 +109,15 @@ export default function Setup() {
     if (hasConfig === true) setCurrentStep(2)
   }, [hasConfig])
 
-  const goToStep = (step: number) => {
-    setSlideDir(step > currentStep ? 'left' : 'right')
-    setCurrentStep(step)
-  }
-
-  const handleStep1 = (e: FormEvent) => {
+  const handleStep1 = useCallback((e: FormEvent) => {
     e.preventDefault()
-    if (!ownerName.trim()) { setError('Your name is required'); return }
+    if (!ownerName.trim()) { setError('Name is required'); return }
     setError('')
     setDisplayName(ownerName)
-    goToStep(2)
-  }
+    setCurrentStep(2)
+  }, [ownerName])
 
-  const handleStep2 = async (e: FormEvent) => {
+  const handleStep2 = useCallback(async (e: FormEvent) => {
     e.preventDefault()
     setError('')
     if (!username.trim()) { setError('Username is required'); return }
@@ -113,12 +128,9 @@ export default function Setup() {
     try {
       let geo = {}
       try {
-        const geoResp = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) })
-        if (geoResp.ok) {
-          const geoData = await geoResp.json()
-          geo = { country: geoData.country_name, country_code: geoData.country_code, city: geoData.city, region: geoData.region, lat: geoData.latitude, lng: geoData.longitude, timezone: geoData.timezone }
-        }
-      } catch { /* geo is optional */ }
+        const r = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) })
+        if (r.ok) { const d = await r.json(); geo = { country: d.country_name, country_code: d.country_code, city: d.city, region: d.region, lat: d.latitude, lng: d.longitude, timezone: d.timezone } }
+      } catch { /* optional */ }
 
       await api.post('/auth/setup', {
         workspace: (hasConfig && currentStep === 2 && !ownerName.trim()) ? undefined : {
@@ -136,228 +148,190 @@ export default function Setup() {
     } finally {
       setSubmitting(false)
     }
-  }
-
-  const inputClass = "w-full pl-11 pr-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.08] text-white placeholder-[#4a5568] focus:outline-none focus:border-[#00FFA7]/50 focus:bg-white/[0.05] focus:shadow-[0_0_20px_rgba(0,255,167,0.08)] transition-all duration-300 text-sm backdrop-blur-sm"
-  const labelClass = "block text-xs font-medium text-[#8896ab] mb-2 uppercase tracking-wider"
+  }, [hasConfig, currentStep, ownerName, companyName, timezone, language, username, email, displayName, password, confirmPassword, refreshUser])
 
   if (hasConfig === null) return (
-    <div className="min-h-screen bg-[#060a13] flex items-center justify-center">
-      <div className="flex items-center gap-3">
-        <div className="w-5 h-5 border-2 border-[#00FFA7]/30 border-t-[#00FFA7] rounded-full animate-spin" />
-        <span className="text-[#667085] text-sm">Initializing...</span>
-      </div>
+    <div className="min-h-screen bg-[#080c14] flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-[#00FFA7]/20 border-t-[#00FFA7] rounded-full animate-spin" />
     </div>
   )
 
-  const totalSteps = hasConfig ? 1 : 2
+  const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
+  const lbl = "block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase"
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 py-8 font-[Inter] relative">
-      <AnimatedBackground />
+    <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 py-8 font-[Inter,-apple-system,sans-serif] relative">
+      <NetworkCanvas />
 
-      {/* CSS animations */}
-      <style>{`
-        @keyframes float {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(30px, -20px) scale(1.05); }
-          66% { transform: translate(-20px, 15px) scale(0.95); }
-        }
-        @keyframes slideInLeft {
-          from { opacity: 0; transform: translateX(40px); }
-          to { opacity: 1; transform: translateX(0); }
-        }
-        @keyframes slideInRight {
-          from { opacity: 0; transform: translateX(-40px); }
-          to { opacity: 1; transform: translateX(0); }
-        }
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .slide-in { animation: ${slideDir === 'left' ? 'slideInLeft' : 'slideInRight'} 0.4s ease-out; }
-        .fade-up { animation: fadeInUp 0.6s ease-out; }
-      `}</style>
-
-      <div className="w-full max-w-[440px] relative z-10">
-        {/* Card */}
-        <div className="fade-up relative rounded-2xl border border-white/[0.08] bg-[#0c1220]/80 backdrop-blur-xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] overflow-hidden">
-          {/* Top glow line */}
-          <div className="absolute top-0 left-[10%] right-[10%] h-[1px] bg-gradient-to-r from-transparent via-[#00FFA7]/40 to-transparent" />
+      <div className="w-full max-w-[420px] relative z-10">
+        {/* ── Card ── */}
+        <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
 
           {/* Header */}
-          <div className="px-8 pt-8 pb-2 text-center">
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#00FFA7]/[0.08] border border-[#00FFA7]/20 mb-4 shadow-[0_0_30px_rgba(0,255,167,0.1)]">
-              <Sparkles size={24} className="text-[#00FFA7]" />
+          <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
+            <div className="flex items-center gap-3 mb-4">
+              {/* Logo mark */}
+              <div className="w-9 h-9 rounded-lg bg-[#00FFA7]/10 flex items-center justify-center">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z" fill="#00FFA7" opacity="0.8"/>
+                  <path d="M2 17l10 5 10-5" stroke="#00FFA7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
+                  <path d="M2 12l10 5 10-5" stroke="#00FFA7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.7"/>
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-white tracking-tight leading-none">
+                  <span className="text-[#00FFA7]">Evo</span>Nexus
+                </h1>
+                <p className="text-[11px] text-[#4a5a6e] mt-0.5">AI Workspace Platform</p>
+              </div>
             </div>
-            <h1 className="text-[28px] font-bold tracking-tight">
-              <span className="text-[#00FFA7]">Evo</span>
-              <span className="text-white">Nexus</span>
-            </h1>
-            <p className="text-[#667085] text-sm mt-1.5">
-              {currentStep === 1 ? 'Configure your workspace' : 'Create your admin account'}
-            </p>
-            {!hasConfig && <StepIndicator current={currentStep} total={2} />}
+
+            {/* Step nav */}
+            {!hasConfig && (
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => currentStep > 1 && setCurrentStep(1)}
+                  className={`flex-1 py-1.5 text-[11px] font-medium rounded-md transition-colors ${
+                    currentStep === 1
+                      ? 'bg-[#00FFA7]/10 text-[#00FFA7]'
+                      : 'text-[#4a5a6e] hover:text-[#7a8a9e]'
+                  }`}
+                >
+                  Workspace
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 py-1.5 text-[11px] font-medium rounded-md transition-colors ${
+                    currentStep === 2
+                      ? 'bg-[#00FFA7]/10 text-[#00FFA7]'
+                      : 'text-[#4a5a6e]'
+                  }`}
+                  disabled
+                >
+                  Account
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Form body */}
-          <div className="px-8 pb-8 pt-4">
+          {/* Form */}
+          <div className="px-7 py-6">
             {error && (
-              <div className="mb-5 px-4 py-3 rounded-xl bg-red-500/[0.08] border border-red-500/20 text-red-400 text-sm flex items-center gap-2 backdrop-blur-sm">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <div className="mb-4 px-3 py-2.5 rounded-lg bg-[#1a0a0a] border border-[#3a1515] text-[#f87171] text-xs">
                 {error}
               </div>
             )}
 
-            {/* Step 1: Workspace */}
+            {/* Step 1 */}
             {currentStep === 1 && !hasConfig && (
-              <form onSubmit={handleStep1} className="space-y-4 slide-in" key="step1">
+              <form onSubmit={handleStep1} className="space-y-4">
                 <div>
-                  <label className={labelClass}>Your Name *</label>
-                  <div className="relative">
-                    <User size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                    <input type="text" value={ownerName} onChange={(e) => setOwnerName(e.target.value)}
-                      className={inputClass} placeholder="John Doe" autoFocus />
-                  </div>
+                  <label className={lbl}>Your name</label>
+                  <input type="text" value={ownerName} onChange={e => setOwnerName(e.target.value)}
+                    className={inp} placeholder="Full name" autoFocus autoComplete="name" />
                 </div>
                 <div>
-                  <label className={labelClass}>Company</label>
-                  <div className="relative">
-                    <Building2 size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                    <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)}
-                      className={inputClass} placeholder="Acme Inc" />
-                  </div>
+                  <label className={lbl}>Company</label>
+                  <input type="text" value={companyName} onChange={e => setCompanyName(e.target.value)}
+                    className={inp} placeholder="Organization name" autoComplete="organization" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelClass}>Timezone</label>
-                    <div className="relative">
-                      <Globe size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                      <input type="text" value={timezone} onChange={(e) => setTimezone(e.target.value)}
-                        className={inputClass} placeholder="America/Sao_Paulo" />
-                    </div>
+                    <label className={lbl}>Timezone</label>
+                    <input type="text" value={timezone} onChange={e => setTimezone(e.target.value)}
+                      className={inp} />
                   </div>
                   <div>
-                    <label className={labelClass}>Language</label>
-                    <div className="relative">
-                      <Languages size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                      <select value={language} onChange={(e) => setLanguage(e.target.value)}
-                        className={inputClass + ' appearance-none cursor-pointer'}>
-                        <option value="en">English</option>
-                        <option value="pt-BR">Portugues (BR)</option>
-                        <option value="es">Espanol</option>
-                      </select>
-                    </div>
+                    <label className={lbl}>Language</label>
+                    <select value={language} onChange={e => setLanguage(e.target.value)}
+                      className={inp + ' appearance-none cursor-pointer'}>
+                      <option value="en">English</option>
+                      <option value="pt-BR">Portugues (BR)</option>
+                      <option value="es">Espanol</option>
+                    </select>
                   </div>
                 </div>
 
                 <button type="submit"
-                  className="w-full py-3 rounded-xl bg-gradient-to-r from-[#00FFA7] to-[#00d48f] text-[#0a0f1a] font-semibold text-sm hover:shadow-[0_0_30px_rgba(0,255,167,0.25)] transition-all duration-300 mt-3 flex items-center justify-center gap-2 group">
+                  className="w-full py-3 mt-2 rounded-lg bg-[#00FFA7] text-[#080c14] text-sm font-semibold hover:bg-[#00e69a] active:bg-[#00cc88] transition-colors">
                   Continue
-                  <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
                 </button>
               </form>
             )}
 
-            {/* Step 2: Admin Account */}
+            {/* Step 2 */}
             {currentStep === 2 && (
-              <form onSubmit={handleStep2} className="space-y-4 slide-in" key="step2">
+              <form onSubmit={handleStep2} className="space-y-4">
+                {hasConfig && (
+                  <p className="text-[#5a6b7f] text-xs mb-2">Create your administrator account to get started.</p>
+                )}
                 <div>
-                  <label className={labelClass}>Username *</label>
-                  <div className="relative">
-                    <User size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                    <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
-                      className={inputClass} placeholder="admin" autoFocus />
-                  </div>
+                  <label className={lbl}>Username</label>
+                  <input type="text" value={username} onChange={e => setUsername(e.target.value)}
+                    className={inp} placeholder="admin" autoFocus autoComplete="username" />
                 </div>
                 <div>
-                  <label className={labelClass}>Email</label>
-                  <div className="relative">
-                    <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                      className={inputClass} placeholder="admin@example.com" />
-                  </div>
+                  <label className={lbl}>Email</label>
+                  <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                    className={inp} placeholder="you@company.com" autoComplete="email" />
                 </div>
                 <div>
-                  <label className={labelClass}>Display Name</label>
-                  <div className="relative">
-                    <User size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                    <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-                      className={inputClass} placeholder={ownerName || 'Admin'} />
-                  </div>
+                  <label className={lbl}>Display name</label>
+                  <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)}
+                    className={inp} placeholder={ownerName || 'Your name'} autoComplete="name" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelClass}>Password *</label>
-                    <div className="relative">
-                      <KeyRound size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-                        className={inputClass} placeholder="Min 6 chars" />
-                    </div>
+                    <label className={lbl}>Password</label>
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                      className={inp} placeholder="Min 6 chars" autoComplete="new-password" />
                   </div>
                   <div>
-                    <label className={labelClass}>Confirm *</label>
-                    <div className="relative">
-                      <KeyRound size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                      <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-                        className={inputClass} placeholder="Repeat" />
-                    </div>
+                    <label className={lbl}>Confirm</label>
+                    <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                      className={inp} placeholder="Repeat" autoComplete="new-password" />
                   </div>
                 </div>
 
-                <div className={`flex gap-3 mt-3 ${hasConfig ? '' : 'pt-1'}`}>
+                <div className={`flex gap-2.5 mt-2 ${hasConfig ? '' : ''}`}>
                   {!hasConfig && (
-                    <button type="button" onClick={() => goToStep(1)}
-                      className="flex-1 py-3 rounded-xl text-[#8896ab] text-sm hover:text-white hover:bg-white/[0.04] border border-white/[0.08] transition-all duration-300 flex items-center justify-center gap-2 group">
-                      <ArrowLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
+                    <button type="button" onClick={() => setCurrentStep(1)}
+                      className="px-5 py-3 rounded-lg text-[#5a6b7f] text-sm font-medium border border-[#1e2a3a] hover:border-[#2e3a4a] hover:text-[#8a9aae] transition-colors">
                       Back
                     </button>
                   )}
                   <button type="submit" disabled={submitting}
-                    className={`${hasConfig ? 'w-full' : 'flex-1'} py-3 rounded-xl bg-gradient-to-r from-[#00FFA7] to-[#00d48f] text-[#0a0f1a] font-semibold text-sm hover:shadow-[0_0_30px_rgba(0,255,167,0.25)] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2`}>
-                    {submitting ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-[#0a0f1a]/30 border-t-[#0a0f1a] rounded-full animate-spin" />
-                        Setting up...
-                      </>
-                    ) : (
-                      <>
-                        Launch EvoNexus
-                        <Sparkles size={16} />
-                      </>
-                    )}
+                    className={`flex-1 py-3 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 ${
+                      submitting
+                        ? 'bg-[#00FFA7]/60 text-[#080c14]'
+                        : 'bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] active:bg-[#00cc88]'
+                    }`}>
+                    {submitting ? 'Creating...' : 'Create account'}
                   </button>
                 </div>
               </form>
             )}
           </div>
 
-          {/* Bottom features bar */}
-          <div className="px-8 py-4 border-t border-white/[0.05] bg-white/[0.01]">
-            <div className="flex items-center justify-center gap-6 text-[11px] text-[#4a5568]">
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00FFA7]/50" />
-                {totalSteps === 2 ? '38 AI Agents' : 'Admin Setup'}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00FFA7]/50" />
-                137 Skills
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00FFA7]/50" />
-                Multi-Provider
-              </span>
+          {/* Footer stats */}
+          <div className="px-7 py-3.5 border-t border-[#152030] flex items-center justify-between">
+            <div className="flex gap-4 text-[10px] text-[#3d4f65] font-medium tracking-wide uppercase">
+              <span>38 Agents</span>
+              <span>137 Skills</span>
+              <span>Multi-AI</span>
             </div>
+            <div className="w-1.5 h-1.5 rounded-full bg-[#00FFA7]/40" />
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="text-center mt-5">
+        {/* Attribution */}
+        <p className="text-center mt-4 text-[10px] text-[#2d3d4f]">
           <a href="https://evolutionfoundation.com.br" target="_blank" rel="noopener noreferrer"
-            className="text-[#4a5568] text-xs hover:text-[#00FFA7] transition-colors duration-300">
-            by <span className="font-medium text-[#00FFA7]/60 hover:text-[#00FFA7]">Evolution Foundation</span>
+            className="hover:text-[#4a5a6e] transition-colors">
+            Evolution Foundation
           </a>
-        </div>
+        </p>
       </div>
     </div>
   )

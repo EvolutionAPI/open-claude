@@ -1,6 +1,80 @@
-import { useState, type FormEvent } from 'react'
+import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { User, KeyRound, LogIn } from 'lucide-react'
+
+/* ── Animated mesh background ── */
+function NetworkCanvas() {
+  const ref = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = ref.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    let animId: number
+    let particles: { x: number; y: number; vx: number; vy: number }[] = []
+
+    const resize = () => {
+      canvas.width = window.innerWidth
+      canvas.height = window.innerHeight
+    }
+
+    const init = () => {
+      resize()
+      const count = Math.floor((canvas.width * canvas.height) / 18000)
+      particles = Array.from({ length: Math.min(count, 80) }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+      }))
+    }
+
+    const draw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      const maxDist = 150
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i]
+        p.x += p.vx
+        p.y += p.vy
+        if (p.x < 0 || p.x > canvas.width) p.vx *= -1
+        if (p.y < 0 || p.y > canvas.height) p.vy *= -1
+
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(0, 255, 167, 0.25)'
+        ctx.fill()
+
+        for (let j = i + 1; j < particles.length; j++) {
+          const q = particles[j]
+          const dx = p.x - q.x
+          const dy = p.y - q.y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          if (dist < maxDist) {
+            ctx.beginPath()
+            ctx.moveTo(p.x, p.y)
+            ctx.lineTo(q.x, q.y)
+            ctx.strokeStyle = `rgba(0, 255, 167, ${0.06 * (1 - dist / maxDist)})`
+            ctx.lineWidth = 0.5
+            ctx.stroke()
+          }
+        }
+      }
+      animId = requestAnimationFrame(draw)
+    }
+
+    init()
+    draw()
+    window.addEventListener('resize', init)
+    return () => {
+      cancelAnimationFrame(animId)
+      window.removeEventListener('resize', init)
+    }
+  }, [])
+
+  return <canvas ref={ref} className="fixed inset-0 pointer-events-none" style={{ zIndex: 0 }} />
+}
 
 export default function Login() {
   const { login } = useAuth()
@@ -16,7 +90,6 @@ export default function Login() {
       setError('Username and password are required')
       return
     }
-
     setSubmitting(true)
     try {
       await login(username.trim(), password)
@@ -27,99 +100,73 @@ export default function Login() {
     }
   }
 
-  const inputClass = "w-full pl-11 pr-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.08] text-white placeholder-[#4a5568] focus:outline-none focus:border-[#00FFA7]/50 focus:bg-white/[0.05] focus:shadow-[0_0_20px_rgba(0,255,167,0.08)] transition-all duration-300 text-sm backdrop-blur-sm"
+  const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
+  const lbl = "block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase"
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 font-[Inter] relative">
-      {/* Animated background */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute inset-0 bg-[#060a13]" />
-        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-[#00FFA7]/[0.07] blur-[120px] animate-[float_20s_ease-in-out_infinite]" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-[#00FFA7]/[0.05] blur-[100px] animate-[float_25s_ease-in-out_infinite_reverse]" />
-        <div className="absolute top-[40%] right-[20%] w-[300px] h-[300px] rounded-full bg-[#0ea5e9]/[0.04] blur-[80px] animate-[float_18s_ease-in-out_infinite_2s]" />
-        <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: 'linear-gradient(rgba(0,255,167,0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,167,0.3) 1px, transparent 1px)', backgroundSize: '60px 60px' }} />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_0%,#060a13_70%)]" />
-      </div>
+    <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif] relative">
+      <NetworkCanvas />
 
-      <style>{`
-        @keyframes float {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(30px, -20px) scale(1.05); }
-          66% { transform: translate(-20px, 15px) scale(0.95); }
-        }
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .fade-up { animation: fadeInUp 0.6s ease-out; }
-      `}</style>
+      <div className="w-full max-w-[380px] relative z-10">
+        <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
 
-      <div className="w-full max-w-[400px] relative z-10">
-        <div className="fade-up relative rounded-2xl border border-white/[0.08] bg-[#0c1220]/80 backdrop-blur-xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] overflow-hidden">
-          {/* Top glow line */}
-          <div className="absolute top-0 left-[10%] right-[10%] h-[1px] bg-gradient-to-r from-transparent via-[#00FFA7]/40 to-transparent" />
-
-          <div className="p-8">
-            {/* Logo */}
-            <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#00FFA7]/[0.08] border border-[#00FFA7]/20 mb-4 shadow-[0_0_30px_rgba(0,255,167,0.1)]">
-                <LogIn size={24} className="text-[#00FFA7]" />
+          {/* Header */}
+          <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-[#00FFA7]/10 flex items-center justify-center">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z" fill="#00FFA7" opacity="0.8"/>
+                  <path d="M2 17l10 5 10-5" stroke="#00FFA7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
+                  <path d="M2 12l10 5 10-5" stroke="#00FFA7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.7"/>
+                </svg>
               </div>
-              <h1 className="text-[28px] font-bold tracking-tight">
-                <span className="text-[#00FFA7]">Evo</span>
-                <span className="text-white">Nexus</span>
-              </h1>
-              <p className="text-[#667085] text-sm mt-1.5">Sign in to your workspace</p>
+              <div>
+                <h1 className="text-lg font-bold text-white tracking-tight leading-none">
+                  <span className="text-[#00FFA7]">Evo</span>Nexus
+                </h1>
+                <p className="text-[11px] text-[#4a5a6e] mt-0.5">Sign in to continue</p>
+              </div>
             </div>
+          </div>
 
+          {/* Form */}
+          <div className="px-7 py-6">
             {error && (
-              <div className="mb-5 px-4 py-3 rounded-xl bg-red-500/[0.08] border border-red-500/20 text-red-400 text-sm flex items-center gap-2 backdrop-blur-sm">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <div className="mb-4 px-3 py-2.5 rounded-lg bg-[#1a0a0a] border border-[#3a1515] text-[#f87171] text-xs">
                 {error}
               </div>
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-[#8896ab] mb-2 uppercase tracking-wider">Username</label>
-                <div className="relative">
-                  <User size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                  <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
-                    className={inputClass} placeholder="Username" autoFocus />
-                </div>
+                <label className={lbl}>Username</label>
+                <input type="text" value={username} onChange={e => setUsername(e.target.value)}
+                  className={inp} placeholder="Username" autoFocus autoComplete="username" />
               </div>
-
               <div>
-                <label className="block text-xs font-medium text-[#8896ab] mb-2 uppercase tracking-wider">Password</label>
-                <div className="relative">
-                  <KeyRound size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#4a5568]" />
-                  <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-                    className={inputClass} placeholder="Password" />
-                </div>
+                <label className={lbl}>Password</label>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  className={inp} placeholder="Password" autoComplete="current-password" />
               </div>
 
               <button type="submit" disabled={submitting}
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-[#00FFA7] to-[#00d48f] text-[#0a0f1a] font-semibold text-sm hover:shadow-[0_0_30px_rgba(0,255,167,0.25)] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed mt-3 flex items-center justify-center gap-2">
-                {submitting ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-[#0a0f1a]/30 border-t-[#0a0f1a] rounded-full animate-spin" />
-                    Signing in...
-                  </>
-                ) : (
-                  'Sign In'
-                )}
+                className={`w-full py-3 mt-1 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 ${
+                  submitting
+                    ? 'bg-[#00FFA7]/60 text-[#080c14]'
+                    : 'bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] active:bg-[#00cc88]'
+                }`}>
+                {submitting ? 'Signing in...' : 'Sign in'}
               </button>
             </form>
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="text-center mt-5">
+        <p className="text-center mt-4 text-[10px] text-[#2d3d4f]">
           <a href="https://evolutionfoundation.com.br" target="_blank" rel="noopener noreferrer"
-            className="text-[#4a5568] text-xs hover:text-[#00FFA7] transition-colors duration-300">
-            by <span className="font-medium text-[#00FFA7]/60 hover:text-[#00FFA7]">Evolution Foundation</span>
+            className="hover:text-[#4a5a6e] transition-colors">
+            Evolution Foundation
           </a>
-        </div>
+        </p>
       </div>
     </div>
   )
