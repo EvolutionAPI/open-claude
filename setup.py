@@ -70,6 +70,27 @@ def check_prerequisites():
     """Check and auto-install required tools."""
     missing = []
 
+    # build-essential (required for native npm packages like node-pty)
+    try:
+        result = subprocess.run(["g++", "--version"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            print(f"  {GREEN}✓{RESET} build-essential: {DIM}installed{RESET}")
+        else:
+            raise FileNotFoundError
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print(f"  {DIM}Installing build-essential (required for native modules)...{RESET}")
+        os.system("apt install -y build-essential 2>/dev/null || yum groupinstall -y 'Development Tools' 2>/dev/null")
+        try:
+            result = subprocess.run(["g++", "--version"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                print(f"  {GREEN}✓{RESET} build-essential: {DIM}installed{RESET}")
+            else:
+                print(f"  {RED}✗{RESET} build-essential install failed")
+                missing.append("build-essential")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            print(f"  {RED}✗{RESET} build-essential install failed")
+            missing.append("build-essential")
+
     # Node.js
     if not _check_tool("Node.js", ["node", "--version"],
                         install_cmd="curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt install -y nodejs 2>/dev/null || echo 'Install Node.js 18+ from https://nodejs.org'",
@@ -137,44 +158,72 @@ def configure_access() -> dict:
         print(f"  {YELLOW}!{RESET} No domain provided, using local mode")
         return {"mode": "local", "url": "http://localhost:8080"}
 
-    # Check/install nginx
+    # Step 1: Install nginx
     if not shutil.which("nginx"):
-        print(f"  {YELLOW}!{RESET} nginx not found")
-        install = ask("Install nginx? (y/n)", "y")
-        if install.lower() == "y":
-            os.system("apt install -y nginx 2>/dev/null || yum install -y nginx 2>/dev/null")
+        print(f"  {DIM}Installing nginx...{RESET}")
+        os.system("apt install -y nginx 2>/dev/null || yum install -y nginx 2>/dev/null")
         if not shutil.which("nginx"):
             print(f"  {RED}✗{RESET} nginx installation failed, using local mode")
             return {"mode": "local", "url": "http://localhost:8080"}
+    print(f"  {GREEN}✓{RESET} nginx installed")
 
-    # SSL certificate
-    ssl_mode = ask("SSL certificate (1=certbot auto, 2=manual path)", "1")
+    # Step 2: Stop nginx to free port 80 for certbot
+    os.system("systemctl stop nginx 2>/dev/null")
+
+    # Step 3: SSL certificate — try certbot first, fallback to self-signed
+    ssl_cert = ""
+    ssl_key = ""
+
+    ssl_mode = ask("SSL certificate (1=certbot, 2=self-signed, 3=manual path)", "2")
+
     if ssl_mode == "1":
+        # Certbot (requires port 80 free and domain pointing to this server)
         if not shutil.which("certbot"):
             print(f"  {DIM}Installing certbot...{RESET}")
-            os.system("apt install -y certbot python3-certbot-nginx 2>/dev/null")
-        print(f"  {DIM}Obtaining SSL certificate...{RESET}")
+            os.system("apt install -y certbot 2>/dev/null")
+        print(f"  {DIM}Obtaining SSL certificate via certbot...{RESET}")
         ret = os.system(f"certbot certonly --standalone -d {domain} --non-interactive --agree-tos --register-unsafely-without-email 2>/dev/null")
-        if ret != 0:
-            print(f"  {YELLOW}!{RESET} certbot failed — try manual SSL")
-            ssl_mode = "2"
-        else:
+        if ret == 0:
             ssl_cert = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
             ssl_key = f"/etc/letsencrypt/live/{domain}/privkey.pem"
+            print(f"  {GREEN}✓{RESET} SSL certificate obtained via certbot")
+        else:
+            print(f"  {YELLOW}!{RESET} certbot failed — falling back to self-signed")
+            ssl_mode = "2"
 
     if ssl_mode == "2":
+        # Self-signed (works with Cloudflare Full mode)
+        print(f"  {DIM}Generating self-signed SSL certificate...{RESET}")
+        os.system("mkdir -p /etc/nginx/ssl")
+        ret = os.system(f'openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout /etc/nginx/ssl/{domain}.key -out /etc/nginx/ssl/{domain}.crt -subj "/CN={domain}" 2>/dev/null')
+        if ret == 0:
+            ssl_cert = f"/etc/nginx/ssl/{domain}.crt"
+            ssl_key = f"/etc/nginx/ssl/{domain}.key"
+            print(f"  {GREEN}✓{RESET} Self-signed SSL certificate generated")
+            print(f"  {DIM}(Compatible with Cloudflare SSL mode: Full){RESET}")
+        else:
+            print(f"  {RED}✗{RESET} Failed to generate SSL certificate")
+
+    if ssl_mode == "3":
         ssl_cert = ask("SSL cert path", f"/etc/nginx/ssl/{domain}.crt")
         ssl_key = ask("SSL key path", f"/etc/nginx/ssl/{domain}.key")
 
-    # Write Nginx config
+    if not ssl_cert or not ssl_key:
+        print(f"  {RED}✗{RESET} No SSL certificate available, using local mode")
+        os.system("systemctl start nginx 2>/dev/null")
+        return {"mode": "local", "url": "http://localhost:8080"}
+
+    # Step 4: Write Nginx config with IPv6 support
     nginx_config = f"""server {{
     listen 80;
+    listen [::]:80;
     server_name {domain};
     return 301 https://$host$request_uri;
 }}
 
 server {{
     listen 443 ssl;
+    listen [::]:443 ssl;
     server_name {domain};
 
     ssl_certificate {ssl_cert};
@@ -208,16 +257,26 @@ server {{
 }}
 """
     try:
+        # Remove default nginx site if exists
+        if os.path.exists("/etc/nginx/sites-enabled/default"):
+            os.remove("/etc/nginx/sites-enabled/default")
+
         nginx_path = "/etc/nginx/sites-enabled/evonexus"
         with open(nginx_path, "w") as f:
             f.write(nginx_config)
-        ret = os.system("nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null")
+        ret = os.system("nginx -t 2>/dev/null && systemctl start nginx 2>/dev/null && systemctl enable nginx 2>/dev/null")
         if ret == 0:
             print(f"  {GREEN}✓{RESET} Nginx configured for {domain}")
         else:
-            print(f"  {YELLOW}!{RESET} Nginx config written but reload failed — check manually")
+            print(f"  {YELLOW}!{RESET} Nginx config written but start failed — check manually")
     except PermissionError:
-        print(f"  {YELLOW}!{RESET} No permission to write nginx config — run setup as root")
+        print(f"  {YELLOW}!{RESET} No permission to write nginx config — run setup as root/sudo")
+
+    # Step 5: Open firewall ports
+    print(f"  {DIM}Configuring firewall...{RESET}")
+    os.system("ufw allow 80/tcp 2>/dev/null; ufw allow 443/tcp 2>/dev/null; ufw allow 8080/tcp 2>/dev/null; ufw allow 32352/tcp 2>/dev/null")
+    os.system("iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null")
+    print(f"  {GREEN}✓{RESET} Firewall ports opened (80, 443)")
 
     return {"mode": "domain", "url": f"https://{domain}"}
 
@@ -694,7 +753,7 @@ def main():
     ts_dir = WORKSPACE / "dashboard" / "terminal-server"
     if (ts_dir / "package.json").exists():
         print(f"  {DIM}Installing terminal-server dependencies...{RESET}")
-        os.system(f"cd {ts_dir} && npm install --silent 2>/dev/null")
+        os.system(f"cd {ts_dir} && npm install --silent")
         print(f"  {GREEN}✓{RESET} Installed terminal-server dependencies")
 
     # Data dir for SQLite
