@@ -14,6 +14,7 @@ import {
 } from "react-icons/si";
 
 import MainLogo from "@assets/logo.webp";
+import EvoNexusLogo from "@assets/EVO_NEXUS.webp";
 import printOverview from "@assets/print-overview.webp";
 import printAgents from "@assets/print-agents.webp";
 import printIntegrations from "@assets/print-integrations.webp";
@@ -117,12 +118,7 @@ export default function Home() {
       <nav className={`fixed top-0 w-full z-50 transition-all duration-300 border-b ${isScrolled ? 'bg-background/80 backdrop-blur-md border-border' : 'bg-transparent border-transparent'}`}>
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src={MainLogo} alt="Evolution Foundation" className="h-8" />
-          </div>
-
-          <div className="flex items-center text-xl font-bold tracking-tight font-mono">
-            <span className="text-primary">Evo</span>
-            <span className="text-foreground">Nexus</span>
+            <img src={EvoNexusLogo} alt="EvoNexus" className="h-8" />
           </div>
 
           <div className="hidden md:flex items-center gap-4">
@@ -178,7 +174,7 @@ export default function Home() {
               The open source operating system for <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-emerald-300">AI-powered businesses</span>
             </h1>
             <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-8 leading-relaxed">
-              A markdown-first multi-agent operating layer that runs on Anthropic's Claude CLI by default — or on OpenAI, Gemini, Bedrock, Vertex, or OpenRouter via OpenClaude. 38 specialized agents (17 business + 21 engineering), ~140 skills, automated routines, channels, and a web dashboard — all in one command.
+              A markdown-first multi-agent operating layer that runs on Anthropic's Claude CLI by default — or on OpenAI, Gemini, Bedrock, Vertex, or OpenRouter via OpenClaude. 38 specialized agents (17 business + 21 engineering), 150+ skills, automated routines, channels, and a web dashboard — all in one command.
             </p>
 
             {/* Social proof numbers */}
@@ -186,7 +182,7 @@ export default function Home() {
               {[
                 { value: "17,000+", label: "Community members" },
                 { value: "38", label: "AI Agents" },
-                { value: "137+", label: "Skills" },
+                { value: "150+", label: "Skills" },
                 { value: "18", label: "Integrations" },
               ].map((stat, i) => (
                 <div key={i} className="flex items-center gap-2 px-4 py-2 rounded-full bg-card border border-border text-sm">
@@ -279,7 +275,7 @@ export default function Home() {
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
               {[
                 { icon: Bot, title: "38 Specialized Agents", desc: "Two ortogonal layers — Business (17): Ops, Finance, Projects, Community, Social, Strategy, Sales, Marketing, HR, CS, Legal, Product, Data, Courses, Personal, Knowledge, Learning Retention. Engineering (21): Architect, Planner, Executor, Code Reviewer, Debugger, Security, Tester, Verifier, Designer, and more." },
-                { icon: BrainCircuit, title: "137+ Skills", desc: "Business skills (fin-, social-, mkt-, hr-, legal-...) plus 25 dev-* engineering skills (autopilot, plan, ralplan, verify, ultraqa, trace...)" },
+                { icon: BrainCircuit, title: "150+ Skills", desc: "Business skills (fin-, social-, mkt-, hr-, legal-...) plus 25 dev-* engineering skills (autopilot, plan, ralplan, verify, ultraqa, trace...)" },
                 { icon: Clock, title: "Automated Routines", desc: "Morning briefing to monthly close, running on schedule automatically" },
                 { icon: LayoutDashboard, title: "Web Dashboard", desc: "React + Flask with auth, roles, terminal, reports, service management" },
                 { icon: Workflow, title: "18 Integrations", desc: "Gmail, Calendar, GitHub, Linear, Discord, Stripe, Evolution API, Evolution Go, Evo CRM, and more" },
@@ -312,7 +308,7 @@ export default function Home() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {[
                 { icon: FileText, title: "Markdown-First Agents", desc: "Agents are plain `.md` files with system prompts. No SDK, no plugin runtime, no compile step. Drop a file in .claude/agents/ and it's live." },
-                { icon: BrainCircuit, title: "Skills as Instructions", desc: "~140 reusable capabilities across finance, community, social, engineering, data, legal, HR, ops, product, CS \u2014 each one a markdown instruction set. Add, edit, or remove by editing text." },
+                { icon: BrainCircuit, title: "Skills as Instructions", desc: "150+ reusable capabilities across finance, community, social, engineering, data, legal, HR, ops, product, CS \u2014 each one a markdown instruction set. Add, edit, or remove by editing text." },
                 { icon: Layers, title: "Multi-Provider, No Lock-In", desc: "Default runs on Anthropic's native claude CLI, or swap to OpenRouter, OpenAI, Gemini, Bedrock, or Vertex AI via OpenClaude. One click in the Providers page \u2014 no code changes. Your keys, your model choice." },
                 { icon: Cpu, title: "MCP Integrations", desc: "Model Context Protocol connects agents to Google Calendar, Gmail, GitHub, Linear, Telegram, Canva, Notion, and more \u2014 with a standardized interface. First-class support built in." },
                 { icon: Terminal, title: "Slash Commands", desc: "Type /clawdia, /flux, /pulse, or /apex to activate agents instantly. Natural command interface directly in the terminal \u2014 no menus, no forms." },

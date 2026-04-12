@@ -1,4 +1,4 @@
-# Skills (~137 skills, business + engineering layers)
+# Skills (150+ skills, business + engineering layers)
 
 Organized by prefix — see `.claude/skills/CLAUDE.md` for the full index.
 

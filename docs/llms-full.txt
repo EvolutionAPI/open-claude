@@ -1541,7 +1541,7 @@ EvoNexus organizes 38 agents in **two ortogonal layers**: a Business Layer (17 a
 │   └──────────────────────────┬─────────────────────────────────┘    │
 │                              │                                       │
 │   ┌──────────────────────────┴─────────────────────────────────┐    │
-│   │  Skills (~137)                                              │    │
+│   │  Skills (150+)                                              │    │
 │   │  Business: fin- / social- / int- / hr- / legal- / pm- /... │    │
 │   │  Engineering: dev-* (25 skills, 3 tiers)                   │    │
 │   └──────────────────────────┬─────────────────────────────────┘    │
@@ -1588,7 +1588,7 @@ Skills are domain-specific instructions that teach Claude how to perform specifi
 | `pulse-` | Community | 4 |
 | `sage-` | Strategy | 3 |
 
-> **Note:** `evo-` skills (~45) are maintained in the separate [EVO-METHOD](https://github.com/EvolutionAPI/EVO-METHOD) project. They are gitignored from this repo but work normally if installed locally. The repo ships ~130 non-evo skills.
+> **Note:** `evo-` skills (~45) are maintained in the separate [EVO-METHOD](https://github.com/EvolutionAPI/EVO-METHOD) project. They are gitignored from this repo but work normally if installed locally. The repo ships 150+ non-evo skills.
 
 ### Routines (`ADWs/routines/`)
 
@@ -2360,7 +2360,7 @@ After the plan is ready, you can invoke individual agents:
 ## Next Steps
 
 - Read [Architecture](architecture.md) to understand how agents, skills, and routines work together
-- Browse `.claude/skills/CLAUDE.md` for the full skill index (~130 skills)
+- Browse `.claude/skills/CLAUDE.md` for the full skill index (150+ skills)
 - Check `ROUTINES.md` for routine documentation
 - Customize `config/routines.yaml` to adjust schedules
 
@@ -5686,7 +5686,7 @@ A scheduler runs routines on a daily, weekly, and monthly cadence. Cross-layer h
 
 ### Skills
 
-~130 reusable capabilities organized by prefix (`fin-`, `social-`, `int-`, `prod-`, `hr-`, `legal-`, `ops-`, `cs-`, `data-`, `pm-`, `mkt-`, etc.). Skills are markdown files that teach agents how to perform specific tasks — no plugins, no code.
+150+ reusable capabilities organized by prefix (`fin-`, `social-`, `int-`, `prod-`, `hr-`, `legal-`, `ops-`, `cs-`, `data-`, `pm-`, `mkt-`, etc.). Skills are markdown files that teach agents how to perform specific tasks — no plugins, no code.
 
 ### Routines
 
@@ -7315,7 +7315,7 @@ A skill is a directory in `.claude/skills/` containing a `SKILL.md` file with:
 
 Skills are organized by prefix:
 
-The repo ships **~137 skills** total: **~112 business skills** + **25 engineering skills (`dev-*`)**.
+The repo ships **150+ skills** total: **~125 business skills** + **25 engineering skills (`dev-*`)**.
 
 ### Business Layer skills
 

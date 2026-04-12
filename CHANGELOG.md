@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] - 2026-04-11
+
+### Changed
+
+- **Brand refresh — new EvoNexus logo** — `public/EVO_NEXUS.png` is now the canonical brand asset. `public/cover.svg` has the old `<text>Evo Nexus</text>` replaced by an embedded base64 `<image>` of the new logo, so the README banner renders the real brand mark in any viewer without external dependencies. Copies of `EVO_NEXUS.png` also live at `site/public/assets/EVO_NEXUS.png` and `dashboard/frontend/public/EVO_NEXUS.png` so the site and dashboard can serve it directly.
+- **`site/src/pages/Home.tsx` — nav header** — the top navigation now shows only the EvoNexus PNG logo (`@assets/EVO_NEXUS.png`). The legacy Evolution logo (`@assets/logo.png`) and the duplicate `<span>Evo</span><span>Nexus</span>` text that sat next to it were both removed from the header — Evolution branding remains on the case-study card and the footer where it belongs.
+- **`dashboard/frontend/src/components/Sidebar.tsx` — sidebar header** — the two-tone `<h1><span>Evo</span><span>Nexus</span></h1>` heading was replaced by `<img src="/EVO_NEXUS.png" className="h-8 w-auto" />`, matching the new brand.
+- **Skill count bumped to 150+ across every source of truth** — `README.md` (4 spots: intro bullet, Key Features list, dashboard table, folder tree), `public/cover.svg` (badge), `.claude/rules/skills.md` (header), `docs/introduction.md`, `docs/architecture.md` (ASCII diagram + evo-skills note), `docs/skills/overview.md`, `docs/getting-started.md`, and `site/src/pages/Home.tsx` (4 spots: hero paragraph, stat card, feature tile, "Skills as Instructions" description). Previous counts of `~137`, `~140`, `137+`, `~130` all normalized to `150+`. `docs/llms-full.txt` regenerated via `make docs-build` to pick up the new numbers.
+
 ## [0.15.0] - 2026-04-11
 
 ### Added

@@ -23,7 +23,7 @@ A skill is a directory in `.claude/skills/` containing a `SKILL.md` file with:
 
 Skills are organized by prefix:
 
-The repo ships **~137 skills** total: **~112 business skills** + **25 engineering skills (`dev-*`)**.
+The repo ships **150+ skills** total: **~125 business skills** + **25 engineering skills (`dev-*`)**.
 
 ### Business Layer skills
 

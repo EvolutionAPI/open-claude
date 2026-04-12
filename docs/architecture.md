@@ -26,7 +26,7 @@ EvoNexus organizes 38 agents in **two ortogonal layers**: a Business Layer (17 a
 │   └──────────────────────────┬─────────────────────────────────┘    │
 │                              │                                       │
 │   ┌──────────────────────────┴─────────────────────────────────┐    │
-│   │  Skills (~137)                                              │    │
+│   │  Skills (150+)                                              │    │
 │   │  Business: fin- / social- / int- / hr- / legal- / pm- /... │    │
 │   │  Engineering: dev-* (25 skills, 3 tiers)                   │    │
 │   └──────────────────────────┬─────────────────────────────────┘    │
@@ -73,7 +73,7 @@ Skills are domain-specific instructions that teach Claude how to perform specifi
 | `pulse-` | Community | 4 |
 | `sage-` | Strategy | 3 |
 
-> **Note:** `evo-` skills (~45) are maintained in the separate [EVO-METHOD](https://github.com/EvolutionAPI/EVO-METHOD) project. They are gitignored from this repo but work normally if installed locally. The repo ships ~130 non-evo skills.
+> **Note:** `evo-` skills (~45) are maintained in the separate [EVO-METHOD](https://github.com/EvolutionAPI/EVO-METHOD) project. They are gitignored from this repo but work normally if installed locally. The repo ships 150+ non-evo skills.
 
 ### Routines (`ADWs/routines/`)
 

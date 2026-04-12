@@ -113,6 +113,6 @@ After the plan is ready, you can invoke individual agents:
 ## Next Steps
 
 - Read [Architecture](architecture.md) to understand how agents, skills, and routines work together
-- Browse `.claude/skills/CLAUDE.md` for the full skill index (~130 skills)
+- Browse `.claude/skills/CLAUDE.md` for the full skill index (150+ skills)
 - Check `ROUTINES.md` for routine documentation
 - Customize `config/routines.yaml` to adjust schedules
