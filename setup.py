@@ -120,13 +120,26 @@ def check_prerequisites():
         missing.append("npm")
 
     # uv (Python package manager)
-    # After install, uv lands in ~/.local/bin — add to PATH for re-check
+    # When running with sudo, install uv for BOTH root and the original user
+    # so that `su - $SUDO_USER -c 'uv sync'` works later
     home_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
     if home_bin not in os.environ.get("PATH", ""):
         os.environ["PATH"] = f"{home_bin}:{os.environ.get('PATH', '')}"
-    if not _check_tool("uv", ["uv", "--version"],
-                        install_cmd="curl -LsSf https://astral.sh/uv/install.sh | sh"):
-        missing.append("uv")
+    _sudo_user_uv = os.environ.get("SUDO_USER", "")
+    if _sudo_user_uv and os.getuid() == 0:
+        # Install for the original user (services run as this user)
+        if not _check_tool("uv", ["uv", "--version"],
+                            install_cmd=f"su - {_sudo_user_uv} -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'"):
+            missing.append("uv")
+        # Also ensure root has uv in PATH for the rest of setup
+        user_home = subprocess.run(["getent", "passwd", _sudo_user_uv], capture_output=True, text=True).stdout.split(":")[5] if _sudo_user_uv else ""
+        user_uv = os.path.join(user_home, ".local", "bin") if user_home else ""
+        if user_uv and user_uv not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{user_uv}:{os.environ.get('PATH', '')}"
+    else:
+        if not _check_tool("uv", ["uv", "--version"],
+                            install_cmd="curl -LsSf https://astral.sh/uv/install.sh | sh"):
+            missing.append("uv")
 
     # Claude Code CLI
     if not _check_tool("Claude Code CLI", ["claude", "--version"],
@@ -758,9 +771,9 @@ def main():
     print(f"  {DIM}Installing Python dependencies...{RESET}")
     _sudo_user = os.environ.get("SUDO_USER", "")
     if _sudo_user and os.getuid() == 0:
-        os.system(f"su - {_sudo_user} -c 'cd {WORKSPACE} && uv sync -q 2>/dev/null'")
+        os.system(f"su - {_sudo_user} -c 'cd {WORKSPACE} && uv sync -q'")
     else:
-        os.system(f"cd {WORKSPACE} && uv sync -q 2>/dev/null")
+        os.system(f"cd {WORKSPACE} && uv sync -q")
     print(f"  {GREEN}✓{RESET} Installed Python dependencies")
 
     # Dashboard build
