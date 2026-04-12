@@ -137,6 +137,15 @@ class ClaudeBridge {
       // Reload provider config fresh on every session start
       // so switching provider in the dashboard takes effect immediately
       const providerConfig = this._loadProviderConfig();
+
+      // Block session if no provider is active
+      if (!providerConfig.active || providerConfig.active === 'none') {
+        const msg = '\r\n\x1b[1;33mNo AI provider is active.\x1b[0m\r\nGo to \x1b[1;32mProviders\x1b[0m in the dashboard to configure and activate a provider.\r\n';
+        if (onOutput) onOutput(msg);
+        if (onExit) onExit(1, null);
+        return;
+      }
+
       const cliCommand = this.findClaudeCommand(providerConfig.cli_command);
 
       console.log(`Starting session ${sessionId} with ${providerConfig.cli_command}`);

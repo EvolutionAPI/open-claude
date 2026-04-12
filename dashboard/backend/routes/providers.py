@@ -246,14 +246,15 @@ def get_active_provider():
 @bp.route("/api/providers/active", methods=["POST"])
 @login_required
 def set_active_provider():
-    """Set the active provider."""
+    """Set the active provider. Use provider_id='none' to disable all."""
     data = request.get_json(silent=True) or {}
     provider_id = data.get("provider_id")
-    if not provider_id:
+    if provider_id is None:
         return jsonify({"error": "provider_id is required"}), 400
 
     config = _read_config()
-    if provider_id not in config.get("providers", {}):
+    # Allow "none" to disable all providers
+    if provider_id != "none" and provider_id not in config.get("providers", {}):
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
     config["active_provider"] = provider_id

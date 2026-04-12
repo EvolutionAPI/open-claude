@@ -1,88 +1,62 @@
 import { useEffect, useState } from 'react'
-import {
-  CheckCircle2,
-  AlertCircle,
-  Download,
-  Star,
-  RefreshCw,
-  Settings2,
-  X,
-  Zap,
-  TestTube2,
-} from 'lucide-react'
+import { CheckCircle2, AlertCircle, RefreshCw, X } from 'lucide-react'
 import { api } from '../lib/api'
 
-interface ProviderEnvVars {
-  [key: string]: string
-}
+interface ProviderEnvVars { [key: string]: string }
 
 interface Provider {
-  id: string
-  name: string
-  description: string
-  cli_command: string
-  is_active: boolean
-  installed: boolean
-  version: string | null
-  path: string | null
-  has_config: boolean
-  env_vars: ProviderEnvVars
-  requires_logout: boolean
-  setup_hint: string | null
-  default_model: string | null
-  default_base_url: string | null
-  default_region: string | null
+  id: string; name: string; description: string; cli_command: string
+  is_active: boolean; installed: boolean; version: string | null; path: string | null
+  has_config: boolean; env_vars: ProviderEnvVars; requires_logout: boolean
+  setup_hint: string | null; default_model: string | null
+  default_base_url: string | null; default_region: string | null
 }
 
 interface ProvidersResponse {
-  providers: Provider[]
-  active_provider: string
-  claude_installed: boolean
-  openclaude_installed: boolean
+  providers: Provider[]; active_provider: string
+  claude_installed: boolean; openclaude_installed: boolean
 }
 
-// Env var display names
 const ENV_VAR_LABELS: Record<string, string> = {
-  CLAUDE_CODE_USE_OPENAI: 'Use OpenAI (flag)',
-  CLAUDE_CODE_USE_GEMINI: 'Use Gemini (flag)',
-  CLAUDE_CODE_USE_BEDROCK: 'Use Bedrock (flag)',
-  CLAUDE_CODE_USE_VERTEX: 'Use Vertex (flag)',
-  OPENAI_BASE_URL: 'Base URL',
-  OPENAI_API_KEY: 'API Key',
-  OPENAI_MODEL: 'Model',
-  GEMINI_API_KEY: 'API Key',
-  GEMINI_MODEL: 'Model',
-  AWS_REGION: 'AWS Region',
-  AWS_BEARER_TOKEN_BEDROCK: 'Bearer Token',
-  ANTHROPIC_VERTEX_PROJECT_ID: 'GCP Project ID',
+  CLAUDE_CODE_USE_OPENAI: 'Use OpenAI (flag)', CLAUDE_CODE_USE_GEMINI: 'Use Gemini (flag)',
+  CLAUDE_CODE_USE_BEDROCK: 'Use Bedrock (flag)', CLAUDE_CODE_USE_VERTEX: 'Use Vertex (flag)',
+  OPENAI_BASE_URL: 'Base URL', OPENAI_API_KEY: 'API Key', OPENAI_MODEL: 'Model',
+  GEMINI_API_KEY: 'API Key', GEMINI_MODEL: 'Model', AWS_REGION: 'AWS Region',
+  AWS_BEARER_TOKEN_BEDROCK: 'Bearer Token', ANTHROPIC_VERTEX_PROJECT_ID: 'GCP Project ID',
   CLOUD_ML_REGION: 'Region',
 }
 
-// Provider accent colors
 const PROVIDER_COLORS: Record<string, string> = {
-  anthropic: '#D4A574',
-  openrouter: '#6366F1',
-  openai: '#10A37F',
-  gemini: '#4285F4',
-  codex_auth: '#10A37F',
-  bedrock: '#FF9900',
-  vertex: '#4285F4',
+  anthropic: '#D4A574', openrouter: '#6366F1', openai: '#10A37F',
+  gemini: '#4285F4', codex_auth: '#10A37F', bedrock: '#FF9900', vertex: '#4285F4',
 }
 
-function getColor(id: string) {
-  return PROVIDER_COLORS[id] || '#8b949e'
-}
+function isFlag(key: string) { return key.startsWith('CLAUDE_CODE_USE_') }
+function isSecret(key: string) { return key.includes('KEY') || key.includes('SECRET') || key.includes('TOKEN') }
 
-function isFlag(key: string) {
-  return key.startsWith('CLAUDE_CODE_USE_')
-}
-
-function isSecret(key: string) {
-  return key.includes('KEY') || key.includes('SECRET') || key.includes('TOKEN')
+/* ── Toggle switch ── */
+function Toggle({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00FFA7] disabled:opacity-40 disabled:cursor-not-allowed ${
+        on ? 'bg-[#00FFA7]' : 'bg-[#1e2a3a]'
+      }`}
+    >
+      <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transform transition-transform duration-200 translate-y-0.5 ${
+        on ? 'translate-x-[18px]' : 'translate-x-[2px]'
+      }`} />
+    </button>
+  )
 }
 
 export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([])
+  const [activeProvider, setActiveProvider] = useState('anthropic')
   const [loading, setLoading] = useState(true)
   const [configOpen, setConfigOpen] = useState<string | null>(null)
   const [editVars, setEditVars] = useState<ProviderEnvVars>({})
@@ -100,52 +74,39 @@ export default function Providers() {
   const [authMessage, setAuthMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [deviceCode, setDeviceCode] = useState<{ user_code: string; verification_url: string; interval: number; expires_in: number } | null>(null)
   const [devicePolling, setDevicePolling] = useState(false)
+  const [toggling, setToggling] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
-    api
-      .get('/providers')
-      .then((data: ProvidersResponse) => {
-        setProviders(data.providers || [])
-        setClaudeInstalled(data.claude_installed)
-        setOpenclaudeInstalled(data.openclaude_installed)
-      })
-      .catch(() => setProviders([]))
-      .finally(() => setLoading(false))
+    api.get('/providers').then((data: ProvidersResponse) => {
+      setProviders(data.providers || [])
+      setActiveProvider(data.active_provider || 'none')
+      setClaudeInstalled(data.claude_installed)
+      setOpenclaudeInstalled(data.openclaude_installed)
+    }).catch(() => setProviders([])).finally(() => setLoading(false))
   }
 
-  useEffect(() => {
-    load()
-    loadCodexAuth()
-    const params = new URLSearchParams(window.location.search)
-    if (params.get('auth') === 'success') {
-      window.history.replaceState({}, '', '/providers')
-      loadCodexAuth()
-    }
-  }, [])
-
+  useEffect(() => { load(); loadCodexAuth() }, [])
   useEffect(() => {
     if (!devicePolling) return
     const timer = setInterval(pollDeviceAuth, 5000)
     return () => clearInterval(timer)
   }, [devicePolling])
 
-  const handleActivate = async (id: string) => {
+  const handleToggle = async (id: string, turnOn: boolean) => {
+    setToggling(id)
     try {
-      await api.post('/providers/active', { provider_id: id })
+      await api.post('/providers/active', { provider_id: turnOn ? id : 'none' })
       load()
-    } catch (e) {
-      console.error(e)
-    }
+    } catch (e) { console.error(e) }
+    finally { setToggling(null) }
   }
 
   const openConfig = (prov: Provider) => {
-    // Load real env var values (API will return masked values for secrets)
     setConfigOpen(prov.id)
-    // Initialize with current values, replacing masked with empty for editing
     const vars: ProviderEnvVars = {}
     for (const [k, v] of Object.entries(prov.env_vars)) {
-      if (isFlag(k)) continue // Skip flags — they're automatic
+      if (isFlag(k)) continue
       vars[k] = v.includes('****') ? '' : v
     }
     setEditVars(vars)
@@ -155,344 +116,168 @@ export default function Providers() {
     if (!configOpen) return
     setSaving(true)
     try {
-      // Find the provider to get defaults
       const prov = providers.find(p => p.id === configOpen)
       const finalVars = { ...editVars }
-
-      // Auto-fill defaults if empty
-      if (prov?.default_base_url && !finalVars.OPENAI_BASE_URL) {
-        finalVars.OPENAI_BASE_URL = prov.default_base_url
-      }
+      if (prov?.default_base_url && !finalVars.OPENAI_BASE_URL) finalVars.OPENAI_BASE_URL = prov.default_base_url
       if (prov?.default_model) {
-        const modelKey = Object.keys(finalVars).find(k => k.includes('MODEL'))
-        if (modelKey && !finalVars[modelKey]) {
-          finalVars[modelKey] = prov.default_model
-        }
+        const mk = Object.keys(finalVars).find(k => k.includes('MODEL'))
+        if (mk && !finalVars[mk]) finalVars[mk] = prov.default_model
       }
-
-      // Save env vars
       await api.post(`/providers/${configOpen}/config`, { env_vars: finalVars })
-      // Activate as the current provider
       await api.post('/providers/active', { provider_id: configOpen })
       setConfigOpen(null)
       load()
-    } catch (e) {
-      console.error(e)
-    } finally {
-      setSaving(false)
-    }
+    } catch (e) { console.error(e) } finally { setSaving(false) }
   }
 
   const handleTest = async (id: string) => {
     setTesting(id)
     try {
       const result = await api.post(`/providers/${id}/test`) as any
-      setTestResults(prev => ({
-        ...prev,
-        [id]: {
-          success: result.success,
-          message: result.success
-            ? `${result.cli} ${result.version}`
-            : result.error || 'Test failed',
-        },
-      }))
-    } catch (e) {
-      setTestResults(prev => ({ ...prev, [id]: { success: false, message: 'Request failed' } }))
-    } finally {
-      setTesting(null)
-    }
+      setTestResults(prev => ({ ...prev, [id]: { success: result.success, message: result.success ? `${result.cli} ${result.version}` : result.error || 'Test failed' } }))
+    } catch { setTestResults(prev => ({ ...prev, [id]: { success: false, message: 'Request failed' } })) }
+    finally { setTesting(null) }
   }
 
-  const loadCodexAuth = () => {
-    api.get('/providers/openai/status').then((d: any) => setCodexAuth(d)).catch(() => setCodexAuth(null))
-  }
+  const loadCodexAuth = () => { api.get('/providers/openai/status').then((d: any) => setCodexAuth(d)).catch(() => setCodexAuth(null)) }
+  const startBrowserAuth = async () => { setAuthLoading(true); setAuthMessage(null); try { const d = await api.post('/providers/openai/auth-start') as any; setAuthUrl(d.authorize_url) } catch { setAuthMessage({ type: 'error', text: 'Failed to start auth' }) } finally { setAuthLoading(false) } }
+  const completeBrowserAuth = async () => { if (!callbackUrl.includes('code=')) { setAuthMessage({ type: 'error', text: 'Invalid URL - must contain ?code=' }); return }; setAuthLoading(true); try { const r = await api.post('/providers/openai/auth-complete', { callback_url: callbackUrl }) as any; if (r.status === 'ok') { setAuthMessage({ type: 'success', text: r.message || 'Authenticated' }); setAuthModal(false); loadCodexAuth(); load() } else { setAuthMessage({ type: 'error', text: r.error || 'Auth failed' }) } } catch { setAuthMessage({ type: 'error', text: 'Auth error' }) } finally { setAuthLoading(false) } }
+  const startDeviceAuth = async () => { setAuthLoading(true); setAuthMessage(null); try { const d = await api.post('/providers/openai/device-start') as any; if (d.error) setAuthMessage({ type: 'error', text: d.error }); else { setDeviceCode(d); setDevicePolling(true) } } catch { setAuthMessage({ type: 'error', text: 'Device auth not available' }) } finally { setAuthLoading(false) } }
+  const pollDeviceAuth = async () => { try { const r = await api.post('/providers/openai/device-poll') as any; if (r.status === 'authorized') { setDevicePolling(false); setDeviceCode(null); setAuthModal(false); loadCodexAuth(); load() } } catch {} }
+  const handleOpenAILogout = async () => { try { await api.post('/providers/openai/logout'); setCodexAuth({ authenticated: false }); load() } catch {} }
 
-  const startBrowserAuth = async () => {
-    setAuthLoading(true)
-    setAuthMessage(null)
-    try {
-      const data = await api.post('/providers/openai/auth-start') as any
-      setAuthUrl(data.authorize_url)
-      setAuthLoading(false)
-    } catch (e) {
-      setAuthMessage({ type: 'error', text: 'Falha ao iniciar autenticacao' })
-      setAuthLoading(false)
-    }
-  }
-
-  const completeBrowserAuth = async () => {
-    if (!callbackUrl.includes('code=')) {
-      setAuthMessage({ type: 'error', text: 'URL invalida - deve conter ?code=' })
-      return
-    }
-    setAuthLoading(true)
-    try {
-      const result = await api.post('/providers/openai/auth-complete', { callback_url: callbackUrl }) as any
-      if (result.status === 'ok') {
-        setAuthMessage({ type: 'success', text: result.message || 'Autenticado!' })
-        setAuthModal(false)
-        loadCodexAuth()
-        load()
-      } else {
-        setAuthMessage({ type: 'error', text: result.error || 'Falha na autenticacao' })
-      }
-    } catch (e: any) {
-      setAuthMessage({ type: 'error', text: 'Erro ao completar autenticacao' })
-    } finally {
-      setAuthLoading(false)
-    }
-  }
-
-  const startDeviceAuth = async () => {
-    setAuthLoading(true)
-    setAuthMessage(null)
-    try {
-      const data = await api.post('/providers/openai/device-start') as any
-      if (data.error) {
-        setAuthMessage({ type: 'error', text: data.error })
-      } else {
-        setDeviceCode(data)
-        setDevicePolling(true)
-      }
-    } catch (e) {
-      setAuthMessage({ type: 'error', text: 'Device auth nao disponivel para sua organizacao' })
-    } finally {
-      setAuthLoading(false)
-    }
-  }
-
-  const pollDeviceAuth = async () => {
-    try {
-      const result = await api.post('/providers/openai/device-poll') as any
-      if (result.status === 'authorized') {
-        setDevicePolling(false)
-        setDeviceCode(null)
-        setAuthModal(false)
-        setAuthMessage({ type: 'success', text: 'Autenticado com sucesso!' })
-        loadCodexAuth()
-        load()
-      }
-    } catch {
-      // Keep polling
-    }
-  }
-
-  const handleOpenAILogout = async () => {
-    try {
-      await api.post('/providers/openai/logout')
-      setCodexAuth({ authenticated: false })
-      load()
-    } catch (e) {
-      console.error(e)
-    }
-  }
-
-  const activeCount = providers.filter(p => p.is_active).length
   const configuredCount = providers.filter(p => p.has_config && p.installed).length
+  const hasActive = activeProvider !== 'none' && providers.some(p => p.id === activeProvider)
+
+  const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20 font-mono"
+  const lbl = "block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase"
 
   return (
-    <div className="max-w-[1400px] mx-auto">
+    <div className="max-w-[1200px] mx-auto font-[Inter,-apple-system,sans-serif]">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Providers</h1>
-        <p className="text-[#667085] text-sm mt-1">
-          Configure which AI provider powers EvoNexus — Anthropic (native), OpenRouter, OpenAI, Gemini, and more
-        </p>
+      <div className="mb-6">
+        <h1 className="text-xl font-bold text-white tracking-tight">Providers</h1>
+        <p className="text-[#5a6b7f] text-sm mt-1">Configure and activate AI providers for your workspace</p>
       </div>
 
-      {/* Install status banner */}
+      {/* Status bar */}
       {!loading && (
-        <div className="flex flex-wrap gap-3 mb-6">
-          <span className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${
-            claudeInstalled
-              ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/25'
-              : 'bg-red-500/10 text-red-400 border-red-500/25'
-          }`}>
-            {claudeInstalled ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-            claude {claudeInstalled ? 'installed' : 'not found'}
-          </span>
-          <span className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border ${
-            openclaudeInstalled
-              ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/25'
-              : 'bg-[#FBBF24]/10 text-[#FBBF24] border-[#FBBF24]/25'
-          }`}>
-            {openclaudeInstalled ? <CheckCircle2 size={12} /> : <Download size={12} />}
-            openclaude {openclaudeInstalled ? 'installed' : (
-              <span className="text-[#667085]">
-                — <code className="text-[#8b949e]">npm install -g @gitlawb/openclaude</code>
-              </span>
-            )}
-          </span>
+        <div className="flex items-center gap-5 mb-6 px-4 py-3 rounded-lg border border-[#152030] bg-[#0b1018]">
+          <div className="flex items-center gap-4 text-[11px] tracking-wide uppercase text-[#5a6b7f]">
+            <span className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${claudeInstalled ? 'bg-[#00FFA7]' : 'bg-[#ef4444]'}`} />
+              claude {claudeInstalled ? '' : '(missing)'}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${openclaudeInstalled ? 'bg-[#00FFA7]' : 'bg-[#5a6b7f]'}`} />
+              openclaude {openclaudeInstalled ? '' : '(missing)'}
+            </span>
+          </div>
+          <div className="ml-auto flex items-center gap-4 text-[11px] tracking-wide uppercase text-[#5a6b7f]">
+            <span>{providers.length} available</span>
+            <span>{configuredCount} configured</span>
+            <span className={hasActive ? 'text-[#00FFA7]' : 'text-[#ef4444]'}>
+              {hasActive ? '1 active' : 'none active'}
+            </span>
+          </div>
         </div>
       )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        {loading ? (
-          <>
-            <div className="skeleton h-20 rounded-2xl" />
-            <div className="skeleton h-20 rounded-2xl" />
-            <div className="skeleton h-20 rounded-2xl" />
-          </>
-        ) : (
-          <>
-            <div className="bg-[#161b22] border border-[#21262d] rounded-2xl p-4">
-              <p className="text-2xl font-bold text-[#e6edf3]">{providers.length}</p>
-              <p className="text-sm text-[#667085]">Available</p>
-            </div>
-            <div className="bg-[#161b22] border border-[#21262d] rounded-2xl p-4">
-              <p className="text-2xl font-bold text-[#e6edf3]">{configuredCount}</p>
-              <p className="text-sm text-[#667085]">Configured</p>
-            </div>
-            <div className="bg-[#161b22] border border-[#21262d] rounded-2xl p-4">
-              <p className="text-2xl font-bold text-[#00FFA7]">{activeCount}</p>
-              <p className="text-sm text-[#667085]">Active</p>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Provider Cards */}
+      {/* Provider list */}
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="skeleton h-48 rounded-xl" />
-          ))}
+        <div className="space-y-3">
+          {[...Array(3)].map((_, i) => <div key={i} className="h-20 rounded-lg bg-[#0b1018] border border-[#152030] animate-pulse" />)}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="space-y-2">
           {providers.map((prov) => {
-            const color = getColor(prov.id)
+            const color = PROVIDER_COLORS[prov.id] || '#5a6b7f'
             const isInstalled = prov.cli_command === 'claude' ? claudeInstalled : openclaudeInstalled
+            const isActive = prov.is_active && activeProvider === prov.id
 
             return (
-              <div
-                key={prov.id}
-                className={`group relative rounded-xl border bg-[#161b22] p-5 transition-all duration-300 ${
-                  prov.is_active
-                    ? 'border-[#00FFA7]/40 shadow-[0_0_20px_rgba(0,255,167,0.08)]'
-                    : 'border-[#21262d] hover:border-[#30363d]'
+              <div key={prov.id}
+                className={`rounded-lg border bg-[#0b1018] transition-colors ${
+                  isActive ? 'border-[#00FFA7]/30' : 'border-[#152030] hover:border-[#1e2a3a]'
                 }`}
               >
-                {/* Active indicator */}
-                {prov.is_active && (
-                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#00FFA7]/50 to-transparent rounded-t-xl" />
-                )}
+                <div className="flex items-center gap-4 px-5 py-4">
+                  {/* Color dot */}
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
 
-                {/* Header */}
-                <div className="flex items-start justify-between mb-3">
-                  <div>
+                  {/* Info */}
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: color }}
-                      />
-                      <h3 className="text-base font-semibold text-[#e6edf3]">{prov.name}</h3>
-                    </div>
-                    <p className="text-xs text-[#667085] mt-1">{prov.description}</p>
-                  </div>
-                  {prov.is_active && (
-                    <span className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/25 whitespace-nowrap">
-                      <Star size={9} /> Active
-                    </span>
-                  )}
-                </div>
-
-                {/* CLI badge */}
-                <div className="flex items-center gap-2 mb-3">
-                  <code className="text-[10px] px-2 py-0.5 rounded bg-[#0C111D] text-[#8b949e] border border-[#21262d]">
-                    {prov.cli_command}
-                  </code>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                    isInstalled
-                      ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/25'
-                      : 'bg-red-500/10 text-red-400 border-red-500/25'
-                  }`}>
-                    {isInstalled ? 'installed' : 'not found'}
-                  </span>
-                  {prov.has_config && Object.keys(prov.env_vars).length > 0 && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/25">
-                      configured
-                    </span>
-                  )}
-                </div>
-
-                {/* OpenAI Auth Section */}
-                {prov.id === 'openai' && isInstalled && (
-                  <div className="mb-3">
-                    {codexAuth?.authenticated ? (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/25">
-                          <CheckCircle2 size={10} /> Codex OAuth
+                      <h3 className="text-sm font-semibold text-white truncate">{prov.name}</h3>
+                      <code className="text-[9px] px-1.5 py-0.5 rounded bg-[#152030] text-[#5a6b7f] border border-[#1e2a3a] shrink-0">
+                        {prov.cli_command}
+                      </code>
+                      {!isInstalled && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#1a0a0a] text-[#f87171] border border-[#3a1515] shrink-0">
+                          not installed
                         </span>
-                        <button
-                          onClick={handleOpenAILogout}
-                          className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/25 hover:bg-red-500/20 transition-all"
-                        >
-                          Logout
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => { setAuthModal(true); setAuthMode('browser'); setAuthUrl(''); setCallbackUrl(''); setAuthMessage(null); setDeviceCode(null); setDevicePolling(false); startBrowserAuth() }}
-                        className="w-full flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg bg-[#10A37F]/15 text-[#10A37F] border border-[#10A37F]/30 hover:bg-[#10A37F]/25 hover:shadow-[0_0_16px_rgba(16,163,127,0.15)] transition-all font-medium"
-                      >
-                        <Zap size={14} />
-                        Login com OpenAI
+                      )}
+                    </div>
+                    <p className="text-[11px] text-[#3d4f65] mt-0.5 truncate">{prov.description}</p>
+                  </div>
+
+                  {/* OpenAI auth badge */}
+                  {prov.id === 'openai' && codexAuth?.authenticated && (
+                    <span className="text-[9px] px-2 py-0.5 rounded bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 shrink-0">
+                      OAuth
+                    </span>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* OpenAI login */}
+                    {prov.id === 'openai' && isInstalled && !codexAuth?.authenticated && (
+                      <button onClick={() => { setAuthModal(true); setAuthMode('browser'); setAuthUrl(''); setCallbackUrl(''); setAuthMessage(null); setDeviceCode(null); setDevicePolling(false); startBrowserAuth() }}
+                        className="text-[11px] px-3 py-1.5 rounded-md bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 hover:bg-[#10A37F]/20 transition-colors font-medium">
+                        Login
                       </button>
                     )}
+                    {prov.id === 'openai' && codexAuth?.authenticated && (
+                      <button onClick={handleOpenAILogout}
+                        className="text-[11px] px-2 py-1 rounded-md text-[#f87171] hover:bg-[#1a0a0a] transition-colors">
+                        Logout
+                      </button>
+                    )}
+
+                    {/* Configure */}
+                    <button onClick={() => openConfig(prov)}
+                      className="text-[11px] px-3 py-1.5 rounded-md text-[#5a6b7f] border border-[#1e2a3a] hover:text-[#8a9aae] hover:border-[#2e3a4a] transition-colors">
+                      Configure
+                    </button>
+
+                    {/* Test */}
+                    <button onClick={() => handleTest(prov.id)} disabled={testing === prov.id}
+                      className="text-[11px] px-3 py-1.5 rounded-md text-[#5a6b7f] border border-[#1e2a3a] hover:text-[#8a9aae] hover:border-[#2e3a4a] transition-colors disabled:opacity-40">
+                      {testing === prov.id ? <RefreshCw size={11} className="animate-spin" /> : 'Test'}
+                    </button>
+
+                    {/* Toggle switch */}
+                    <Toggle
+                      on={isActive}
+                      disabled={!isInstalled || toggling === prov.id}
+                      onChange={(on) => handleToggle(prov.id, on)}
+                    />
+                  </div>
+                </div>
+
+                {/* Test result */}
+                {testResults[prov.id] && (
+                  <div className={`mx-5 mb-3 px-3 py-1.5 rounded text-[10px] ${
+                    testResults[prov.id].success ? 'bg-[#00FFA7]/5 text-[#00FFA7]' : 'bg-[#1a0a0a] text-[#f87171]'
+                  }`}>
+                    {testResults[prov.id].message}
                   </div>
                 )}
 
                 {/* Logout warning */}
-                {prov.requires_logout && prov.is_active && (
-                  <p className="text-[10px] text-[#FBBF24] mb-3">
-                    Run <code>/logout</code> in Claude Code if you were previously logged into Anthropic
-                  </p>
-                )}
-
-                {/* Actions */}
-                <div className="flex items-center gap-2 mt-auto pt-3 border-t border-[#21262d]">
-                  <button
-                    onClick={() => openConfig(prov)}
-                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all"
-                  >
-                    <Settings2 size={12} />
-                    Configure
-                  </button>
-
-                  {!prov.is_active && isInstalled && (
-                    <button
-                      onClick={() => handleActivate(prov.id)}
-                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 transition-all"
-                    >
-                      <Zap size={12} />
-                      Activate
-                    </button>
-                  )}
-
-                  <button
-                    onClick={() => handleTest(prov.id)}
-                    disabled={testing === prov.id}
-                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all disabled:opacity-50"
-                  >
-                    {testing === prov.id ? (
-                      <RefreshCw size={12} className="animate-spin" />
-                    ) : (
-                      <TestTube2 size={12} />
-                    )}
-                    Test
-                  </button>
-                </div>
-
-                {/* Test result inline */}
-                {testResults[prov.id] && configOpen !== prov.id && testing !== prov.id && (
-                  <div className={`mt-2 text-[10px] px-2 py-1 rounded ${
-                    testResults[prov.id].success
-                      ? 'bg-[#00FFA7]/10 text-[#00FFA7]'
-                      : 'bg-red-500/10 text-red-400'
-                  }`}>
-                    {testResults[prov.id].message}
+                {prov.requires_logout && isActive && (
+                  <div className="mx-5 mb-3 px-3 py-1.5 rounded bg-[#1a1500] text-[10px] text-[#FBBF24]">
+                    Run /logout in Claude Code if you were previously logged into Anthropic
                   </div>
                 )}
               </div>
@@ -508,121 +293,70 @@ export default function Providers() {
         const editableVars = Object.entries(prov.env_vars).filter(([k]) => !isFlag(k))
 
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="w-full max-w-lg mx-4 bg-[#161b22] border border-[#21262d] rounded-2xl shadow-2xl">
-              {/* Modal header */}
-              <div className="flex items-center justify-between px-6 py-4 border-b border-[#21262d]">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="w-3 h-3 rounded-full"
-                    style={{ backgroundColor: getColor(prov.id) }}
-                  />
-                  <h2 className="text-lg font-semibold text-[#e6edf3]">
-                    Configure {prov.name}
-                  </h2>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+            <div className="w-full max-w-lg mx-4 rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-[#152030]">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PROVIDER_COLORS[prov.id] || '#5a6b7f' }} />
+                  <h2 className="text-sm font-semibold text-white">{prov.name}</h2>
                 </div>
-                <button
-                  onClick={() => setConfigOpen(null)}
-                  className="p-1 rounded-lg hover:bg-white/[0.08] text-[#667085] hover:text-white transition-colors"
-                >
-                  <X size={18} />
+                <button onClick={() => setConfigOpen(null)} className="p-1 rounded text-[#5a6b7f] hover:text-white transition-colors">
+                  <X size={16} />
                 </button>
               </div>
 
-              {/* Modal body */}
               <div className="px-6 py-5 space-y-4">
                 {editableVars.length === 0 ? (
-                  <p className="text-sm text-[#667085]">
-                    No configuration needed — uses native Claude Code authentication.
-                  </p>
+                  <p className="text-sm text-[#5a6b7f]">No configuration needed. Uses native Claude Code authentication.</p>
                 ) : (
                   editableVars.map(([key]) => (
                     <div key={key}>
-                      <label className="block text-xs font-medium text-[#8b949e] mb-1.5">
+                      <label className={lbl}>
                         {ENV_VAR_LABELS[key] || key}
-                        <span className="ml-1 text-[#667085] font-normal">({key})</span>
+                        <span className="ml-1 text-[#3d4f65] font-normal normal-case tracking-normal">({key})</span>
                       </label>
-                      <input
-                        type={isSecret(key) ? 'password' : 'text'}
-                        value={editVars[key] || ''}
+                      <input type={isSecret(key) ? 'password' : 'text'} value={editVars[key] || ''}
                         onChange={(e) => setEditVars(prev => ({ ...prev, [key]: e.target.value }))}
-                        placeholder={
-                          key === 'OPENAI_BASE_URL' ? (prov.default_base_url || 'https://...') :
-                          key.includes('MODEL') ? (prov.default_model || 'model-name') :
-                          key.includes('REGION') ? (prov.default_region || 'us-east-1') :
-                          key.includes('KEY') ? 'sk-...' :
-                          ''
-                        }
-                        className="w-full px-3 py-2 text-sm bg-[#0C111D] border border-[#21262d] rounded-lg text-[#e6edf3] placeholder-[#667085] focus:outline-none focus:border-[#00FFA7]/50 focus:ring-1 focus:ring-[#00FFA7]/20 transition-all font-mono"
-                      />
+                        placeholder={key.includes('KEY') ? 'sk-...' : key.includes('MODEL') ? (prov.default_model || '') : key.includes('URL') ? (prov.default_base_url || 'https://...') : ''}
+                        className={inp} autoComplete="off" />
                     </div>
                   ))
                 )}
 
-                {/* Defaults hint */}
                 {prov.default_model && (
-                  <p className="text-[10px] text-[#667085]">
-                    Default model: <code className="text-[#8b949e]">{prov.default_model}</code>
-                    {prov.default_base_url && (
-                      <> | Base URL: <code className="text-[#8b949e]">{prov.default_base_url}</code></>
-                    )}
+                  <p className="text-[10px] text-[#3d4f65]">
+                    Default model: <code className="text-[#5a6b7f]">{prov.default_model}</code>
+                    {prov.default_base_url && <> | URL: <code className="text-[#5a6b7f]">{prov.default_base_url}</code></>}
                   </p>
                 )}
 
-                {/* Setup hint */}
-                {prov.setup_hint && (
-                  <div className="rounded-lg bg-[#0C111D] border border-[#21262d] p-3">
-                    <p className="text-xs text-[#FBBF24]">{prov.setup_hint}</p>
-                  </div>
-                )}
-
-                {/* Logout warning */}
                 {prov.requires_logout && (
-                  <div className="rounded-lg bg-[#FBBF24]/5 border border-[#FBBF24]/20 p-3">
-                    <p className="text-xs text-[#FBBF24]">
-                      After activating, run <code className="font-bold">/logout</code> inside Claude Code
-                      if you were previously logged into Anthropic.
-                    </p>
+                  <div className="rounded-lg bg-[#1a1500] border border-[#3a2a00] p-3">
+                    <p className="text-xs text-[#FBBF24]">After activating, run <code className="font-bold">/logout</code> in Claude Code if previously logged into Anthropic.</p>
                   </div>
                 )}
 
-                {/* Test result */}
                 {testResults[prov.id] && (
-                  <div className={`rounded-lg p-3 text-xs ${
-                    testResults[prov.id].success
-                      ? 'bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/25'
-                      : 'bg-red-500/10 text-red-400 border border-red-500/25'
-                  }`}>
+                  <div className={`rounded-lg p-3 text-xs ${testResults[prov.id].success ? 'bg-[#00FFA7]/5 text-[#00FFA7]' : 'bg-[#1a0a0a] text-[#f87171]'}`}>
                     {testResults[prov.id].success ? <CheckCircle2 size={12} className="inline mr-1" /> : <AlertCircle size={12} className="inline mr-1" />}
                     {testResults[prov.id].message}
                   </div>
                 )}
               </div>
 
-              {/* Modal footer */}
-              <div className="flex items-center justify-between px-6 py-4 border-t border-[#21262d]">
-                <button
-                  onClick={() => handleTest(prov.id)}
-                  disabled={testing === prov.id}
-                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all disabled:opacity-50"
-                >
-                  {testing === prov.id ? <RefreshCw size={12} className="animate-spin" /> : <TestTube2 size={12} />}
-                  Test Connection
+              <div className="flex items-center justify-between px-6 py-4 border-t border-[#152030]">
+                <button onClick={() => handleTest(prov.id)} disabled={testing === prov.id}
+                  className="text-[11px] px-3 py-1.5 rounded-md text-[#5a6b7f] border border-[#1e2a3a] hover:text-[#8a9aae] hover:border-[#2e3a4a] transition-colors disabled:opacity-40">
+                  {testing === prov.id ? <RefreshCw size={11} className="animate-spin" /> : 'Test connection'}
                 </button>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setConfigOpen(null)}
-                    className="text-xs px-4 py-1.5 rounded-full bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all"
-                  >
+                  <button onClick={() => setConfigOpen(null)}
+                    className="text-[11px] px-4 py-1.5 rounded-md text-[#5a6b7f] border border-[#1e2a3a] hover:text-[#8a9aae] transition-colors">
                     Cancel
                   </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    className="flex items-center gap-1.5 text-xs px-4 py-1.5 rounded-full bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 transition-all disabled:opacity-50"
-                  >
-                    {saving ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
-                    Save & Activate
+                  <button onClick={handleSave} disabled={saving}
+                    className="text-[11px] px-4 py-1.5 rounded-md bg-[#00FFA7] text-[#080c14] font-semibold hover:bg-[#00e69a] transition-colors disabled:opacity-40">
+                    {saving ? 'Saving...' : 'Save & activate'}
                   </button>
                 </div>
               </div>
@@ -633,154 +367,81 @@ export default function Providers() {
 
       {/* OpenAI Auth Modal */}
       {authModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-lg mx-4 bg-[#161b22] border border-[#21262d] rounded-2xl shadow-2xl">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[#21262d]">
-              <h2 className="text-lg font-semibold text-[#e6edf3]">Conectar com OpenAI</h2>
-              <button onClick={() => { setAuthModal(false); setDevicePolling(false) }} className="p-1 rounded-lg hover:bg-white/[0.08] text-[#667085] hover:text-white transition-colors">
-                <X size={18} />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-lg mx-4 rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#152030]">
+              <h2 className="text-sm font-semibold text-white">Connect to OpenAI</h2>
+              <button onClick={() => { setAuthModal(false); setDevicePolling(false) }} className="p-1 rounded text-[#5a6b7f] hover:text-white transition-colors">
+                <X size={16} />
               </button>
             </div>
 
-            {/* Tabs */}
-            <div className="flex border-b border-[#21262d]">
-              <button
-                onClick={() => { setAuthMode('browser'); if (!authUrl) startBrowserAuth() }}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${authMode === 'browser' ? 'text-[#10A37F] border-b-2 border-[#10A37F]' : 'text-[#667085] hover:text-[#8b949e]'}`}
-              >
+            <div className="flex border-b border-[#152030]">
+              <button onClick={() => { setAuthMode('browser'); if (!authUrl) startBrowserAuth() }}
+                className={`flex-1 py-2.5 text-[11px] font-medium tracking-wide uppercase transition-colors ${authMode === 'browser' ? 'text-[#10A37F] border-b-2 border-[#10A37F]' : 'text-[#5a6b7f]'}`}>
                 Browser OAuth
               </button>
-              <button
-                onClick={() => { setAuthMode('device'); if (!deviceCode) startDeviceAuth() }}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors ${authMode === 'device' ? 'text-[#10A37F] border-b-2 border-[#10A37F]' : 'text-[#667085] hover:text-[#8b949e]'}`}
-              >
+              <button onClick={() => { setAuthMode('device'); if (!deviceCode) startDeviceAuth() }}
+                className={`flex-1 py-2.5 text-[11px] font-medium tracking-wide uppercase transition-colors ${authMode === 'device' ? 'text-[#10A37F] border-b-2 border-[#10A37F]' : 'text-[#5a6b7f]'}`}>
                 Device Auth
               </button>
             </div>
 
-            {/* Body */}
             <div className="px-6 py-5 space-y-4">
               {authMode === 'browser' ? (
-                <>
-                  {authUrl ? (
-                    <>
-                      <div className="space-y-3">
-                        <p className="text-sm text-[#8b949e]">
-                          <span className="text-[#e6edf3] font-medium">1.</span> Clique no link abaixo para abrir o login do OpenAI:
-                        </p>
-                        <a
-                          href={authUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block text-center py-2 px-4 rounded-lg bg-[#10A37F]/15 text-[#10A37F] border border-[#10A37F]/30 hover:bg-[#10A37F]/25 transition-all text-sm font-medium"
-                        >
-                          Abrir OpenAI Login
-                        </a>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-sm text-[#8b949e]">
-                          <span className="text-[#e6edf3] font-medium">2.</span> Autorize o acesso na pagina do OpenAI.
-                        </p>
-                        <p className="text-sm text-[#8b949e]">
-                          <span className="text-[#e6edf3] font-medium">3.</span> Apos autorizar, o browser vai mostrar uma pagina de erro. <span className="text-[#FBBF24]">Isso e normal!</span> Copie a URL completa da barra de enderecos:
-                        </p>
-                        <input
-                          type="text"
-                          value={callbackUrl}
-                          onChange={(e) => setCallbackUrl(e.target.value)}
-                          placeholder="http://localhost:1455/auth/callback?code=..."
-                          className="w-full px-3 py-2 text-sm bg-[#0C111D] border border-[#21262d] rounded-lg text-[#e6edf3] placeholder-[#667085] focus:outline-none focus:border-[#10A37F]/50 focus:ring-1 focus:ring-[#10A37F]/20 transition-all font-mono"
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex items-center justify-center py-8">
-                      <RefreshCw size={20} className="animate-spin text-[#667085]" />
-                      <span className="ml-2 text-sm text-[#667085]">Gerando link de autenticacao...</span>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  {deviceCode ? (
-                    <div className="space-y-4">
-                      <p className="text-sm text-[#8b949e]">
-                        <span className="text-[#e6edf3] font-medium">1.</span> Abra este link:
-                      </p>
-                      <a
-                        href={deviceCode.verification_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block text-center py-2 px-4 rounded-lg bg-[#10A37F]/15 text-[#10A37F] border border-[#10A37F]/30 hover:bg-[#10A37F]/25 transition-all text-sm font-medium"
-                      >
-                        {deviceCode.verification_url}
+                authUrl ? (
+                  <>
+                    <div className="space-y-3">
+                      <p className="text-xs text-[#5a6b7f]"><span className="text-white font-medium">1.</span> Open this link to login:</p>
+                      <a href={authUrl} target="_blank" rel="noopener noreferrer"
+                        className="block text-center py-2 rounded-md bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 hover:bg-[#10A37F]/20 transition-colors text-sm font-medium">
+                        Open OpenAI Login
                       </a>
-                      <p className="text-sm text-[#8b949e]">
-                        <span className="text-[#e6edf3] font-medium">2.</span> Digite o codigo:
-                      </p>
-                      <div className="flex items-center gap-3 justify-center">
-                        <code className="text-2xl font-bold text-[#e6edf3] tracking-[0.2em] bg-[#0C111D] px-6 py-3 rounded-xl border border-[#21262d]">
-                          {deviceCode.user_code}
-                        </code>
-                        <button
-                          onClick={() => navigator.clipboard.writeText(deviceCode.user_code)}
-                          className="p-2 rounded-lg bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all"
-                          title="Copiar"
-                        >
-                          <CheckCircle2 size={14} />
-                        </button>
-                      </div>
-                      {devicePolling && (
-                        <div className="flex items-center justify-center gap-2 text-sm text-[#667085]">
-                          <RefreshCw size={14} className="animate-spin" />
-                          Aguardando autorizacao...
-                        </div>
-                      )}
                     </div>
-                  ) : authLoading ? (
-                    <div className="flex items-center justify-center py-8">
-                      <RefreshCw size={20} className="animate-spin text-[#667085]" />
-                      <span className="ml-2 text-sm text-[#667085]">Iniciando device auth...</span>
+                    <div className="space-y-2">
+                      <p className="text-xs text-[#5a6b7f]"><span className="text-white font-medium">2.</span> Authorize access, then copy the URL from the error page:</p>
+                      <input type="text" value={callbackUrl} onChange={(e) => setCallbackUrl(e.target.value)}
+                        placeholder="http://localhost:1455/auth/callback?code=..."
+                        className={inp} autoComplete="off" />
                     </div>
-                  ) : null}
-                  {authMessage?.type === 'error' && authMode === 'device' && (
-                    <div className="rounded-lg bg-red-500/10 border border-red-500/25 p-3">
-                      <p className="text-xs text-red-400">{authMessage.text}</p>
-                      <p className="text-[10px] text-[#667085] mt-1">Sua organizacao pode nao permitir Device Auth. Use a aba "Browser OAuth".</p>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-center py-8 gap-2 text-[#5a6b7f] text-sm">
+                    <RefreshCw size={14} className="animate-spin" /> Generating auth link...
+                  </div>
+                )
+              ) : (
+                deviceCode ? (
+                  <div className="space-y-4">
+                    <p className="text-xs text-[#5a6b7f]"><span className="text-white font-medium">1.</span> Open: <a href={deviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="text-[#10A37F] underline">{deviceCode.verification_url}</a></p>
+                    <p className="text-xs text-[#5a6b7f]"><span className="text-white font-medium">2.</span> Enter code:</p>
+                    <div className="flex items-center justify-center">
+                      <code className="text-xl font-bold text-white tracking-[0.15em] bg-[#0f1520] px-5 py-2.5 rounded-lg border border-[#1e2a3a]">{deviceCode.user_code}</code>
                     </div>
-                  )}
-                </>
+                    {devicePolling && <p className="text-center text-xs text-[#5a6b7f] flex items-center justify-center gap-2"><RefreshCw size={11} className="animate-spin" /> Waiting for authorization...</p>}
+                  </div>
+                ) : authLoading ? (
+                  <div className="flex items-center justify-center py-8 gap-2 text-[#5a6b7f] text-sm"><RefreshCw size={14} className="animate-spin" /> Starting device auth...</div>
+                ) : null
               )}
 
-              {/* Message */}
-              {authMessage && authMode === 'browser' && (
-                <div className={`rounded-lg p-3 text-xs ${
-                  authMessage.type === 'success'
-                    ? 'bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/25'
-                    : 'bg-red-500/10 text-red-400 border border-red-500/25'
-                }`}>
+              {authMessage && ((authMode === 'browser') || (authMode === 'device' && authMessage.type === 'error')) && (
+                <div className={`rounded-lg p-3 text-xs ${authMessage.type === 'success' ? 'bg-[#00FFA7]/5 text-[#00FFA7]' : 'bg-[#1a0a0a] text-[#f87171]'}`}>
                   {authMessage.text}
+                  {authMessage.type === 'error' && authMode === 'device' && <p className="text-[10px] text-[#3d4f65] mt-1">Your organization may not allow Device Auth. Use Browser OAuth instead.</p>}
                 </div>
               )}
             </div>
 
-            {/* Footer */}
-            <div className="flex items-center justify-between px-6 py-4 border-t border-[#21262d]">
-              <button
-                onClick={() => { setAuthModal(false); setDevicePolling(false) }}
-                className="text-xs px-4 py-1.5 rounded-full bg-white/[0.04] text-[#8b949e] border border-[#21262d] hover:bg-white/[0.08] hover:text-white transition-all"
-              >
-                Cancelar
+            <div className="flex items-center justify-between px-6 py-4 border-t border-[#152030]">
+              <button onClick={() => { setAuthModal(false); setDevicePolling(false) }}
+                className="text-[11px] px-4 py-1.5 rounded-md text-[#5a6b7f] border border-[#1e2a3a] hover:text-[#8a9aae] transition-colors">
+                Cancel
               </button>
               {authMode === 'browser' && authUrl && (
-                <button
-                  onClick={completeBrowserAuth}
-                  disabled={!callbackUrl || authLoading}
-                  className="flex items-center gap-1.5 text-xs px-4 py-1.5 rounded-full bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 hover:bg-[#10A37F]/20 transition-all disabled:opacity-50"
-                >
-                  {authLoading ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
-                  Confirmar
+                <button onClick={completeBrowserAuth} disabled={!callbackUrl || authLoading}
+                  className="text-[11px] px-4 py-1.5 rounded-md bg-[#10A37F] text-white font-semibold hover:bg-[#0d8a6a] transition-colors disabled:opacity-40">
+                  {authLoading ? 'Verifying...' : 'Confirm'}
                 </button>
               )}
             </div>
