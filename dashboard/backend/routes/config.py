@@ -20,7 +20,7 @@ def workspace_status():
         import yaml
         data = yaml.safe_load(content) or {}
         ws = data.get("workspace", data)
-        owner = (ws.get("owner") or "").strip()
+        owner = (ws.get("owner") or ws.get("owner_name") or "").strip()
         return jsonify({"configured": bool(owner)})
     except Exception:
         return jsonify({"configured": False})

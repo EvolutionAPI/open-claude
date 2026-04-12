@@ -63,7 +63,7 @@ class ClaudeBridge {
       return { cli_command: cliCommand, env_vars: envVars, active };
     } catch (err) {
       console.warn(`[provider] Could not read providers.json: ${err.message}`);
-      return { cli_command: 'claude', env_vars: {} };
+      return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
     }
   }
 

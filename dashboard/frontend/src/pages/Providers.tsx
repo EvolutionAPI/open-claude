@@ -89,7 +89,8 @@ export default function Providers() {
   useEffect(() => { load(); loadCodexAuth() }, [])
   useEffect(() => {
     if (!devicePolling) return
-    const timer = setInterval(pollDeviceAuth, 5000)
+    const interval = (deviceCode?.interval || 5) * 1000
+    const timer = setInterval(pollDeviceAuth, interval)
     return () => clearInterval(timer)
   }, [devicePolling])
 
