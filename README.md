@@ -155,7 +155,7 @@ This downloads and runs the interactive setup wizard automatically.
 ### Method 2 — Manual clone
 
 ```bash
-git clone https://github.com/EvolutionAPI/evo-nexus.git
+git clone --depth 1 https://github.com/EvolutionAPI/evo-nexus.git
 cd evo-nexus
 
 # Interactive setup wizard — checks prerequisites, creates config files
