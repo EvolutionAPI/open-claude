@@ -78,39 +78,71 @@ def banner():
 """)
 
 
-def _check_tool(name, cmd, install_cmd=None, install_label=None):
+def _parse_semver(s: str) -> tuple[int, int, int] | None:
+    """Extract (major, minor, patch) from a version string. None on failure."""
+    import re
+    m = re.search(r'(\d+)\.(\d+)\.(\d+)', s or "")
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _check_tool(name, cmd, install_cmd=None, install_label=None, min_version=None):
     """Check if a tool is installed. If not, offer to install it.
+
+    If min_version=(major, minor, patch) is given and the installed tool is
+    older, treat it as missing and trigger the install path — this forces an
+    upgrade when the pinned install_cmd specifies a newer version.
 
     In non-interactive contexts (pip build backend, npx pipe, CI) we skip
     the input() prompt — this is what fixes EOFError from upstream PR #11.
     When auto-confirm is appropriate (service user bootstrap), callers can
     pass EVO_NEXUS_AUTO_INSTALL=1 to proceed without prompting.
     """
+    needs_upgrade = False
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             version = result.stdout.strip() or result.stderr.strip()
-            print(f"  {GREEN}✓{RESET} {name}: {DIM}{version}{RESET}")
-            return True
+            if min_version is not None:
+                parsed = _parse_semver(version)
+                if parsed is not None and parsed < min_version:
+                    required = ".".join(str(x) for x in min_version)
+                    print(f"  {YELLOW}!{RESET} {name}: {DIM}{version}{RESET} (upgrading to {required}+)")
+                    needs_upgrade = True
+                else:
+                    print(f"  {GREEN}✓{RESET} {name}: {DIM}{version}{RESET}")
+                    return True
+            else:
+                print(f"  {GREEN}✓{RESET} {name}: {DIM}{version}{RESET}")
+                return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
     if install_cmd:
-        print(f"  {YELLOW}!{RESET} {name} not found")
+        if not needs_upgrade:
+            print(f"  {YELLOW}!{RESET} {name} not found")
         # Non-interactive: skip the prompt entirely. Either auto-install
         # (when EVO_NEXUS_AUTO_INSTALL=1) or report missing.
         auto_install = os.environ.get("EVO_NEXUS_AUTO_INSTALL") == "1"
-        if not _IS_TTY and not auto_install:
+        # For upgrades we always proceed silently — the user already has
+        # the tool and we just need a newer version.
+        if needs_upgrade:
+            choice = "y"
+        elif not _IS_TTY and not auto_install:
             print(f"    {DIM}Skipping auto-install in non-interactive mode.{RESET}")
             print(f"    {DIM}Run manually: {install_cmd}{RESET}")
             return False
-
-        if auto_install:
+        elif auto_install:
             choice = "y"
         else:
             choice = input(f"    Install {name}? (Y/n): ").strip().lower()
         if choice in ("", "y", "yes", "s", "sim"):
-            print(f"  {DIM}Installing {name}...{RESET}", end="", flush=True)
+            verb_present, verb_base = ("Upgrading", "upgrade") if needs_upgrade else ("Installing", "install")
+            print(f"  {DIM}{verb_present} {name}...{RESET}", end="", flush=True)
             ret = os.system(f"{install_cmd} > /dev/null 2>&1")
             # Re-check after install
             try:
@@ -121,7 +153,7 @@ def _check_tool(name, cmd, install_cmd=None, install_label=None):
                     return True
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
-            print(f"\r  {RED}✗{RESET} Failed to install {name}                    ")
+            print(f"\r  {RED}✗{RESET} Failed to {verb_base} {name}                    ")
         else:
             print(f"  {RED}✗{RESET} {name} is required for EvoNexus")
     else:
@@ -215,8 +247,13 @@ def check_prerequisites():
         missing.append("claude")
 
     # OpenClaude (required for non-Anthropic providers)
+    # min_version=(0, 3, 0) forces an upgrade on systems that already have
+    # an older OpenClaude installed — v0.3.0 is the first release with the
+    # "route OpenAI Codex shortcuts to correct endpoint" fix (#566) which
+    # the codex_auth provider flow relies on.
     if not _check_tool("OpenClaude", ["openclaude", "--version"],
-                        install_cmd="npm install -g @gitlawb/openclaude"):
+                        install_cmd="npm install -g @gitlawb/openclaude@latest",
+                        min_version=(0, 3, 0)):
         missing.append("openclaude")
 
     print()
@@ -992,10 +1029,19 @@ def main():
         # OpenClaude is required for non-Anthropic providers (OpenAI, Codex OAuth,
         # OpenRouter, Gemini, etc.). Without it, switching provider in the
         # dashboard does not work for the service user.
-        ret = os.system(f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && command -v openclaude' >/dev/null 2>&1")
-        if ret != 0:
-            print(f"  {DIM}Installing OpenClaude for {service_user}...{RESET}")
-            os.system(f"su - {service_user} -c 'npm install -g @gitlawb/openclaude --prefix ~/.local' >/dev/null 2>&1")
+        # Check if installed AND on a new-enough version (0.3.0+); otherwise (re)install.
+        oc_version = subprocess.run(
+            ["su", "-", service_user, "-c", "export PATH=$HOME/.local/bin:$PATH && openclaude --version 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        oc_parsed = _parse_semver(oc_version)
+        oc_ok = oc_parsed is not None and oc_parsed >= (0, 3, 0)
+        if not oc_ok:
+            if oc_parsed is not None:
+                print(f"  {DIM}Upgrading OpenClaude for {service_user} (found {oc_version}, need 0.3.0+)...{RESET}")
+            else:
+                print(f"  {DIM}Installing OpenClaude for {service_user}...{RESET}")
+            os.system(f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@latest --prefix ~/.local' >/dev/null 2>&1")
             print(f"  {GREEN}✓{RESET} OpenClaude installed")
 
         # Sync deps as service user
