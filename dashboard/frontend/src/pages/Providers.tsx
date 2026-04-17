@@ -222,8 +222,8 @@ export default function Providers() {
                     <p className="text-[11px] text-[#3d4f65] mt-0.5 truncate">{prov.description}</p>
                   </div>
 
-                  {/* OpenAI auth badge */}
-                  {prov.id === 'openai' && codexAuth?.authenticated && (
+                  {/* OpenAI / Codex OAuth badge */}
+                  {(prov.id === 'openai' || prov.id === 'codex_auth') && codexAuth?.authenticated && (
                     <span className="text-[9px] px-2 py-0.5 rounded bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 shrink-0">
                       OAuth
                     </span>
@@ -231,14 +231,14 @@ export default function Providers() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-2 shrink-0">
-                    {/* OpenAI login */}
-                    {prov.id === 'openai' && isInstalled && !codexAuth?.authenticated && (
+                    {/* OpenAI / Codex OAuth login */}
+                    {(prov.id === 'openai' || prov.id === 'codex_auth') && isInstalled && !codexAuth?.authenticated && (
                       <button onClick={() => { setAuthModal(true); setAuthMode('browser'); setAuthUrl(''); setCallbackUrl(''); setAuthMessage(null); setDeviceCode(null); setDevicePolling(false); startBrowserAuth() }}
                         className="text-[11px] px-3 py-1.5 rounded-md bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 hover:bg-[#10A37F]/20 transition-colors font-medium">
                         Login
                       </button>
                     )}
-                    {prov.id === 'openai' && codexAuth?.authenticated && (
+                    {(prov.id === 'openai' || prov.id === 'codex_auth') && codexAuth?.authenticated && (
                       <button onClick={handleOpenAILogout}
                         className="text-[11px] px-2 py-1 rounded-md text-[#f87171] hover:bg-[#1a0a0a] transition-colors">
                         Logout
