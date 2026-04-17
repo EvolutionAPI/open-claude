@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, AlertCircle, RefreshCw, X } from 'lucide-react'
 import { api } from '../lib/api'
 
@@ -76,6 +76,17 @@ export default function Providers() {
   const [devicePolling, setDevicePolling] = useState(false)
   const [toggling, setToggling] = useState<string | null>(null)
 
+  // Dynamic model discovery — populated when Configure modal opens for
+  // openai/codex_auth. Shape: { [providerId]: { loading, models[], error? } }
+  type ModelList = {
+    loading: boolean;
+    models: Array<{ id: string; description?: string; owned_by?: string }>;
+    error?: string;
+    validatedKey?: string;  // remembers which API key we validated, to skip refetch
+  }
+  const [modelLists, setModelLists] = useState<Record<string, ModelList>>({})
+  const apiKeyDebounceRef = useRef<number | null>(null)
+
   const load = () => {
     setLoading(true)
     api.get('/providers').then((data: ProvidersResponse) => {
@@ -111,6 +122,78 @@ export default function Providers() {
       vars[k] = v.includes('****') ? '' : v
     }
     setEditVars(vars)
+    // Prefetch available models so the MODEL field renders as a real dropdown.
+    // - codex_auth: static list from backend, always available.
+    // - openai:     needs a valid API key first; we fetch when the user types.
+    if (prov.id === 'codex_auth') {
+      loadCodexModels()
+    } else if (prov.id === 'openai' && vars['OPENAI_API_KEY']) {
+      // If the user had a key saved (and it came through unmasked because
+      // they cleared the field), try validating it right away.
+      loadOpenAIModels(vars['OPENAI_API_KEY'])
+    }
+  }
+
+  const loadCodexModels = async () => {
+    setModelLists(prev => ({ ...prev, codex_auth: { loading: true, models: [] } }))
+    try {
+      const r: any = await api.get('/providers/codex_auth/models')
+      setModelLists(prev => ({
+        ...prev,
+        codex_auth: {
+          loading: false,
+          models: r.models || [],
+          error: r.auth_ok ? undefined : 'Faça login OAuth antes de usar — os aliases funcionam só com token Codex ativo.',
+        },
+      }))
+    } catch {
+      setModelLists(prev => ({
+        ...prev,
+        codex_auth: { loading: false, models: [], error: 'Falha ao carregar aliases Codex' },
+      }))
+    }
+  }
+
+  const loadOpenAIModels = async (apiKey: string) => {
+    const trimmed = (apiKey || '').trim()
+    if (!trimmed || trimmed.length < 20) {
+      setModelLists(prev => ({
+        ...prev,
+        openai: { loading: false, models: [], error: 'API key muito curta' },
+      }))
+      return
+    }
+    // Skip refetch if we already validated this exact key
+    const existing = modelLists.openai
+    if (existing?.validatedKey === trimmed && !existing.error) return
+
+    setModelLists(prev => ({ ...prev, openai: { loading: true, models: [] } }))
+    try {
+      const r: any = await api.post('/providers/openai/models', { api_key: trimmed })
+      if (r.valid) {
+        setModelLists(prev => ({
+          ...prev,
+          openai: { loading: false, models: r.models || [], validatedKey: trimmed },
+        }))
+      } else {
+        setModelLists(prev => ({
+          ...prev,
+          openai: { loading: false, models: [], error: r.error || 'API key inválida', validatedKey: trimmed },
+        }))
+      }
+    } catch {
+      setModelLists(prev => ({
+        ...prev,
+        openai: { loading: false, models: [], error: 'Falha na requisição' },
+      }))
+    }
+  }
+
+  // Called by the API_KEY input onChange — debounces the model fetch so we
+  // don't spam the OpenAI API on every keystroke.
+  const scheduleOpenAIModelFetch = (apiKey: string) => {
+    if (apiKeyDebounceRef.current) window.clearTimeout(apiKeyDebounceRef.current)
+    apiKeyDebounceRef.current = window.setTimeout(() => loadOpenAIModels(apiKey), 600)
   }
 
   const handleSave = async () => {
@@ -222,8 +305,8 @@ export default function Providers() {
                     <p className="text-[11px] text-[#3d4f65] mt-0.5 truncate">{prov.description}</p>
                   </div>
 
-                  {/* OpenAI / Codex OAuth badge */}
-                  {(prov.id === 'openai' || prov.id === 'codex_auth') && codexAuth?.authenticated && (
+                  {/* Codex OAuth badge — only on the dedicated codex_auth card */}
+                  {prov.id === 'codex_auth' && codexAuth?.authenticated && (
                     <span className="text-[9px] px-2 py-0.5 rounded bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 shrink-0">
                       OAuth
                     </span>
@@ -231,14 +314,14 @@ export default function Providers() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-2 shrink-0">
-                    {/* OpenAI / Codex OAuth login */}
-                    {(prov.id === 'openai' || prov.id === 'codex_auth') && isInstalled && !codexAuth?.authenticated && (
+                    {/* Codex OAuth login / logout — only on codex_auth card */}
+                    {prov.id === 'codex_auth' && isInstalled && !codexAuth?.authenticated && (
                       <button onClick={() => { setAuthModal(true); setAuthMode('browser'); setAuthUrl(''); setCallbackUrl(''); setAuthMessage(null); setDeviceCode(null); setDevicePolling(false); startBrowserAuth() }}
                         className="text-[11px] px-3 py-1.5 rounded-md bg-[#10A37F]/10 text-[#10A37F] border border-[#10A37F]/20 hover:bg-[#10A37F]/20 transition-colors font-medium">
                         Login
                       </button>
                     )}
-                    {(prov.id === 'openai' || prov.id === 'codex_auth') && codexAuth?.authenticated && (
+                    {prov.id === 'codex_auth' && codexAuth?.authenticated && (
                       <button onClick={handleOpenAILogout}
                         className="text-[11px] px-2 py-1 rounded-md text-[#f87171] hover:bg-[#1a0a0a] transition-colors">
                         Logout
@@ -310,18 +393,87 @@ export default function Providers() {
                 {editableVars.length === 0 ? (
                   <p className="text-sm text-[#5a6b7f]">No configuration needed. Uses native Claude Code authentication.</p>
                 ) : (
-                  editableVars.map(([key]) => (
-                    <div key={key}>
-                      <label className={lbl}>
-                        {ENV_VAR_LABELS[key] || key}
-                        <span className="ml-1 text-[#3d4f65] font-normal normal-case tracking-normal">({key})</span>
-                      </label>
-                      <input type={isSecret(key) ? 'password' : 'text'} value={editVars[key] || ''}
-                        onChange={(e) => setEditVars(prev => ({ ...prev, [key]: e.target.value }))}
-                        placeholder={key.includes('KEY') ? 'sk-...' : key.includes('MODEL') ? (prov.default_model || '') : key.includes('URL') ? (prov.default_base_url || 'https://...') : ''}
-                        className={inp} autoComplete="off" />
-                    </div>
-                  ))
+                  editableVars.map(([key]) => {
+                    const isModelField = key.includes('MODEL')
+                    const isApiKeyField = key === 'OPENAI_API_KEY'
+                    const currentList = modelLists[prov.id]
+                    const hasDiscoveredModels = isModelField
+                      && (prov.id === 'openai' || prov.id === 'codex_auth')
+                      && currentList
+                      && currentList.models.length > 0
+
+                    return (
+                      <div key={key}>
+                        <label className={lbl}>
+                          {ENV_VAR_LABELS[key] || key}
+                          <span className="ml-1 text-[#3d4f65] font-normal normal-case tracking-normal">({key})</span>
+                          {isModelField && currentList?.loading && (
+                            <span className="ml-2 text-[#5a6b7f]"><RefreshCw size={10} className="inline animate-spin" /> carregando…</span>
+                          )}
+                        </label>
+
+                        {hasDiscoveredModels ? (
+                          <>
+                            {/* datalist-backed combobox: shows dropdown but accepts free text */}
+                            <input
+                              type="text"
+                              list={`${prov.id}-models`}
+                              value={editVars[key] || ''}
+                              onChange={(e) => setEditVars(prev => ({ ...prev, [key]: e.target.value }))}
+                              placeholder={prov.default_model || 'Selecione ou digite um modelo'}
+                              className={inp}
+                              autoComplete="off"
+                            />
+                            <datalist id={`${prov.id}-models`}>
+                              {currentList!.models.map(m => (
+                                <option key={m.id} value={m.id}>{m.description || m.owned_by || ''}</option>
+                              ))}
+                            </datalist>
+                            <p className="text-[10px] text-[#3d4f65] mt-1">
+                              {currentList!.models.length} modelos disponíveis. Clique no campo para ver a lista.
+                            </p>
+                          </>
+                        ) : (
+                          <input
+                            type={isSecret(key) ? 'password' : 'text'}
+                            value={editVars[key] || ''}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setEditVars(prev => ({ ...prev, [key]: v }))
+                              // When the OpenAI API key changes, fetch models (debounced)
+                              if (isApiKeyField && prov.id === 'openai') {
+                                scheduleOpenAIModelFetch(v)
+                              }
+                            }}
+                            placeholder={key.includes('KEY') ? 'sk-...' : key.includes('MODEL') ? (prov.default_model || '') : key.includes('URL') ? (prov.default_base_url || 'https://...') : ''}
+                            className={inp}
+                            autoComplete="off"
+                          />
+                        )}
+
+                        {/* Inline validation feedback for the API key field */}
+                        {isApiKeyField && prov.id === 'openai' && currentList && !currentList.loading && (
+                          currentList.error ? (
+                            <p className="text-[10px] text-[#f87171] mt-1">
+                              <AlertCircle size={10} className="inline mr-1" />{currentList.error}
+                            </p>
+                          ) : currentList.models.length > 0 ? (
+                            <p className="text-[10px] text-[#00FFA7] mt-1">
+                              <CheckCircle2 size={10} className="inline mr-1" />
+                              API key válida — {currentList.models.length} modelos carregados
+                            </p>
+                          ) : null
+                        )}
+
+                        {/* Codex auth hint */}
+                        {isModelField && prov.id === 'codex_auth' && currentList?.error && (
+                          <p className="text-[10px] text-[#FBBF24] mt-1">
+                            <AlertCircle size={10} className="inline mr-1" />{currentList.error}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })
                 )}
 
                 {prov.default_model && (
