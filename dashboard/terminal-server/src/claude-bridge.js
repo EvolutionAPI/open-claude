@@ -15,6 +15,7 @@ class ClaudeBridge {
   _loadProviderConfig() {
     const ALLOWED_CLI = new Set(['claude', 'openclaude']);
     const ALLOWED_VARS = new Set([
+      'ANTHROPIC_API_KEY',
       'CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_GEMINI',
       'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
       'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL',
@@ -138,7 +139,15 @@ class ClaudeBridge {
 
   async startSession(sessionId, options = {}) {
     if (this.sessions.has(sessionId)) {
-      throw new Error(`Session ${sessionId} already exists`);
+      const existing = this.sessions.get(sessionId);
+      if (existing.active) {
+        throw new Error(`Session ${sessionId} already exists`);
+      }
+      // Orphaned dead session — clean up and restart
+      if (existing.process) {
+        try { existing.process.kill('SIGKILL'); } catch (_) {}
+      }
+      this.sessions.delete(sessionId);
     }
 
     const {
