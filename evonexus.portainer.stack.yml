@@ -67,7 +67,6 @@ services:
         - traefik.http.routers.evonexus.service=evonexus
         - traefik.http.services.evonexus.loadbalancer.server.port=8080
         - traefik.http.services.evonexus.loadbalancer.passHostHeader=true
-
         - traefik.http.routers.evonexus-terminal.rule=Host(`evonexus.advancedbot.com.br`) && PathPrefix(`/terminal`)
         - traefik.http.routers.evonexus-terminal.entrypoints=websecure
         - traefik.http.routers.evonexus-terminal.priority=10
