@@ -72,6 +72,7 @@ export default function AgentDetail() {
   const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null)
   const [chatConnectError, setChatConnectError] = useState<string | null>(null)
   const [chatConnecting, setChatConnecting] = useState(false)
+  const [activeProviderCli, setActiveProviderCli] = useState<string>('claude')
 
   // Notification badge state — pending approvals per session
   const approvalCountsRef = useRef<Map<string, number>>(new Map())
@@ -103,6 +104,27 @@ export default function AgentDetail() {
   useEffect(() => {
     if (name) trackAgentVisit(name)
   }, [name])
+
+  useEffect(() => {
+    let cancelled = false
+    api.get('/providers/active')
+      .then((data: { cli_command?: string }) => {
+        if (!cancelled) setActiveProviderCli(data.cli_command || 'claude')
+      })
+      .catch(() => {
+        if (!cancelled) setActiveProviderCli('claude')
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const chatSupported = activeProviderCli === 'claude'
+
+  useEffect(() => {
+    if (!chatSupported && viewMode === 'chat') {
+      setViewMode('terminal')
+      try { localStorage.setItem('evo:agent-view-mode', 'terminal') } catch {}
+    }
+  }, [chatSupported, viewMode])
 
   // Load existing terminal sessions for this agent
   useEffect(() => {
@@ -523,12 +545,18 @@ export default function AgentDetail() {
             {/* View mode toggle */}
             <div className="flex items-center border-r border-[#21262d] h-full">
               <button
-                onClick={() => { setViewMode('chat'); localStorage.setItem('evo:agent-view-mode', 'chat') }}
+                onClick={() => {
+                  if (!chatSupported) return
+                  setViewMode('chat')
+                  localStorage.setItem('evo:agent-view-mode', 'chat')
+                }}
+                disabled={!chatSupported}
                 className={`flex items-center gap-1.5 px-3 h-full text-[11px] transition-colors ${
                   viewMode === 'chat'
                     ? 'text-[#e6edf3] bg-[#0C111D]'
                     : 'text-[#667085] hover:text-[#e6edf3] hover:bg-[#161b22]'
-                }`}
+                } ${!chatSupported ? 'opacity-40 cursor-not-allowed' : ''}`}
+                title={chatSupported ? 'Chat' : 'Chat de agentes disponível apenas com Claude nativo no estado atual'}
               >
                 <MessageSquare size={12} style={{ color: viewMode === 'chat' ? agentColor : undefined }} />
                 Chat
@@ -582,6 +610,12 @@ export default function AgentDetail() {
                 >
                   <Plus size={13} />
                 </button>
+              </div>
+            )}
+
+            {!chatSupported && (
+              <div className="ml-auto px-3 text-[10px] uppercase tracking-[0.12em] text-[#667085]">
+                Chat indisponível com provider OAuth
               </div>
             )}
           </div>

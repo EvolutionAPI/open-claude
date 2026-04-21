@@ -7,6 +7,24 @@ class ClaudeBridge {
     this.sessions = new Map();
   }
 
+  buildCliPath(basePath = '') {
+    const home = process.env.HOME || '/';
+    const extraPaths = [
+      path.join(home, '.local', 'bin'),
+      path.join(home, '.npm-global', 'bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+    ];
+    const pathParts = (basePath || '').split(':').filter(Boolean);
+    for (const candidate of extraPaths) {
+      if (!pathParts.includes(candidate)) {
+        pathParts.push(candidate);
+      }
+    }
+    return pathParts.join(':');
+  }
+
   /**
    * Load active provider config from config/providers.json.
    * Returns the CLI command to use and env vars to inject.
@@ -88,15 +106,24 @@ class ClaudeBridge {
 
   findClaudeCommand(cliCommand = 'claude') {
     const { execSync } = require('child_process');
+    const resolvedPath = this.buildCliPath(process.env.PATH || '');
 
     // Use shell-based `which` to resolve with full PATH (incl. nvm, fnm, etc.)
     // Hardcoded dispatch to satisfy semgrep — each branch is a literal string
     try {
       let resolved;
       if (cliCommand === 'openclaude') {
-        resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+        resolved = execSync('which openclaude', {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+          env: { ...process.env, PATH: resolvedPath }
+        }).trim();
       } else {
-        resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+        resolved = execSync('which claude', {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+          env: { ...process.env, PATH: resolvedPath }
+        }).trim();
       }
       if (resolved) {
         console.log(`[provider] Found ${cliCommand} at: ${resolved}`);
@@ -111,12 +138,14 @@ class ClaudeBridge {
     const paths = cliCommand === 'openclaude'
       ? [
           path.join(home, '.local', 'bin', 'openclaude'),
+          path.join(home, '.npm-global', 'bin', 'openclaude'),
           '/usr/local/bin/openclaude',
           '/usr/bin/openclaude',
         ]
       : [
           path.join(home, '.claude', 'local', 'claude'),
           path.join(home, '.local', 'bin', 'claude'),
+          path.join(home, '.npm-global', 'bin', 'claude'),
           '/usr/local/bin/claude',
           '/usr/bin/claude',
         ];
@@ -229,6 +258,7 @@ class ClaudeBridge {
       for (const key of SYSTEM_VARS) {
         if (process.env[key]) cleanEnv[key] = process.env[key];
       }
+      cleanEnv.PATH = this.buildCliPath(cleanEnv.PATH || process.env.PATH || '');
 
       // Ensure OPENAI_MODEL is set when using an OpenAI-based provider.
       // OpenClaude's Codex mode requires 'codexplan' or 'codexspark' aliases
