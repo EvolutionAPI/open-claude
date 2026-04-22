@@ -70,11 +70,234 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Setup wizard i18n (pt-BR / en-US / es)
+# ─────────────────────────────────────────────────────────────────────────────
+# Matches the BCP-47 tags the dashboard UI uses. The selected language also
+# becomes the default `workspace.language` saved in config/workspace.yaml, so
+# what the user picks here is what the dashboard later renders in.
+
+LANG = "en-US"  # mutated by select_language() before main() runs
+
+MESSAGES = {
+    "en-US": {
+        "choose_lang_prompt": "Choose your language / Escolha seu idioma / Elige tu idioma",
+        "choose_lang_option_1": "English (US)",
+        "choose_lang_option_2": "Português (BR)",
+        "choose_lang_option_3": "Español",
+        "choose_lang_ask": "Type 1, 2 or 3",
+        "banner_title": "EvoNexus — Setup Wizard",
+        "checking_prereqs": "Checking prerequisites...",
+        "dashboard_access": "Dashboard Access",
+        "quick_remote_setup": "Quick setup for remote access...",
+        "ai_provider": "AI Provider",
+        "about_you": "About you",
+        "your_name": "Your name",
+        "company_name": "Company name",
+        "timezone": "Timezone",
+        "language": "Language",
+        "dashboard_port": "Dashboard port",
+        "creating_workspace": "Creating workspace...",
+        "installing_python_deps": "Installing Python dependencies...",
+        "installed_python_deps": "Installed Python dependencies",
+        "python_deps_failed": "Python dependencies failed to install",
+        "python_deps_needed": "This is needed for the dashboard to work.",
+        "try_manually": "Try running manually:",
+        "log_at": "Log:",
+        "installing_dashboard_deps": "Installing dashboard dependencies...",
+        "installed_dashboard_deps": "Installed dashboard dependencies",
+        "dashboard_deps_failed": "Dashboard dependencies failed",
+        "building_dashboard": "Building dashboard frontend...",
+        "built_dashboard": "Built dashboard frontend",
+        "dashboard_build_failed": "Dashboard build failed",
+        "installing_terminal_deps": "Installing terminal-server dependencies...",
+        "installed_terminal_deps": "Installed terminal-server dependencies",
+        "terminal_deps_failed": "Terminal-server dependencies failed",
+        "services_user_note": "(services will run as {user})",
+        "terminal_started": "Terminal server started (port 32352)",
+        "terminal_not_started": "Terminal server may not have started — check logs/terminal-server.log",
+        "dashboard_started": "Dashboard started (port 8080)",
+        "dashboard_not_started": "Dashboard may not have started — check logs/dashboard.log",
+        "setup_done": "Setup complete!",
+        "dashboard_available_at": "Dashboard available at:",
+        "next_steps_header": "Next steps:",
+        "next_step_1_remote": "1. Open the link above and create your admin account",
+        "next_step_2_remote": "2. Go to {bold}Providers{reset} and configure your AI Provider",
+        "next_step_3_remote": "3. Open an agent and start using it!",
+        "next_step_1_local": "1. Edit {bold}.env{reset} with your API keys",
+        "next_step_2_local": "2. Run: {bold}make dashboard-app{reset}",
+        "next_step_3_local": "3. Open {bold}{url}{reset} to create your admin account",
+        "systemd_section": "systemd service:",
+        "systemd_status": "check status",
+        "systemd_restart": "restart",
+        "systemd_logs": "view logs",
+        "systemd_su": "switch to service user",
+    },
+    "pt-BR": {
+        "choose_lang_prompt": "Choose your language / Escolha seu idioma / Elige tu idioma",
+        "choose_lang_option_1": "English (US)",
+        "choose_lang_option_2": "Português (BR)",
+        "choose_lang_option_3": "Español",
+        "choose_lang_ask": "Digite 1, 2 ou 3",
+        "banner_title": "EvoNexus — Assistente de Instalação",
+        "checking_prereqs": "Verificando pré-requisitos...",
+        "dashboard_access": "Acesso ao Dashboard",
+        "quick_remote_setup": "Configuração rápida para acesso remoto...",
+        "ai_provider": "Provedor de IA",
+        "about_you": "Sobre você",
+        "your_name": "Seu nome",
+        "company_name": "Nome da empresa",
+        "timezone": "Fuso horário",
+        "language": "Idioma",
+        "dashboard_port": "Porta do dashboard",
+        "creating_workspace": "Criando workspace...",
+        "installing_python_deps": "Instalando dependências Python...",
+        "installed_python_deps": "Dependências Python instaladas",
+        "python_deps_failed": "Falha ao instalar dependências Python",
+        "python_deps_needed": "Isso é necessário para o dashboard funcionar.",
+        "try_manually": "Execute manualmente:",
+        "log_at": "Log:",
+        "installing_dashboard_deps": "Instalando dependências do dashboard...",
+        "installed_dashboard_deps": "Dependências do dashboard instaladas",
+        "dashboard_deps_failed": "Falha ao instalar dependências do dashboard",
+        "building_dashboard": "Construindo o dashboard...",
+        "built_dashboard": "Dashboard construído",
+        "dashboard_build_failed": "Falha ao construir o dashboard",
+        "installing_terminal_deps": "Instalando dependências do terminal-server...",
+        "installed_terminal_deps": "Dependências do terminal-server instaladas",
+        "terminal_deps_failed": "Falha ao instalar dependências do terminal-server",
+        "services_user_note": "(serviços serão executados como {user})",
+        "terminal_started": "Terminal server iniciado (porta 32352)",
+        "terminal_not_started": "Terminal server pode não ter iniciado — verifique logs/terminal-server.log",
+        "dashboard_started": "Dashboard iniciado (porta 8080)",
+        "dashboard_not_started": "Dashboard pode não ter iniciado — verifique logs/dashboard.log",
+        "setup_done": "Instalação concluída!",
+        "dashboard_available_at": "Dashboard disponível em:",
+        "next_steps_header": "Próximos passos:",
+        "next_step_1_remote": "1. Acesse o link acima e crie sua conta de administrador",
+        "next_step_2_remote": "2. Vá em {bold}Provedores{reset} e configure seu provedor de IA",
+        "next_step_3_remote": "3. Abra um agente e comece a usar!",
+        "next_step_1_local": "1. Edite {bold}.env{reset} com suas chaves de API",
+        "next_step_2_local": "2. Execute: {bold}make dashboard-app{reset}",
+        "next_step_3_local": "3. Abra {bold}{url}{reset} e crie sua conta de administrador",
+        "systemd_section": "Serviço systemd:",
+        "systemd_status": "verificar status",
+        "systemd_restart": "reiniciar",
+        "systemd_logs": "ver logs",
+        "systemd_su": "acessar o usuário do serviço",
+    },
+    "es": {
+        "choose_lang_prompt": "Choose your language / Escolha seu idioma / Elige tu idioma",
+        "choose_lang_option_1": "English (US)",
+        "choose_lang_option_2": "Português (BR)",
+        "choose_lang_option_3": "Español",
+        "choose_lang_ask": "Escribe 1, 2 o 3",
+        "banner_title": "EvoNexus — Asistente de Instalación",
+        "checking_prereqs": "Verificando requisitos...",
+        "dashboard_access": "Acceso al Dashboard",
+        "quick_remote_setup": "Configuración rápida para acceso remoto...",
+        "ai_provider": "Proveedor de IA",
+        "about_you": "Sobre ti",
+        "your_name": "Tu nombre",
+        "company_name": "Nombre de la empresa",
+        "timezone": "Zona horaria",
+        "language": "Idioma",
+        "dashboard_port": "Puerto del dashboard",
+        "creating_workspace": "Creando workspace...",
+        "installing_python_deps": "Instalando dependencias Python...",
+        "installed_python_deps": "Dependencias Python instaladas",
+        "python_deps_failed": "Error al instalar dependencias Python",
+        "python_deps_needed": "Esto es necesario para que el dashboard funcione.",
+        "try_manually": "Ejecuta manualmente:",
+        "log_at": "Registro:",
+        "installing_dashboard_deps": "Instalando dependencias del dashboard...",
+        "installed_dashboard_deps": "Dependencias del dashboard instaladas",
+        "dashboard_deps_failed": "Error al instalar dependencias del dashboard",
+        "building_dashboard": "Construyendo el dashboard...",
+        "built_dashboard": "Dashboard construido",
+        "dashboard_build_failed": "Error al construir el dashboard",
+        "installing_terminal_deps": "Instalando dependencias del terminal-server...",
+        "installed_terminal_deps": "Dependencias del terminal-server instaladas",
+        "terminal_deps_failed": "Error al instalar dependencias del terminal-server",
+        "services_user_note": "(los servicios se ejecutarán como {user})",
+        "terminal_started": "Terminal server iniciado (puerto 32352)",
+        "terminal_not_started": "Terminal server puede no haber iniciado — revisa logs/terminal-server.log",
+        "dashboard_started": "Dashboard iniciado (puerto 8080)",
+        "dashboard_not_started": "El dashboard puede no haber iniciado — revisa logs/dashboard.log",
+        "setup_done": "¡Instalación completada!",
+        "dashboard_available_at": "Dashboard disponible en:",
+        "next_steps_header": "Próximos pasos:",
+        "next_step_1_remote": "1. Abre el enlace de arriba y crea tu cuenta de administrador",
+        "next_step_2_remote": "2. Ve a {bold}Proveedores{reset} y configura tu proveedor de IA",
+        "next_step_3_remote": "3. ¡Abre un agente y comienza a usarlo!",
+        "next_step_1_local": "1. Edita {bold}.env{reset} con tus claves de API",
+        "next_step_2_local": "2. Ejecuta: {bold}make dashboard-app{reset}",
+        "next_step_3_local": "3. Abre {bold}{url}{reset} y crea tu cuenta de administrador",
+        "systemd_section": "Servicio systemd:",
+        "systemd_status": "verificar estado",
+        "systemd_restart": "reiniciar",
+        "systemd_logs": "ver registros",
+        "systemd_su": "entrar al usuario del servicio",
+    },
+}
+
+
+def T(key: str, **fmt) -> str:
+    """Return a translated string for the active language with optional format args."""
+    bundle = MESSAGES.get(LANG) or MESSAGES["en-US"]
+    # Fall back to en-US if a key is missing in the active bundle (defensive).
+    text = bundle.get(key) or MESSAGES["en-US"].get(key) or key
+    if fmt:
+        try:
+            return text.format(bold=BOLD, reset=RESET, **fmt)
+        except (KeyError, IndexError):
+            return text
+    return text
+
+
+def select_language() -> None:
+    """Ask the user for their setup-wizard language. First prompt, always.
+
+    Under non-interactive contexts (pip build backend, CI, `EVO_NEXUS_AUTO_INSTALL=1`)
+    keep the default "en-US" to stay predictable — the dashboard later lets
+    the user change it via the Settings UI.
+    """
+    global LANG
+    auto = os.environ.get("EVO_NEXUS_AUTO_INSTALL") == "1"
+    if not _IS_TTY or auto:
+        return
+
+    print()
+    print(f"  {BOLD}{T('choose_lang_prompt')}{RESET}")
+    print(f"    {BOLD}1{RESET}) {T('choose_lang_option_1')}")
+    print(f"    {BOLD}2{RESET}) {T('choose_lang_option_2')}")
+    print(f"    {BOLD}3{RESET}) {T('choose_lang_option_3')}")
+    try:
+        raw = input(f"  {T('choose_lang_ask')}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    mapping = {"1": "en-US", "2": "pt-BR", "3": "es"}
+    LANG = mapping.get(raw, LANG)
+
+
 def banner():
+    """Draw a centered banner around the translated title.
+
+    Width auto-adjusts to the title so translated versions stay aligned —
+    em-dashes and accents are 1 display char each (we don't use any wide
+    CJK glyphs here), so len(title) is the visible width.
+    """
+    title = T("banner_title")
+    interior = max(36, len(title) + 6)           # at least 3 chars padding each side
+    total_pad = interior - len(title)
+    left = total_pad // 2
+    right = total_pad - left
+    hline = "═" * interior
     print(f"""
-{GREEN}  ╔══════════════════════════════════╗
-  ║   {BOLD}EvoNexus — Setup Wizard{RESET}{GREEN}     ║
-  ╚══════════════════════════════════╝{RESET}
+{GREEN}  ╔{hline}╗
+  ║{' ' * left}{BOLD}{title}{RESET}{GREEN}{' ' * right}║
+  ╚{hline}╝{RESET}
 """)
 
 
@@ -890,40 +1113,44 @@ WantedBy=multi-user.target
 
 
 def main():
+    # Ask for the wizard language before ANY other prompt so every
+    # subsequent message renders in the user's choice.
+    select_language()
+
     banner()
 
     # Prerequisites check
-    print(f"  {BOLD}Checking prerequisites...{RESET}")
+    print(f"  {BOLD}{T('checking_prereqs')}{RESET}")
     check_prerequisites()
 
-    # Dashboard access (Nginx config) — FIRST question
+    # Dashboard access (Nginx config) — FIRST post-banner question
     access_config = configure_access()
     is_remote = access_config.get("mode") == "domain"
 
     if is_remote:
         # Remote mode: minimal setup, then redirect to dashboard
-        print(f"\n  {BOLD}Quick setup for remote access...{RESET}")
+        print(f"\n  {BOLD}{T('quick_remote_setup')}{RESET}")
         owner_name = ""
         company_name = ""
         timezone = "America/Sao_Paulo"
-        # BCP-47 tag. Matches what the dashboard UI saves via Setup.tsx and
-        # Settings.tsx — keeps a single canonical form end-to-end.
-        language = "pt-BR"
+        # Match the language the user just chose in select_language()
+        # so the dashboard opens in the same tongue on first login.
+        language = LANG
         dashboard_port = 8080
     else:
         # Local mode: full interactive setup
         # Provider choice
-        print(f"  {BOLD}AI Provider{RESET}")
+        print(f"  {BOLD}{T('ai_provider')}{RESET}")
         provider_choice = choose_provider()
         print()
 
         # Who are you?
-        print(f"  {BOLD}About you{RESET}")
-        owner_name = ask("Your name", "")
-        company_name = ask("Company name", "")
-        timezone = ask("Timezone", "America/Sao_Paulo")
-        language = ask("Language", "pt-BR")
-        dashboard_port = int(ask("Dashboard port", "8080"))
+        print(f"  {BOLD}{T('about_you')}{RESET}")
+        owner_name = ask(T("your_name"), "")
+        company_name = ask(T("company_name"), "")
+        timezone = ask(T("timezone"), "America/Sao_Paulo")
+        language = ask(T("language"), LANG)
+        dashboard_port = int(ask(T("dashboard_port"), "8080"))
         print()
 
     # All agents and integrations enabled by default
@@ -945,7 +1172,7 @@ def main():
         "dashboard_port": dashboard_port,
     }
 
-    print(f"  {BOLD}Creating workspace...{RESET}")
+    print(f"  {BOLD}{T('creating_workspace')}{RESET}")
 
     # workspace.yaml
     config_dir = WORKSPACE / "config"
@@ -976,50 +1203,50 @@ def main():
     # Install Python dependencies
     # Must run as the ORIGINAL user (not root) so .venv symlinks
     # point to user's Python, not /root/.local/share/uv/python/
-    print(f"  {DIM}Installing Python dependencies...{RESET}", end="", flush=True)
+    print(f"  {DIM}{T('installing_python_deps')}{RESET}", end="", flush=True)
     _sudo_user = os.environ.get("SUDO_USER", "")
     if _sudo_user and os.getuid() == 0:
         ret = os.system(f"su - {_sudo_user} -c 'cd {WORKSPACE} && uv sync -q' 2>{WORKSPACE}/logs/uv-sync.log")
     else:
         ret = os.system(f"cd {WORKSPACE} && uv sync -q 2>{WORKSPACE}/logs/uv-sync.log")
     if ret == 0 and (WORKSPACE / ".venv" / "bin" / "python").exists():
-        print(f"\r  {GREEN}✓{RESET} Installed Python dependencies                    ")
+        print(f"\r  {GREEN}✓{RESET} {T('installed_python_deps')}                    ")
     else:
-        print(f"\r  {RED}✗{RESET} Python dependencies failed to install                    ")
-        print(f"    {YELLOW}This is needed for the dashboard to work.{RESET}")
-        print(f"    Try running manually: {BOLD}cd {WORKSPACE} && uv sync{RESET}")
-        print(f"    Log: {DIM}logs/uv-sync.log{RESET}")
+        print(f"\r  {RED}✗{RESET} {T('python_deps_failed')}                    ")
+        print(f"    {YELLOW}{T('python_deps_needed')}{RESET}")
+        print(f"    {T('try_manually')} {BOLD}cd {WORKSPACE} && uv sync{RESET}")
+        print(f"    {T('log_at')} {DIM}logs/uv-sync.log{RESET}")
 
     # Dashboard build
     frontend_dir = WORKSPACE / "dashboard" / "frontend"
     if (frontend_dir / "package.json").exists():
-        print(f"  {DIM}Installing dashboard dependencies...{RESET}", end="", flush=True)
+        print(f"  {DIM}{T('installing_dashboard_deps')}{RESET}", end="", flush=True)
         ret_install = os.system(f"cd {frontend_dir} && npm install --silent 2>{WORKSPACE}/logs/npm-install.log")
         if ret_install != 0:
-            print(f"\r  {RED}✗{RESET} Dashboard dependencies failed                    ")
-            print(f"    {YELLOW}Try running manually: {BOLD}cd dashboard/frontend && npm install{RESET}")
-            print(f"    Log: {DIM}logs/npm-install.log{RESET}")
+            print(f"\r  {RED}✗{RESET} {T('dashboard_deps_failed')}                    ")
+            print(f"    {YELLOW}{T('try_manually')} {BOLD}cd dashboard/frontend && npm install{RESET}")
+            print(f"    {T('log_at')} {DIM}logs/npm-install.log{RESET}")
         else:
-            print(f"\r  {GREEN}✓{RESET} Installed dashboard dependencies                    ")
-            print(f"  {DIM}Building dashboard frontend...{RESET}", end="", flush=True)
+            print(f"\r  {GREEN}✓{RESET} {T('installed_dashboard_deps')}                    ")
+            print(f"  {DIM}{T('building_dashboard')}{RESET}", end="", flush=True)
             ret_build = os.system(f"cd {frontend_dir} && npm run build 2>{WORKSPACE}/logs/npm-build.log 1>/dev/null")
             if ret_build != 0:
-                print(f"\r  {RED}✗{RESET} Dashboard build failed                    ")
-                print(f"    {YELLOW}Try running manually: {BOLD}cd dashboard/frontend && npm run build{RESET}")
-                print(f"    Log: {DIM}logs/npm-build.log{RESET}")
+                print(f"\r  {RED}✗{RESET} {T('dashboard_build_failed')}                    ")
+                print(f"    {YELLOW}{T('try_manually')} {BOLD}cd dashboard/frontend && npm run build{RESET}")
+                print(f"    {T('log_at')} {DIM}logs/npm-build.log{RESET}")
             else:
-                print(f"\r  {GREEN}✓{RESET} Built dashboard frontend                    ")
+                print(f"\r  {GREEN}✓{RESET} {T('built_dashboard')}                    ")
 
     # Terminal-server dependencies (always needed)
     ts_dir = WORKSPACE / "dashboard" / "terminal-server"
     if (ts_dir / "package.json").exists():
-        print(f"  {DIM}Installing terminal-server dependencies...{RESET}", end="", flush=True)
+        print(f"  {DIM}{T('installing_terminal_deps')}{RESET}", end="", flush=True)
         ret = os.system(f"cd {ts_dir} && npm install --silent 2>{WORKSPACE}/logs/ts-install.log")
         if ret == 0:
-            print(f"\r  {GREEN}✓{RESET} Installed terminal-server dependencies                    ")
+            print(f"\r  {GREEN}✓{RESET} {T('installed_terminal_deps')}                    ")
         else:
-            print(f"\r  {RED}✗{RESET} Terminal-server dependencies failed                    ")
-            print(f"    Log: {DIM}logs/ts-install.log{RESET}")
+            print(f"\r  {RED}✗{RESET} {T('terminal_deps_failed')}                    ")
+            print(f"    {T('log_at')} {DIM}logs/ts-install.log{RESET}")
 
     # Data dir for SQLite
     (WORKSPACE / "dashboard" / "data").mkdir(parents=True, exist_ok=True)
@@ -1151,14 +1378,14 @@ nohup {install_dir}/.venv/bin/python app.py > {logs_dir}/dashboard.log 2>&1 &
     import urllib.request as _urllib
     try:
         _urllib.urlopen("http://localhost:32352", timeout=3)
-        print(f"  {GREEN}✓{RESET} Terminal server started (port 32352)")
+        print(f"  {GREEN}✓{RESET} {T('terminal_started')}")
     except Exception:
-        print(f"  {YELLOW}!{RESET} Terminal server may not have started — check logs/terminal-server.log")
+        print(f"  {YELLOW}!{RESET} {T('terminal_not_started')}")
     try:
         _urllib.urlopen("http://localhost:8080", timeout=3)
-        print(f"  {GREEN}✓{RESET} Dashboard started (port 8080)")
+        print(f"  {GREEN}✓{RESET} {T('dashboard_started')}")
     except Exception:
-        print(f"  {YELLOW}!{RESET} Dashboard may not have started — check logs/dashboard.log")
+        print(f"  {YELLOW}!{RESET} {T('dashboard_not_started')}")
 
     dashboard_url = access_config.get('url', f'http://localhost:{dashboard_port}')
 
@@ -1166,37 +1393,34 @@ nohup {install_dir}/.venv/bin/python app.py > {logs_dir}/dashboard.log 2>&1 &
         svc_msg = ""
         if service_user == "evonexus":
             svc_msg = f"""
-  Servico systemd:
-    {DIM}systemctl status evo-nexus{RESET}     — verificar status
-    {DIM}systemctl restart evo-nexus{RESET}    — reiniciar
-    {DIM}journalctl -u evo-nexus -f{RESET}     — ver logs
-    {DIM}su - evonexus{RESET}                  — acessar usuario do servico
+  {T('systemd_section')}
+    {DIM}systemctl status evo-nexus{RESET}     — {T('systemd_status')}
+    {DIM}systemctl restart evo-nexus{RESET}    — {T('systemd_restart')}
+    {DIM}journalctl -u evo-nexus -f{RESET}     — {T('systemd_logs')}
+    {DIM}su - evonexus{RESET}                  — {T('systemd_su')}
 """
         print(f"""
   {GREEN}{'='*50}{RESET}
-  {GREEN}Setup concluido!{RESET}
+  {GREEN}{T('setup_done')}{RESET}
   {GREEN}{'='*50}{RESET}
 
-  Dashboard disponivel em:
+  {T('dashboard_available_at')}
 
     {BOLD}{dashboard_url}{RESET}
 
-  Proximo passo:
-    1. Acesse o link acima e crie sua conta de administrador
-    2. Va em {BOLD}Providers{RESET} e configure o AI Provider
-    3. Abra um agente e comece a usar!
+  {T('next_steps_header')}
+    {T('next_step_1_remote')}
+    {T('next_step_2_remote')}
+    {T('next_step_3_remote')}
 {svc_msg}""")
     else:
         print(f"""
-  {GREEN}Done!{RESET} Next steps:
-  1. Edit {BOLD}.env{RESET} with your API keys
-  2. Run: {BOLD}make dashboard-app{RESET}
-  3. Open {BOLD}{dashboard_url}{RESET} to create your admin account
-  4. Run: {BOLD}make scheduler{RESET}    — start automated routines
-  5. Run: {BOLD}make help{RESET}         — see all commands
+  {GREEN}{T('setup_done')}{RESET}
 
-  {YELLOW}Note:{RESET} The admin account is created via the web dashboard,
-  not via CLI.
+  {T('next_steps_header')}
+  {T('next_step_1_local')}
+  {T('next_step_2_local')}
+  {T('next_step_3_local', url=dashboard_url)}
 """)
 
 
