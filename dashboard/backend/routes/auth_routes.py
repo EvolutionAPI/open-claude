@@ -112,7 +112,10 @@ def _save_workspace_config(ws: dict):
     }
 
     yaml_path = config_dir / "workspace.yaml"
-    with open(yaml_path, "w") as f:
+    # encoding="utf-8" is required — otherwise on Windows Python defaults to
+    # cp1252 and mangles accented characters in owner/company names
+    # (e.g. "João" becomes "Jo?o" on read).
+    with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     # Generate CLAUDE.md inline (no template needed)
@@ -126,7 +129,8 @@ def _save_workspace_config(ws: dict):
             f"**Name:** {ws['owner']}\n"
             f"**Company:** {ws['company']}\n"
             f"**Timezone:** {ws['timezone']}\n\n"
-            f"## Language\n\nAlways respond in **{ws['language']}**.\n"
+            f"## Language\n\nAlways respond in **{ws['language']}**.\n",
+            encoding="utf-8",
         )
 
     # Create workspace folders
