@@ -104,7 +104,7 @@ def _save_workspace_config(ws: dict):
             "owner": ws.get("owner_name", ""),
             "company": ws.get("company_name", ""),
             "timezone": ws.get("timezone", "UTC"),
-            "language": ws.get("language", "en"),
+            "language": ws.get("language", "pt-BR"),
         },
         "agents": {a: True for a in ws.get("agents", [])},
         "integrations": {i: True for i in ws.get("integrations", [])},

@@ -15,13 +15,15 @@ bp = Blueprint("settings", __name__)
 # to save "ptBR" without a hyphen; older workspace.yaml files still have it.
 # We normalize silently so the dashboard UI (which expects "pt-BR") receives
 # a canonical form without forcing users to migrate their .yaml by hand.
+#
+# Keys are stored in lowercase — lookup in _normalize_language lowercases
+# the input first, so "ptBR", "PTBR", "pt_BR", "Pt_Br" all match.
 _LANGUAGE_ALIASES = {
-    "ptBR": "pt-BR",
     "ptbr": "pt-BR",
-    "pt_BR": "pt-BR",
+    "pt_br": "pt-BR",
     "pt": "pt-BR",
-    "enUS": "en-US",
-    "en_US": "en-US",
+    "enus": "en-US",
+    "en_us": "en-US",
     "en": "en-US",
 }
 
@@ -32,11 +34,14 @@ def _normalize_language(raw) -> str:
     Safe on empty/None — returns the input unchanged. Unknown codes pass
     through so Portuguese → pt-BR but e.g. "fr" stays "fr" (the UI falls
     back to en-US on unknown codes via the i18n detector).
+
+    Alias lookup is case-insensitive to match the frontend's normalizeLocale
+    (which uses /^ptBR$/i etc.), so "PTBR" and "En_Us" resolve correctly too.
     """
     if not raw:
         return raw
     s = str(raw).strip()
-    return _LANGUAGE_ALIASES.get(s, s)
+    return _LANGUAGE_ALIASES.get(s.lower(), s)
 
 
 def _load_yaml(path):
