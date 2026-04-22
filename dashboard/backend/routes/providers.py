@@ -55,6 +55,14 @@ ALLOWED_ENV_VARS = frozenset({
     "CLOUD_ML_REGION",
 })
 
+_CLI_SEARCH_DIRS = (
+    str(Path.home() / ".local" / "bin"),
+    str(Path.home() / ".npm-global" / "bin"),
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+)
+
 
 def _read_config() -> dict:
     """Read providers.json. If missing, copy from providers.example.json."""
@@ -87,28 +95,53 @@ def _mask_secret(value: str) -> str:
     return value[:6] + "****" + value[-4:]
 
 
+def _build_cli_env(env: dict | None = None) -> dict:
+    """Ensure CLI checks inherit common user-local bin directories."""
+    merged = dict(env or os.environ)
+    current_path = merged.get("PATH", "")
+    path_parts = [p for p in current_path.split(os.pathsep) if p]
+    for candidate in _CLI_SEARCH_DIRS:
+        if candidate not in path_parts:
+            path_parts.append(candidate)
+    merged["PATH"] = os.pathsep.join(path_parts)
+    return merged
+
+
+def _resolve_cli_path(command: str, env: dict | None = None) -> str | None:
+    """Resolve a CLI path using an augmented PATH plus common fallbacks."""
+    cli_env = _build_cli_env(env)
+    resolved = shutil.which(command, path=cli_env.get("PATH"))
+    if resolved:
+        return resolved
+    for directory in _CLI_SEARCH_DIRS:
+        candidate = Path(directory) / command
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def _run_cli_version(command: str, env: dict | None = None) -> dict:
     """Run '<command> --version' safely using hardcoded dispatch.
 
     Each branch uses a literal string for the executable so that
     semgrep/opengrep does not flag it as subprocess injection.
     """
-    run_kwargs = dict(capture_output=True, text=True, timeout=10)
-    if env is not None:
-        run_kwargs["env"] = env
+    cli_env = _build_cli_env(env)
+    resolved = _resolve_cli_path(command, cli_env)
+    run_kwargs = dict(capture_output=True, text=True, timeout=10, env=cli_env)
 
     try:
-        if command == "openclaude":
-            result = subprocess.run(["openclaude", "--version"], **run_kwargs)  # noqa: S603, S607
-        elif command == "claude":
-            result = subprocess.run(["claude", "--version"], **run_kwargs)  # noqa: S603, S607
+        if resolved and command == "openclaude":
+            result = subprocess.run([resolved, "--version"], **run_kwargs)  # noqa: S603
+        elif resolved and command == "claude":
+            result = subprocess.run([resolved, "--version"], **run_kwargs)  # noqa: S603
         else:
             return {"installed": False, "version": None, "path": None}
 
         version = result.stdout.strip() or result.stderr.strip()
-        return {"installed": True, "version": version, "path": shutil.which(command)}
+        return {"installed": True, "version": version, "path": resolved}
     except (subprocess.TimeoutExpired, OSError):
-        return {"installed": False, "version": None, "path": shutil.which(command)}
+        return {"installed": False, "version": None, "path": resolved}
 
 
 def _check_cli(command: str) -> dict:
@@ -338,7 +371,8 @@ def test_provider(provider_id):
     if cli not in ALLOWED_CLI_COMMANDS:
         return jsonify({"success": False, "error": f"Unsupported CLI: {cli}"}), 400
 
-    if not shutil.which(cli):
+    resolved_cli = _resolve_cli_path(cli)
+    if not resolved_cli:
         return jsonify({
             "success": False,
             "error": f"'{cli}' not found in PATH",
@@ -349,7 +383,7 @@ def test_provider(provider_id):
     env_vars = _sanitize_env_vars(
         {k: v for k, v in provider.get("env_vars", {}).items() if v}
     )
-    test_env = {**os.environ, **env_vars}
+    test_env = _build_cli_env({**os.environ, **env_vars})
 
     result = _run_cli_version(cli, env=test_env)
     return jsonify({

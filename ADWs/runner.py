@@ -7,6 +7,7 @@ import subprocess
 import os
 import sys
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -127,6 +128,27 @@ def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=N
 _ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
 
 
+def _augment_path(base_path: str | None = None) -> str:
+    """Extend PATH with common user-local install locations for CLI tools."""
+    path_parts = [p for p in (base_path or "").split(os.pathsep) if p]
+    for candidate in (
+        str(Path.home() / ".local" / "bin"),
+        str(Path.home() / ".npm-global" / "bin"),
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ):
+        if candidate not in path_parts:
+            path_parts.append(candidate)
+    return os.pathsep.join(path_parts)
+
+
+def _resolve_cli_path(cli_command: str, env: dict) -> str:
+    """Resolve CLI binary path from the effective environment."""
+    resolved = shutil.which(cli_command, path=env.get("PATH"))
+    return resolved or cli_command
+
+
 def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: dict) -> subprocess.Popen:
     """Spawn a CLI process using only hardcoded command strings.
 
@@ -139,6 +161,8 @@ def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: d
     base_args.append(prompt)
 
     env = {**os.environ, **provider_env, "TERM": "dumb"}
+    env["PATH"] = _augment_path(env.get("PATH"))
+    resolved_cli = _resolve_cli_path(cli_command, env)
     popen_kwargs = dict(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -149,9 +173,9 @@ def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: d
 
     # Hardcoded dispatch — each branch uses a literal string for the executable
     if cli_command == "openclaude":
-        return subprocess.Popen(["openclaude"] + base_args, **popen_kwargs)  # noqa: S603
+        return subprocess.Popen([resolved_cli] + base_args, **popen_kwargs)  # noqa: S603
     else:
-        return subprocess.Popen(["claude"] + base_args, **popen_kwargs)  # noqa: S603
+        return subprocess.Popen([resolved_cli] + base_args, **popen_kwargs)  # noqa: S603
 _ALLOWED_ENV_VARS = frozenset({
     "CLAUDE_CODE_USE_OPENAI", "CLAUDE_CODE_USE_GEMINI", "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX", "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
