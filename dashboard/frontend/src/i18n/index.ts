@@ -71,13 +71,11 @@ i18n
     resources,
     fallbackLng: DEFAULT_LOCALE,
     supportedLngs: SUPPORTED_LOCALES as unknown as string[],
-    nonExplicitSupportedLngs: true,
-    load: 'currentOnly',
-    // Without this, init() defers until after the current micro-task —
-    // enough for the first render of <Setup/> or <Login/> to fire with
-    // resources still loading, and t() falls back to raw keys
-    // ("setup.appSubtitle" showing up in the UI). Our resources are
-    // bundled inline (no network fetch), so synchronous init is safe.
+    defaultNS: 'translation',
+    ns: ['translation'],
+    // initImmediate: false ensures resource registration is synchronous.
+    // That plus main.tsx awaiting i18n.isInitialized means useTranslation()
+    // returns ready=true on the very first render — no flash of raw keys.
     initImmediate: false,
     interpolation: {
       escapeValue: false, // React already escapes
@@ -88,6 +86,21 @@ i18n
       caches: ['localStorage'],
     },
     returnNull: false,
+    // If a lookup actually misses, show the English copy instead of the raw
+    // key — defensive against any single locale being incomplete.
+    parseMissingKeyHandler: (key) => {
+      const fallback = (enUS.translation as unknown) as Record<string, unknown>
+      const parts = key.split('.')
+      let cur: unknown = fallback
+      for (const p of parts) {
+        if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
+          cur = (cur as Record<string, unknown>)[p]
+        } else {
+          return key
+        }
+      }
+      return typeof cur === 'string' ? cur : key
+    },
   })
 
 /**
