@@ -1808,28 +1808,23 @@ def main():
     os.system("pkill -f 'app.py' 2>/dev/null")
     os.system("sleep 1")
 
-    # Create start-services.sh
+    # The start-services.sh shipped in git (since #27) is
+    # self-discovering — resolves SCRIPT_DIR via
+    # $(dirname "${BASH_SOURCE[0]}") at runtime — and already includes
+    # the scheduler launch. So it works regardless of install path or
+    # service user. No regeneration needed; just ensure it's
+    # executable.
+    #
+    # Until this commit, the block here REWROTE the file with a
+    # hardcoded ``cd {install_dir}`` AND silently dropped the
+    # ``scheduler.py`` launch line entirely. Net effect: the scheduler
+    # never came up after a wizard install (cron-style routines,
+    # integration sync, briefings — all dead) and the
+    # self-discovering version from #27 was clobbered on every
+    # ``make setup`` run.
     startup_script = install_dir / "start-services.sh"
-    startup_script.write_text(f"""#!/bin/bash
-export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
-cd {install_dir}
-
-# Kill existing services
-pkill -f 'terminal-server/bin/server.js' 2>/dev/null
-pkill -f 'dashboard/backend.*app.py' 2>/dev/null
-sleep 1
-
-# Clean stale sessions — old sessions cause agent persona issues
-rm -f $HOME/.claude-code-web/sessions.json 2>/dev/null
-
-# Start terminal-server (must run FROM the project root for agent discovery)
-nohup node dashboard/terminal-server/bin/server.js > {logs_dir}/terminal-server.log 2>&1 &
-
-# Start Flask dashboard
-cd dashboard/backend
-nohup {install_dir}/.venv/bin/python app.py > {logs_dir}/dashboard.log 2>&1 &
-""", encoding="utf-8")
-    os.chmod(startup_script, 0o755)
+    if startup_script.exists():
+        os.chmod(startup_script, 0o755)
 
     # Create systemd service (remote/VPS only, when we have a service user)
     if is_remote and service_user and os.getuid() == 0:
