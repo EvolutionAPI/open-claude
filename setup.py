@@ -1414,6 +1414,57 @@ def create_folders(config: dict):
     print(f"  {GREEN}✓{RESET} {T('created_workspace_folders', count=count)}")
 
 
+def _ensure_user_has_tools(service_user: str) -> None:
+    """Make sure ``uv`` (and friends) are installed for ``service_user``.
+
+    The wizard's ``check_prerequisites()`` installs uv / claude / openclaude
+    for whoever ran the wizard (root, in the VPS case). When the service
+    will later run as a different user (``SUDO_USER=ubuntu``, or the
+    auto-created ``evonexus`` account), that user has its own ``$HOME``
+    and inherits none of those tools — so ``su - <user> -c 'uv sync'``
+    fails immediately with "uv: command not found".
+
+    Idempotent: each ``command -v`` check skips the install when the
+    tool is already present. Safe to call from both the SUDO_USER and
+    auto-created-user branches.
+    """
+    if not service_user or service_user == "root":
+        return
+    # uv (Python package manager) — needed for `uv sync`
+    rc = os.system(
+        f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && command -v uv' "
+        f">/dev/null 2>&1"
+    )
+    if rc != 0:
+        print(f"  {DIM}{T('tool_installing_verb', name=f'uv for {service_user}')}{RESET}")
+        os.system(
+            f"su - {service_user} -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' "
+            f">/dev/null 2>&1"
+        )
+    # Claude Code CLI — needed by the dashboard at runtime
+    rc = os.system(
+        f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && command -v claude' "
+        f">/dev/null 2>&1"
+    )
+    if rc != 0:
+        print(f"  {DIM}{T('tool_installing_verb', name=f'Claude Code for {service_user}')}{RESET}")
+        os.system(
+            f"su - {service_user} -c 'npm install -g @anthropic-ai/claude-code --prefix ~/.local' "
+            f">/dev/null 2>&1"
+        )
+    # OpenClaude — required for non-Anthropic providers (OpenAI, Gemini, ...)
+    rc = os.system(
+        f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && command -v openclaude' "
+        f">/dev/null 2>&1"
+    )
+    if rc != 0:
+        print(f"  {DIM}{T('tool_installing_verb', name=f'OpenClaude for {service_user}')}{RESET}")
+        os.system(
+            f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@latest --prefix ~/.local' "
+            f">/dev/null 2>&1"
+        )
+
+
 def _maybe_relocate_install(install_dir: Path) -> Path:
     """Relocate the install when the future service user can't reach it.
 
@@ -1469,6 +1520,10 @@ def _maybe_relocate_install(install_dir: Path) -> Path:
         os.chdir(new_dir)
     except OSError:
         pass
+    # Bootstrap uv/claude/openclaude for the service user — without this
+    # the very next step (`su - ubuntu -c 'uv sync'`) fails with
+    # "command not found" because uv lives under root's $HOME.
+    _ensure_user_has_tools(sudo_user)
     return new_dir
 
 
@@ -1611,7 +1666,15 @@ def main():
     print(f"  {DIM}{T('installing_python_deps')}{RESET}", end="", flush=True)
     _sudo_user = os.environ.get("SUDO_USER", "")
     if _sudo_user and os.getuid() == 0:
-        ret = os.system(f"su - {_sudo_user} -c 'cd {WORKSPACE} && uv sync -q' 2>{WORKSPACE}/logs/uv-sync.log")
+        # Add ~/.local/bin to PATH explicitly. ``su - <user>`` runs the
+        # login shell but Ubuntu's default ~/.profile only adds
+        # ~/.local/bin to PATH for INTERACTIVE shells, so a non-interactive
+        # ``su -c '...'`` may not see the ``uv`` we just installed for them.
+        ret = os.system(
+            f"su - {_sudo_user} -c "
+            f"'export PATH=$HOME/.local/bin:$PATH && cd {WORKSPACE} && uv sync -q' "
+            f"2>{WORKSPACE}/logs/uv-sync.log"
+        )
     else:
         ret = os.system(f"cd {WORKSPACE} && uv sync -q 2>{WORKSPACE}/logs/uv-sync.log")
     if ret == 0 and (WORKSPACE / ".venv" / "bin" / "python").exists():
