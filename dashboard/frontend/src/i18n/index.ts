@@ -73,6 +73,12 @@ i18n
     supportedLngs: SUPPORTED_LOCALES as unknown as string[],
     nonExplicitSupportedLngs: true,
     load: 'currentOnly',
+    // Without this, init() defers until after the current micro-task —
+    // enough for the first render of <Setup/> or <Login/> to fire with
+    // resources still loading, and t() falls back to raw keys
+    // ("setup.appSubtitle" showing up in the UI). Our resources are
+    // bundled inline (no network fetch), so synchronous init is safe.
+    initImmediate: false,
     interpolation: {
       escapeValue: false, // React already escapes
     },
