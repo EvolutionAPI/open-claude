@@ -9,13 +9,17 @@
  *   3. `navigator.language` (best-effort browser preference)
  *   4. `en-US` fallback
  *
- * Translations live in `locales/<bcp47>/<namespace>.json`. Unknown codes
- * (e.g. `pt-PT`, `ja`) fall back to `en-US` — add a new folder under
- * `locales/` to ship a new language.
+ * We resolve the locale synchronously in `resolveInitialLocale()` and pass
+ * it to `i18n.init({ lng })` rather than relying on `i18next-browser-
+ * languagedetector`. Detector + `supportedLngs` + `load: 'currentOnly'`
+ * interact such that `i18n.languages` ends up [] even when data is loaded,
+ * so `t()` / `exists()` return raw keys. Explicit `lng` avoids the issue.
+ *
+ * Translations live in `locales/<bcp47>/index.ts`. Unknown codes
+ * (e.g. `pt-PT`, `ja`) fall back to `en-US` via normalizeLocale + fallbackLng.
  */
 
 import i18n from 'i18next'
-import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
 import ptBR from './locales/pt-BR'
@@ -64,43 +68,32 @@ const resources = {
   es,
 }
 
+/**
+ * Resolve the initial locale synchronously before i18next.init so the
+ * resolution chain (i18n.languages) is populated from the start.
+ * localStorage > navigator.language > DEFAULT_LOCALE.
+ */
+function resolveInitialLocale(): SupportedLocale {
+  if (typeof window === 'undefined') return DEFAULT_LOCALE
+  try {
+    const stored = localStorage.getItem('evo_lang')
+    if (stored) return normalizeLocale(stored)
+  } catch {
+    // storage disabled — fall through
+  }
+  return normalizeLocale(navigator.language)
+}
+
 i18n
-  .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
+    lng: resolveInitialLocale(),
     fallbackLng: DEFAULT_LOCALE,
-    supportedLngs: SUPPORTED_LOCALES as unknown as string[],
-    defaultNS: 'translation',
-    ns: ['translation'],
-    // initImmediate: false ensures resource registration is synchronous.
-    // That plus main.tsx awaiting i18n.isInitialized means useTranslation()
-    // returns ready=true on the very first render — no flash of raw keys.
-    initImmediate: false,
     interpolation: {
       escapeValue: false, // React already escapes
     },
-    detection: {
-      order: ['localStorage', 'navigator'],
-      lookupLocalStorage: 'evo_lang',
-      caches: ['localStorage'],
-    },
     returnNull: false,
-    // If a lookup actually misses, show the English copy instead of the raw
-    // key — defensive against any single locale being incomplete.
-    parseMissingKeyHandler: (key) => {
-      const fallback = (enUS.translation as unknown) as Record<string, unknown>
-      const parts = key.split('.')
-      let cur: unknown = fallback
-      for (const p of parts) {
-        if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
-          cur = (cur as Record<string, unknown>)[p]
-        } else {
-          return key
-        }
-      }
-      return typeof cur === 'string' ? cur : key
-    },
   })
 
 /**
