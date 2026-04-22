@@ -208,6 +208,12 @@ MESSAGES = {
         "nginx_config_not_created": "Nginx config file was not created at {path}",
         "nginx_no_permission": "No permission to write nginx config — run setup as root/sudo",
         "removed_nginx_default_site": "Removed nginx default site",
+        # Install dir auto-relocation
+        "install_inaccessible": "User '{user}' cannot access {path} (likely /root/* with mode 700)",
+        "install_relocating": "Relocating install to {dest} so the service user can read it...",
+        "install_relocated": "Install relocated to {dest}",
+        "install_relocate_failed": "Failed to relocate install — check disk space / permissions",
+        "install_relocate_hint": "Original copy at {orig} can be removed after setup completes",
         # AI Provider wizard
         "choose_ai_provider_header": "Choose your AI provider:",
         "provider_opt1_anthropic": "Anthropic (native Claude)",
@@ -364,6 +370,12 @@ MESSAGES = {
         "nginx_config_not_created": "Arquivo de configuração do nginx não foi criado em {path}",
         "nginx_no_permission": "Sem permissão para escrever a configuração do nginx — execute o setup como root/sudo",
         "removed_nginx_default_site": "Site padrão do nginx removido",
+        # Install dir auto-relocation
+        "install_inaccessible": "Usuário '{user}' não consegue acessar {path} (provavelmente /root/* com modo 700)",
+        "install_relocating": "Movendo instalação para {dest} para que o usuário do serviço consiga ler...",
+        "install_relocated": "Instalação movida para {dest}",
+        "install_relocate_failed": "Falha ao mover a instalação — verifique espaço em disco / permissões",
+        "install_relocate_hint": "A cópia original em {orig} pode ser removida após o setup terminar",
         # AI Provider wizard
         "choose_ai_provider_header": "Escolha seu provedor de IA:",
         "provider_opt1_anthropic": "Anthropic (Claude nativo)",
@@ -520,6 +532,12 @@ MESSAGES = {
         "nginx_config_not_created": "El archivo de configuración de nginx no se creó en {path}",
         "nginx_no_permission": "Sin permisos para escribir la configuración de nginx — ejecuta el setup como root/sudo",
         "removed_nginx_default_site": "Sitio predeterminado de nginx eliminado",
+        # Install dir auto-relocation
+        "install_inaccessible": "El usuario '{user}' no puede acceder a {path} (probablemente /root/* con modo 700)",
+        "install_relocating": "Reubicando la instalación en {dest} para que el usuario del servicio pueda leerla...",
+        "install_relocated": "Instalación reubicada en {dest}",
+        "install_relocate_failed": "Error al reubicar la instalación — revisa espacio en disco / permisos",
+        "install_relocate_hint": "La copia original en {orig} puede eliminarse cuando el setup termine",
         # AI Provider wizard
         "choose_ai_provider_header": "Elige tu proveedor de IA:",
         "provider_opt1_anthropic": "Anthropic (Claude nativo)",
@@ -1396,6 +1414,64 @@ def create_folders(config: dict):
     print(f"  {GREEN}✓{RESET} {T('created_workspace_folders', count=count)}")
 
 
+def _maybe_relocate_install(install_dir: Path) -> Path:
+    """Relocate the install when the future service user can't reach it.
+
+    Common failure on VPS: operator runs the wizard as root after
+    ``sudo`` (so ``SUDO_USER=ubuntu`` is set) from ``/root/evonexus``.
+    ``/root`` is mode 700, so the ``ubuntu`` user cannot ``chdir`` into
+    the install directory. Symptoms:
+      * ``su - ubuntu -c 'cd /root/evonexus && uv sync'`` fails →
+        "Failed to install Python dependencies"
+      * systemd unit later fails with ``status=200/CHDIR``
+
+    Auto-fix: copy the project into ``/home/<service_user>/evo-nexus``
+    and update the global ``WORKSPACE`` so every later step (deps, npm
+    build, systemd unit path) sees the new location.
+
+    Returns the (possibly new) install directory. Called BEFORE the
+    Python dep install so the relocation cascades through the rest of
+    the wizard automatically.
+    """
+    global WORKSPACE
+    sudo_user = os.environ.get("SUDO_USER", "")
+    if os.getuid() != 0 or not sudo_user or sudo_user == "root":
+        return install_dir
+    # Cheap reachability test: can the service user actually read+enter it?
+    rc = os.system(
+        f"su - {sudo_user} -c 'test -x {install_dir} && test -r {install_dir}/setup.py' "
+        f">/dev/null 2>&1"
+    )
+    if rc == 0:
+        return install_dir
+    try:
+        service_home = subprocess.run(
+            ["getent", "passwd", sudo_user], capture_output=True, text=True, timeout=5
+        ).stdout.strip().split(":")[5]
+    except (IndexError, subprocess.SubprocessError):
+        service_home = f"/home/{sudo_user}"
+    if not service_home:
+        service_home = f"/home/{sudo_user}"
+    new_dir = Path(service_home) / "evo-nexus"
+    print(f"\n  {YELLOW}!{RESET} {T('install_inaccessible', user=sudo_user, path=install_dir)}")
+    print(f"  {DIM}{T('install_relocating', dest=new_dir)}{RESET}")
+    if new_dir.exists():
+        os.system(f"rm -rf {new_dir}")
+    rc = os.system(f"cp -a {install_dir} {new_dir}")
+    if rc != 0:
+        print(f"  {RED}✗{RESET} {T('install_relocate_failed')}")
+        return install_dir
+    os.system(f"chown -R {sudo_user}:{sudo_user} {new_dir}")
+    print(f"  {GREEN}✓{RESET} {T('install_relocated', dest=new_dir)}")
+    print(f"  {DIM}{T('install_relocate_hint', orig=install_dir)}{RESET}")
+    WORKSPACE = new_dir
+    try:
+        os.chdir(new_dir)
+    except OSError:
+        pass
+    return new_dir
+
+
 def _setup_systemd_service(service_user, install_dir, logs_dir):
     """Create and start a systemd service for EvoNexus."""
     service_home = f"/home/{service_user}"
@@ -1522,6 +1598,12 @@ def main():
 
     # Logs dir (for install logs)
     (WORKSPACE / "logs").mkdir(exist_ok=True)
+
+    # Auto-relocate the install if the future service user (SUDO_USER) cannot
+    # reach it — typically because the operator cloned into /root/* (mode 700).
+    # This MUST run before `uv sync`, npm install, and the systemd unit gets
+    # written, otherwise all three fail with permission errors.
+    _maybe_relocate_install(WORKSPACE)
 
     # Install Python dependencies
     # Must run as the ORIGINAL user (not root) so .venv symlinks
