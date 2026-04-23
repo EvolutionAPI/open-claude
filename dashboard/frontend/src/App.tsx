@@ -31,8 +31,9 @@ import Settings from './pages/Settings'
 import ShareView from './pages/ShareView'
 import ShareLinks from './pages/ShareLinks'
 import HeartbeatsList, { HeartbeatDetail } from './pages/Heartbeats'
+import Activity from './pages/Activity'
 import Goals from './pages/Goals'
-import Issues from './pages/Issues'
+import Topics from './pages/Topics'
 import TicketDetail from './pages/TicketDetail'
 import KnowledgeLayout from './pages/Knowledge/KnowledgeLayout'
 import ConnectionLayout from './pages/Knowledge/ConnectionLayout'
@@ -62,6 +63,7 @@ function AppContent() {
   const isShare = location.pathname.startsWith('/share/')
   const isOnboarding = location.pathname.startsWith('/onboarding')
   const isAgentDetail = /^\/agents\/[^/]+$/.test(location.pathname)
+  const isTicketDetail = /^\/tickets\/[^/]+$/.test(location.pathname)
   const isWorkspace = location.pathname === '/workspace' || location.pathname.startsWith('/workspace/')
   const { user, loading, needsSetup, hasPermission } = useAuth()
   const extUser = user as (typeof user & OnboardingUser) | null
@@ -132,7 +134,7 @@ function AppContent() {
       {/* Pages — responsive margin */}
       <main
         className={
-          isAgentDetail || isWorkspace
+          isAgentDetail || isWorkspace || isTicketDetail
             ? 'flex-1 ml-0 lg:ml-60 pt-14 lg:pt-0 h-screen overflow-hidden'
             : 'flex-1 ml-0 lg:ml-60 p-4 lg:p-8 pt-16 lg:pt-8 overflow-auto'
         }
@@ -155,6 +157,7 @@ function AppContent() {
           <Route path="/agents" element={<Agents />} />
           <Route path="/agents/:name" element={<AgentDetail />} />
           <Route path="/routines" element={<Routines />} />
+          {hasPermission('scheduler', 'view') && <Route path="/activity" element={<Activity />} />}
           <Route path="/tasks" element={<Tasks />} />
           {hasPermission('triggers', 'view') && <Route path="/triggers" element={<Triggers />} />}
           <Route path="/skills" element={<Skills />} />
@@ -177,7 +180,8 @@ function AppContent() {
           {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
           {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
           <Route path="/goals" element={<Goals />} />
-          {hasPermission('tickets', 'view') && <Route path="/issues" element={<Issues />} />}
+          {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
+          {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
           {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
           {hasPermission('knowledge', 'view') && (
             <>

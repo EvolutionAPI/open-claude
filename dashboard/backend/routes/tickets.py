@@ -735,6 +735,44 @@ def workspace_subfolders():
     return jsonify({"folders": folders})
 
 
+@bp.route("/api/workspace/subfolders", methods=["POST"])
+def create_workspace_subfolder():
+    """Create a new immediate subdirectory under workspace/."""
+    denied = _require("execute")
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+
+    if not name:
+        return jsonify({"error": "name_required"}), 400
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        return jsonify({"error": "invalid_name", "message": "Use só letras minúsculas, números e hífen."}), 400
+    if len(name) < 2 or len(name) > 50:
+        return jsonify({"error": "invalid_length"}), 400
+
+    root = WORKSPACE / "workspace"
+    target = root / name
+    # path traversal defense
+    resolved = target.resolve()
+    if not str(resolved).startswith(str(root.resolve())):
+        return jsonify({"error": "path_traversal"}), 400
+
+    if target.exists():
+        return jsonify({"error": "already_exists", "path": f"workspace/{name}"}), 409
+
+    try:
+        target.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        return jsonify({"error": "mkdir_failed", "message": str(exc)}), 500
+
+    return jsonify({
+        "name": name,
+        "path": f"workspace/{name}",
+        "full_path": str(target),
+    }), 201
+
+
 # --------------- Turn completed (Option D — summary trigger) ---------------
 
 @bp.route("/api/tickets/<string:ticket_id>/turn-completed", methods=["POST"])
@@ -832,16 +870,27 @@ def archive_thread(ticket_id: str):
         return jsonify({"error": "already_archived"}), 409
 
     src_dir = WORKSPACE / "memory" / "threads" / ticket_id
-    archive_dir = WORKSPACE / "memory" / "threads" / "_archive" / ticket_id
+    archive_root = WORKSPACE / "memory" / "threads" / "_archive"
+    archive_dir = archive_root / ticket_id
+
+    archive_root.mkdir(parents=True, exist_ok=True)
 
     if src_dir.exists():
-        archive_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src_dir), str(archive_dir))
+        # If archive_dir already exists (previous partial archive), rename with timestamp suffix
+        if archive_dir.exists():
+            archive_dir = archive_root / f"{ticket_id}.{_now().replace(':', '-').replace('.', '-')}"
+        try:
+            shutil.move(str(src_dir), str(archive_dir))
+        except OSError as exc:
+            return jsonify({"error": "archive_move_failed", "message": str(exc)}), 500
         # Write tombstone
-        (archive_dir / "ARCHIVED.json").write_text(
-            json.dumps({"ticket_id": ticket_id, "archived_at": _now(), "archived_by": current_user.username}),
-            encoding="utf-8",
-        )
+        try:
+            (archive_dir / "ARCHIVED.json").write_text(
+                json.dumps({"ticket_id": ticket_id, "archived_at": _now(), "archived_by": current_user.username}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # tombstone is best-effort
 
     now = _now()
     old_status = ticket.status

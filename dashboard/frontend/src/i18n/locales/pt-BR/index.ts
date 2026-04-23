@@ -180,6 +180,7 @@ const translations = {
       tasks: 'Tarefas',
       triggers: 'Gatilhos',
       routines: 'Rotinas',
+      activity: 'Atividade',
       scheduler: 'Serviços',
       integrations: 'Integrações',
       providers: 'Provedores',
@@ -187,7 +188,7 @@ const translations = {
       backups: 'Backups',
       costs: 'Custos',
       docs: 'Docs',
-      issues: 'Problemas',
+      issues: 'Tópicos',
       reports: 'Relatórios',
       mempalace: 'MemPalace',
       systems: 'Sistemas',
@@ -547,8 +548,8 @@ const translations = {
     },
 
     issues: {
-      title: 'Problemas',
-      subtitle: 'Bugs, regressões e pontos de atenção',
+      title: 'Tópicos',
+      subtitle: 'Fila de trabalho e threads de conversa',
       openCount: '{{count}} aberto(s)',
       closed: 'Fechado',
       reopen: 'Reabrir',

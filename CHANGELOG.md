@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-04-23
+
+Minor release adding a unified Activity Log — a single page aggregating execution history across routines, heartbeats and triggers so the user can answer "what did the system just do?" without visiting three separate pages.
+
+### Added
+
+- **`/activity` — Unified Activity Timeline** — new page aggregating execution history across all three automation primitives: scheduler routines, agent heartbeats, and event-based triggers. Presented as a reverse-chronological timeline (Linear / Vercel Logs / GitHub Actions style). Each row shows name + type badge + status pill (success / error / running) + duration + relative time. Click opens a right-side drawer (480px) with full output, metadata (started / finished / exit code / cost / tokens), and a "Open in dedicated page" link.
+  - **Filters:** multi-select type chips (Routines / Heartbeats / Triggers), status dropdown (All / Success / Error / Running), period tabs (Today / 7d / 30d / All), debounced search (300ms, client-side).
+  - **Auto-refresh:** 30s interval, paused automatically when the browser tab is in background (`visibilitychange`).
+  - **Load more:** client-side pagination at 50 items per page.
+  - **Accessibility:** drawer is `role="dialog"` `aria-modal="true"`, Escape closes, click-outside closes.
+  - **Nav:** new sidebar item "Activity" (`Atividade` pt-BR / `Actividad` es) under the operations group. `View all →` on the Overview Routines card now points to `/activity` for a unified journey.
+  - **Data sources:** reuses existing backend endpoints — `GET /api/routines/logs`, `GET /api/heartbeats/{id}/runs`, `GET /api/triggers/{id}`. Client-side aggregation (N+1 fetches via `Promise.all`) — acceptable for v1 volume; server-side aggregated endpoint can come later if needed.
+
+### Fixed (same release)
+
+- **Activity parser — real routine log shape** — initial parser was looking for `log.name` / `log.routine_name` / `log.status` / `log.exit_code`, which don't exist in `ADWs/logs/YYYY-MM-DD.jsonl`. Real shape is `{ timestamp, run, prompt, returncode, duration_seconds, input_tokens, output_tokens, cost_usd }`. Parser now reads `run` as the routine name (so rows show `good-morning`, `end-of-day`, etc. instead of `Unknown Routine`), derives status from `returncode`, and surfaces `cost_usd` / token counts / prompt preview in the drawer.
+
+### Known limitations (v1)
+
+- `/api/routines/logs` only accepts `?date=`, so the period filter (7d / 30d / All) affects heartbeats and triggers only — routines always show today. The routine log endpoint will need `from`/`to` params to honor longer periods; deferred to a follow-up.
+- Client-side aggregation means timeline loads can do up to `1 + N + M` requests (1 for routines today, N for each heartbeat's last 10 runs, M for each trigger's detail). Fine under ~20 heartbeats/triggers, may need batching later.
+
+## [0.29.3] - 2026-04-23
+
+Patch release: fix the infinite page scroll in thread mode so the embedded chat behaves exactly like the agent chat (fixed input at the bottom, messages scroll inside the container), and harden `.gitignore` against nested `.claude/` folders that agents were accidentally creating from subdirectory cwds.
+
+### Fixed
+
+- **Thread mode — infinite page scroll** — `TicketDetail` in thread mode used `h-full` but the parent `<main>` in `App.tsx` only applied `h-screen overflow-hidden` for `/agents/:id` and `/workspace/*` routes. Any route falling into the default branch used `overflow-auto` without a fixed height, so the embedded `AgentChat` grew with its message list and pushed the input field off-screen. Fix: add `isTicketDetail` matcher to `App.tsx` so `/tickets/:id` joins the fixed-viewport branch; in `TicketDetail.tsx` the non-thread (document) view gains its own `h-full overflow-auto` wrapper with the original padding to preserve its vertical-document layout. Thread mode now mirrors the agent chat exactly.
+
+### Changed
+
+- **`.gitignore` hardening — nested `.claude/` in subdirectories** — agents running from `dashboard/frontend/` (e.g., `cd dashboard/frontend && npm run build`) were creating `dashboard/frontend/.claude/agent-memory/` relative to cwd instead of writing to the canonical `.claude/` at the repo root. Content was already ignored by the existing `.claude/agent-memory/` rule, but the `.claude/` folder itself showed up untracked in editors. Added `**/.claude/agent-memory/` and `dashboard/*/.claude/` patterns to block this at any depth.
+
+## [0.29.2] - 2026-04-23
+
+Patch release: in-app toasts and confirm dialogs replacing 47 native `alert()`/`confirm()` calls, agent avatars in the Topics list, plus fixes for PR #30 (provider routing + docker) and the archive endpoint.
+
+### Added
+
+- **In-app Toast system (`useToast`)** — stackable notifications in the bottom-right corner (max 5), auto-dismiss 4s, variants `success` / `error` / `warning` / `info`. Replaces all `window.alert()` usage in the dashboard with a consistent, non-blocking pattern in the EvoNexus dark tone. Zero new dependencies (pure CSS keyframes + Context API).
+- **In-app Confirm dialog (`useConfirm`)** — promise-based modal with `default` / `danger` variants, keyboard support (Enter confirms, Escape cancels), focus on Cancel for danger variant (safer default). Replaces all `window.confirm()` usage.
+- **Agent avatars in `/topics` list** — threads now show the assigned agent's avatar (24px, same as the sidebar) instead of a generic green chat icon, matching the visual language of `ThreadsSidebar`. Shared `AgentIcon` component extracted from the sidebar for reuse.
+
+### Changed
+
+- **47 UX call sites migrated from native dialogs to in-app components** across `AgentChat`, `ChatSessionList`, `Backups`, `Heartbeats`, `Roles`, `Scheduler`, `Systems`, `Tasks`, `TicketDetail`, `Topics`, `Triggers`, `Users`. All messages translated to pt-BR where they were in English.
+- **Provider config centralized** (PR #30) — shared `provider-config.js` helper in the terminal-server centralizes loading, env var allow-listing, and model capability detection (`code` vs `chat`). Reduces duplication between `chat-bridge.js` and `claude-bridge.js`.
+- **Chat uses OpenAI-compatible streaming for non-Anthropic providers** (PR #30) — `/chat/completions` streaming so chat-completion style models (GPT, Gemini, custom OmniRouter) work in dashboard Chat. Anthropic keeps the existing Agent SDK flow.
+- **Terminal enforces code-only models for non-Anthropic providers** (PR #30) — chat-completion models are now blocked in the Terminal with a clear error directing the user to the Chat instead.
+- **Telegram notification helper for ADW routines** (PR #30) — `run_skill(..., notify_telegram=True)` appends a deterministic notification instruction to the skill prompt so end-of-day and good-morning routines emit exactly one Telegram message via the MCP `reply()` call. `ADWs/runner.py` also exposes a `send_telegram()` helper that posts directly via Bot API as a fallback.
+
+### Fixed
+
+- **Archive thread endpoint — 500 on re-archive** — `shutil.move` was raising `OSError` when `memory/threads/_archive/{ticket_id}/` already existed from a previous partial archive. Now checks for existing path and falls back to a timestamped suffix; tombstone write is best-effort and wrapped in try/except; the endpoint surfaces a proper JSON error instead of a bare 500.
+- **Docker dashboard container starts reliably** (PR #30) — `npm install --legacy-peer-deps` in `Dockerfile.swarm.dashboard` avoids peer-dep install failures on fresh rebuilds (same pin already applied to the non-Docker install).
+
+## [0.29.1] - 2026-04-23
+
+Patch iterating on the v0.29.0 thread-areas feature: UI rebrand, navigation polish, and fixes identified by the post-release verification pass.
+
+### Changed
+
+- **Renamed "Issues" → "Topics" across the UI** — the feature evolved from a pure issue tracker into a container for both tasks and persistent chat threads, so the label no longer fit. Page file renamed `Issues.tsx` → `Topics.tsx`, route moved `/issues` → `/topics` with a 302 redirect preserving old bookmarks, sidebar nav item updated, breadcrumb `Topics / {title}`, i18n updated across 3 locales: en `Topics`, pt-BR `Tópicos`, es `Temas`. Backend (`tickets` table, `/api/tickets/*` endpoints, `Ticket` model) intentionally unchanged — pure UX rebranding, zero data migration.
+
+### Added
+
+- **Threads sidebar — navigate between chat threads without leaving the conversation** — when viewing a ticket in thread mode, a 280px sidebar now appears on the left listing all threads, grouped by agent (Clawdia, Kai, Flux…), with active/archived split. Active thread is highlighted with a green left border. Toggle button collapses to 48px (persisted in localStorage). Each item shows title + relative time (`há 2h`, `ontem`, `3d`). On mobile (<768px), sidebar becomes a slide-in drawer triggered by a `PanelLeft` icon — 85vw from the left with backdrop, Escape/click-outside/close to dismiss, `role=dialog` accessibility. Desktop and mobile share the same `ThreadsSidebar` component via an `asDrawer` prop; drawer lazy-mounts to avoid double-fetch. Pure CSS transitions, zero new dependencies.
+- **Create workspace folders from the Convert to Thread modal** — `+ Nova pasta` button inline in the folder dropdown opens an input accepting `[a-z0-9-]+` names (2-50 chars). Pressing Enter or clicking Create fires `POST /api/workspace/subfolders`; new folder appears in the dropdown pre-selected, no page reload. Backend validates name pattern, defends against path traversal, returns 409 if folder exists, 201 with `{name, path, full_path}` on success.
+
+### Fixed
+
+- **`convert-to-thread` is now idempotent** — calling the endpoint on a ticket that is already a thread returns 200 with the current ticket state instead of 409. Workspace path conflict (different path supplied) still returns 409 `workspace_path_conflict` with both paths in the error body. Prevents spurious errors when the UI double-fires the conversion.
+- **`turn-completed` is now race-safe monotonic** — uses `UPDATE ... WHERE message_count < :n` with `n = current + 1`, so concurrent calls with the same base value only increment once (second call is a silent no-op). Implements option (a) from the summary-trigger ADR without extra IO.
+- **Convert to Thread modal warns about agent immutability** — orange warning banner before the Convert button: "Após converter, o agente desta thread não poderá ser alterado. Crie uma thread nova para trocar de agente." Consistent with the existing `archived` badge style.
+- **Archived threads are read-only in the UI** — when a thread's status is `archived`, the `TicketDetail` shows a "📦 Thread arquivada — read-only. [Unarchive]" banner above the chat, disables interaction on the embedded `AgentChat` via `pointer-events-none opacity-60`, and the Unarchive button calls `POST /api/tickets/:id/unarchive-thread` to reactivate. Previously the UI allowed typing and only the backend rejected it.
+
 ## [0.29.0] - 2026-04-23
 
 ### Added
