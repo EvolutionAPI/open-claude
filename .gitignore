@@ -108,3 +108,5 @@ site/lib/
 mempalace.yaml
 entities.json
 .claude/worktrees/
+
+memory/raw-transcripts/
