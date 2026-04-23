@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Eye, EyeOff, ExternalLink, GitBranch, Loader2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { api } from '../../../lib/api'
 
 const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
@@ -16,6 +17,7 @@ interface RestoreSelectRepoProps {
 }
 
 export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoProps) {
+  const { t } = useTranslation()
   const [token, setToken] = useState('')
   const [showToken, setShowToken] = useState(false)
   const [tokenConnected, setTokenConnected] = useState(false)
@@ -27,21 +29,28 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
 
   const connectToken = async () => {
     if (!token.trim()) {
-      setError('Personal access token is required')
+      setError(t('restore.selectRepo.tokenRequired'))
       return
     }
     setError('')
     setConnecting(true)
     try {
-      await api.post('/brain-repo/connect', { token: token.trim() })
+      // Validate the PAT without persisting — same endpoint StepBrainConnect uses.
+      // Then call /detect with the token as a query param so backend doesn't
+      // need a stored config to enumerate the user's brain repos.
+      const resp = await api.post('/brain-repo/validate-token', { token: token.trim() }) as { ok?: boolean }
+      if (!resp?.ok) {
+        setError(t('restore.selectRepo.invalidToken'))
+        return
+      }
       setTokenConnected(true)
       setLoadingRepos(true)
-      const data = await api.get('/brain-repo/detect') as { repos: Repo[] }
+      const data = await api.get(`/brain-repo/detect?token=${encodeURIComponent(token.trim())}`) as { repos: Repo[] }
       setRepos(data.repos || [])
     } catch (ex: unknown) {
-      const msg = ex instanceof Error ? ex.message : 'Failed to connect'
+      const msg = ex instanceof Error ? ex.message : t('restore.selectRepo.failed')
       if (msg.includes('401') || msg.includes('403')) {
-        setError('Invalid token. Please check your PAT and try again.')
+        setError(t('restore.selectRepo.invalidToken'))
       } else {
         setError(msg)
       }
@@ -53,7 +62,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
 
   const handleNext = () => {
     if (!selectedRepo) {
-      setError('Please select a repository')
+      setError(t('restore.selectRepo.selectRepo'))
       return
     }
     onNext(selectedRepo.html_url)
@@ -64,8 +73,8 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
       <div className="w-full max-w-[480px] relative z-10">
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
-            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">Restore — Select repository</h2>
-            <p className="text-[11px] text-[#4a5a6e] mt-1">Connect your GitHub account to find your brain repo</p>
+            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('restore.selectRepo.title')}</h2>
+            <p className="text-[11px] text-[#4a5a6e] mt-1">{t('restore.selectRepo.subtitle')}</p>
           </div>
 
           <div className="px-7 py-6 space-y-4">
@@ -80,7 +89,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-[11px] font-semibold text-[#5a6b7f] tracking-[0.08em] uppercase">
-                    Personal Access Token
+                    {t('restore.selectRepo.pat')}
                   </label>
                   <a
                     href="https://github.com/settings/tokens/new?scopes=repo"
@@ -89,7 +98,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
                     className="flex items-center gap-1 text-[10px] text-[#00FFA7]/70 hover:text-[#00FFA7] transition-colors"
                   >
                     <ExternalLink size={10} />
-                    Create PAT
+                    {t('restore.selectRepo.createPat')}
                   </a>
                 </div>
                 <div className="relative flex gap-2">
@@ -115,7 +124,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
                     disabled={connecting || !token.trim()}
                     className="px-4 py-3 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40 flex-shrink-0"
                   >
-                    {connecting ? <Loader2 size={14} className="animate-spin" /> : 'Connect'}
+                    {connecting ? <Loader2 size={14} className="animate-spin" /> : t('restore.selectRepo.connect')}
                   </button>
                 </div>
               </div>
@@ -125,7 +134,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
             {tokenConnected && (
               <div>
                 <label className="block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase">
-                  Brain repositories detected
+                  {t('restore.selectRepo.detectedRepos')}
                 </label>
                 {loadingRepos ? (
                   <div className="flex items-center justify-center py-6">
@@ -133,8 +142,8 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
                   </div>
                 ) : repos.length === 0 ? (
                   <div className="py-4 text-center">
-                    <p className="text-[12px] text-[#5a6b7f]">No brain repositories found</p>
-                    <p className="text-[11px] text-[#2d3d4f] mt-1">Repositories must contain .evo-brain metadata</p>
+                    <p className="text-[12px] text-[#5a6b7f]">{t('restore.selectRepo.noReposFound')}</p>
+                    <p className="text-[11px] text-[#2d3d4f] mt-1">{t('restore.selectRepo.noReposHint')}</p>
                   </div>
                 ) : (
                   <div className="space-y-1.5 max-h-52 overflow-y-auto">
@@ -165,14 +174,14 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
                 onClick={onBack}
                 className="flex-none py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
               >
-                Back
+                {t('restore.back')}
               </button>
               <button
                 onClick={handleNext}
                 disabled={!selectedRepo}
                 className="flex-1 py-3 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
               >
-                Next
+                {t('restore.next')}
               </button>
             </div>
           </div>

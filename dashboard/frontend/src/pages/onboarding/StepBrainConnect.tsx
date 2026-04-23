@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Eye, EyeOff, ExternalLink } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { api } from '../../lib/api'
 
 const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
@@ -10,6 +11,7 @@ interface StepBrainConnectProps {
 }
 
 export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectProps) {
+  const { t } = useTranslation()
   const [token, setToken] = useState('')
   const [showToken, setShowToken] = useState(false)
   const [connecting, setConnecting] = useState(false)
@@ -17,19 +19,23 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
 
   const handleNext = async () => {
     if (!token.trim()) {
-      setError('Personal access token is required')
+      setError(t('onboarding.connect.tokenRequired'))
       return
     }
     setError('')
     setConnecting(true)
     try {
-      // Validate the token by attempting a connection (token only — no repo yet)
-      await api.post('/brain-repo/connect', { token: token.trim() })
+      // Validate the token — response shape: { ok, scopes, username }
+      const resp = await api.post('/brain-repo/validate-token', { token: token.trim() }) as { ok?: boolean }
+      if (!resp?.ok) {
+        setError(t('onboarding.connect.invalidToken'))
+        return
+      }
       onNext(token.trim())
     } catch (ex: unknown) {
-      const msg = ex instanceof Error ? ex.message : 'Failed to connect'
+      const msg = ex instanceof Error ? ex.message : t('onboarding.connect.failed')
       if (msg.includes('401') || msg.includes('403')) {
-        setError('Invalid token. Please check your PAT and try again.')
+        setError(t('onboarding.connect.invalidToken'))
       } else {
         setError(msg)
       }
@@ -43,7 +49,7 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
       <div className="w-full max-w-[480px] relative z-10">
         {/* Step indicator */}
         <div className="flex items-center justify-center gap-2 mb-6">
-          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">Step 2a of 3</span>
+          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">{t('onboarding.stepIndicator.step2aOf3')}</span>
           <div className="flex gap-1.5">
             <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
             <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
@@ -53,8 +59,8 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
 
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
-            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">Connect GitHub</h2>
-            <p className="text-[11px] text-[#4a5a6e] mt-1">Enter your Personal Access Token to authenticate</p>
+            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('onboarding.connect.title')}</h2>
+            <p className="text-[11px] text-[#4a5a6e] mt-1">{t('onboarding.connect.subtitle')}</p>
           </div>
 
           <div className="px-7 py-6 space-y-4">
@@ -67,7 +73,7 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="block text-[11px] font-semibold text-[#5a6b7f] tracking-[0.08em] uppercase">
-                  Personal Access Token
+                  {t('onboarding.connect.pat')}
                 </label>
                 <a
                   href="https://github.com/settings/tokens/new?scopes=repo"
@@ -76,7 +82,7 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
                   className="flex items-center gap-1 text-[10px] text-[#00FFA7]/70 hover:text-[#00FFA7] transition-colors"
                 >
                   <ExternalLink size={10} />
-                  Create PAT
+                  {t('onboarding.connect.createPat')}
                 </a>
               </div>
               <div className="relative">
@@ -101,8 +107,9 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
 
             <div className="p-3 rounded-lg bg-[#0a1220] border border-[#1e2a3a]">
               <p className="text-[11px] text-[#5a6b7f] leading-relaxed">
-                Your token needs the <code className="text-[#00FFA7]/80 bg-[#0f1520] px-1 py-0.5 rounded text-[10px]">repo</code> scope.
-                It is stored encrypted and never shared.
+                {t('onboarding.connect.patHintPart1')}
+                <code className="text-[#00FFA7]/80 bg-[#0f1520] px-1 py-0.5 rounded text-[10px]">{t('onboarding.connect.patHintScope')}</code>
+                {t('onboarding.connect.patHintPart2')}
               </p>
             </div>
 
@@ -111,14 +118,14 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
                 onClick={onBack}
                 className="flex-none py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
               >
-                Back
+                {t('onboarding.back')}
               </button>
               <button
                 onClick={handleNext}
                 disabled={connecting || !token.trim()}
                 className="flex-1 py-3 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
               >
-                {connecting ? 'Connecting...' : 'Connect'}
+                {connecting ? t('onboarding.connect.connecting') : t('onboarding.connect.connect')}
               </button>
             </div>
           </div>
