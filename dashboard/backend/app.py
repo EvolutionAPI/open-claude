@@ -34,6 +34,21 @@ if not _secret_key:
         _key_file.chmod(0o600)
 
 app.secret_key = _secret_key
+
+# Generate BRAIN_REPO_MASTER_KEY if not set (Fernet key for encrypting GitHub tokens)
+_brain_key = os.environ.get("BRAIN_REPO_MASTER_KEY")
+if not _brain_key:
+    _env_file = WORKSPACE / ".env"
+    try:
+        from cryptography.fernet import Fernet as _Fernet
+        _new_brain_key = _Fernet.generate_key().decode()
+        _env_lines = _env_file.read_text(encoding="utf-8").splitlines() if _env_file.exists() else []
+        _env_lines.append(f"BRAIN_REPO_MASTER_KEY={_new_brain_key}")
+        _env_file.write_text("\n".join(_env_lines) + "\n", encoding="utf-8")
+        os.environ["BRAIN_REPO_MASTER_KEY"] = _new_brain_key
+    except Exception as _bk_exc:
+        print(f"WARNING: Could not generate BRAIN_REPO_MASTER_KEY: {_bk_exc}")
+
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{WORKSPACE / 'dashboard' / 'data' / 'evonexus.db'}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
@@ -56,7 +71,7 @@ except AttributeError:
 CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
 
 # --------------- Database ---------------
-from models import db, User, needs_setup, seed_roles, seed_systems
+from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
 db.init_app(app)
 
 # Create tables on first run + enable WAL mode for concurrent reads
@@ -393,6 +408,36 @@ with app.app_context():
         _conn.commit()
     # --- End knowledge API keys migration ---
 
+    # --- Brain Repo migration (brain-repo feature) ---
+    _user_cols = {row[1] for row in _cur.execute("PRAGMA table_info(users)").fetchall()}
+    if "onboarding_state" not in _user_cols:
+        _cur.execute("ALTER TABLE users ADD COLUMN onboarding_state TEXT")
+        _conn.commit()
+    if "onboarding_completed_agents_visit" not in _user_cols:
+        _cur.execute("ALTER TABLE users ADD COLUMN onboarding_completed_agents_visit INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "brain_repo_configs" not in _existing_tables:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS brain_repo_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                github_token_encrypted BLOB,
+                repo_url TEXT,
+                repo_owner TEXT,
+                repo_name TEXT,
+                local_path TEXT,
+                last_sync TIMESTAMP,
+                sync_enabled INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_brain_repo_user ON brain_repo_configs(user_id);
+        """)
+        _conn.commit()
+    # --- End Brain Repo migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -484,6 +529,7 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/needs-setup",
     "/api/auth/setup",
+    "/api/auth/needs-onboarding",
     "/api/config/workspace-status",
     "/api/version",
     "/api/version/check",
@@ -585,6 +631,22 @@ from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
+
+# Brain Repo + Onboarding blueprints (loaded after routes are created)
+try:
+    from routes.onboarding import bp as onboarding_bp
+    from routes.brain_repo import bp as brain_repo_bp
+    app.register_blueprint(onboarding_bp)
+    app.register_blueprint(brain_repo_bp)
+except ImportError:
+    pass  # Routes not yet created
+
+# Brain Repo watcher startup
+try:
+    from brain_repo.watcher import start_brain_watcher
+    start_brain_watcher(WORKSPACE)
+except Exception as _bw_exc:
+    pass  # Brain watcher starts only when a brain repo is configured
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
