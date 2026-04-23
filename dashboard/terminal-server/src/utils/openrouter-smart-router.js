@@ -344,17 +344,40 @@ function startSmartRouter(options = {}) {
   const breaker = createBreaker(config.breaker);
   const handle = makeHandler({ apiKey, config, cooldown, breaker });
 
+  // Allowed Host header values — defends against DNS rebinding.
+  // Only accept requests addressed to the exact loopback bind.
+  const ALLOWED_HOSTS = new Set([
+    `${host}:${port}`,
+    `127.0.0.1:${port}`,
+    `localhost:${port}`,
+    `[::1]:${port}`,
+  ]);
+
+  // The router is a local process-to-process proxy (terminal-server → router →
+  // OpenRouter). It MUST NOT be reachable from browsers: it has no auth and
+  // spends the user's OpenRouter balance on paid models. Browsers always send
+  // Origin and/or Referer on cross-origin requests, so presence of either
+  // header is a reliable signal that the caller is a browser context, not a
+  // trusted local process. Combined with a Host allowlist, this also blocks
+  // DNS rebinding attacks against 127.0.0.1:4891.
+  function rejectIfBrowserOrBadHost(req, res) {
+    const hostHeader = (req.headers.host || '').toLowerCase();
+    if (!ALLOWED_HOSTS.has(hostHeader)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'forbidden host' }));
+      return true;
+    }
+    if (req.headers.origin || req.headers.referer) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'browser-origin requests are not allowed' }));
+      return true;
+    }
+    return false;
+  }
+
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
+      if (rejectIfBrowserOrBadHost(req, res)) return;
 
       const url = new URL(req.url, `http://${host}:${port}`);
       const pathname = url.pathname.replace(/\/+$/, '');
