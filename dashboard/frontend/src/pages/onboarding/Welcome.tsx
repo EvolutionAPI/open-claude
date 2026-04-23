@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 
 /* ── Animated mesh background (reused from Login.tsx) ── */
 function NetworkCanvas() {
@@ -81,6 +82,7 @@ interface WelcomeProps {
 }
 
 export default function Welcome({ onFirstTime, onRestore }: WelcomeProps) {
+  const { t } = useTranslation()
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif] relative">
       <NetworkCanvas />
@@ -93,8 +95,8 @@ export default function Welcome({ onFirstTime, onRestore }: WelcomeProps) {
             <div className="flex flex-col items-center gap-3">
               <img src="/EVO_NEXUS.webp" alt="EvoNexus" className="h-8 w-auto" />
               <div className="text-center">
-                <h1 className="text-[16px] font-semibold text-[#e2e8f0]">Welcome to EvoNexus</h1>
-                <p className="text-[11px] text-[#4a5a6e] mt-1">Let's get your workspace set up</p>
+                <h1 className="text-[16px] font-semibold text-[#e2e8f0]">{t('onboarding.welcome.title')}</h1>
+                <p className="text-[11px] text-[#4a5a6e] mt-1">{t('onboarding.welcome.subtitle')}</p>
               </div>
             </div>
           </div>
@@ -102,25 +104,25 @@ export default function Welcome({ onFirstTime, onRestore }: WelcomeProps) {
           {/* Content */}
           <div className="px-7 py-6 space-y-3">
             <p className="text-[12px] text-[#5a6b7f] text-center mb-5">
-              Choose how you'd like to start:
+              {t('onboarding.welcome.chooseHowToStart')}
             </p>
 
             <button
               onClick={onFirstTime}
               className="w-full py-3 px-4 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors"
             >
-              Configure from scratch
+              {t('onboarding.welcome.configureFromScratch')}
             </button>
 
             <button
               onClick={onRestore}
               className="w-full py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
             >
-              Restore brain repo
+              {t('onboarding.welcome.restoreBrainRepo')}
             </button>
 
             <p className="text-[10px] text-[#2d3d4f] text-center pt-2">
-              If you've previously set up EvoNexus with a brain repo, use "Restore" to recover your configuration.
+              {t('onboarding.welcome.restoreHint')}
             </p>
           </div>
         </div>

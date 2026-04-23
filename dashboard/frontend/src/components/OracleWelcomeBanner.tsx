@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { X, BookOpen, Terminal } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 
@@ -16,6 +17,7 @@ interface OnboardingUser {
 
 export default function OracleWelcomeBanner() {
   const { user, refreshUser } = useAuth()
+  const { t } = useTranslation()
   const extUser = user as OnboardingUser | null
   const [dismissed, setDismissed] = useState(false)
 
@@ -47,16 +49,15 @@ export default function OracleWelcomeBanner() {
       {/* Content */}
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-semibold text-[#e6edf3]">
-          Meet Oracle — your first stop
+          {t('agents.welcomeBanner.title')}
         </p>
         <p className="text-[11px] text-[#5a7a5a] mt-0.5 leading-snug">
-          Oracle interviews you, maps your pain points to workspace capabilities, and builds a phased implementation plan.
-          Start your session by running{' '}
+          {t('agents.welcomeBanner.descriptionPart1')}
           <span className="inline-flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#0f2010] border border-[#00FFA7]/15 text-[#00FFA7]/80">
             <Terminal size={9} />
             /oracle
           </span>
-          {' '}in the workspace terminal.
+          {t('agents.welcomeBanner.descriptionPart2')}
         </p>
       </div>
 
@@ -64,7 +65,7 @@ export default function OracleWelcomeBanner() {
       <button
         onClick={handleDismiss}
         className="flex-shrink-0 p-1.5 rounded-lg text-[#5a6b7f] hover:text-[#e2e8f0] hover:bg-[#152030] transition-colors"
-        aria-label="Dismiss banner"
+        aria-label={t('common.close')}
       >
         <X size={14} />
       </button>

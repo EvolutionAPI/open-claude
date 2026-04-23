@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Clock, Tag, GitCommit, AlertTriangle, Loader2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { api } from '../../../lib/api'
 
 interface Snapshot {
@@ -62,6 +63,7 @@ function SnapshotItem({
 }
 
 export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: RestoreSelectSnapshotProps) {
+  const { t } = useTranslation()
   const [data, setData] = useState<SnapshotData | null>(null)
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Snapshot | null>(null)
@@ -71,23 +73,23 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
   useEffect(() => {
     api.get('/brain-repo/snapshots')
       .then((d: SnapshotData) => setData(d))
-      .catch(() => setError('Failed to load snapshots'))
+      .catch(() => setError(t('restore.selectSnapshot.failed')))
       .finally(() => setLoading(false))
-  }, [repoUrl])
+  }, [repoUrl, t])
 
   const handleNext = () => {
     if (!selected) {
-      setError('Please select a snapshot')
+      setError(t('restore.selectSnapshot.selectSnapshot'))
       return
     }
     onNext({ ref: selected.ref, label: selected.label, includeKb })
   }
 
   const sections: Array<{ key: keyof SnapshotData; label: string; icon: typeof Clock; limit?: number }> = [
-    { key: 'head', label: 'Latest (HEAD)', icon: GitCommit },
-    { key: 'milestones', label: 'Milestones', icon: Tag },
-    { key: 'weekly', label: 'Weekly snapshots', icon: Clock, limit: 12 },
-    { key: 'daily', label: 'Daily snapshots', icon: Clock, limit: 30 },
+    { key: 'head', label: t('restore.selectSnapshot.sectionHead'), icon: GitCommit },
+    { key: 'milestones', label: t('restore.selectSnapshot.sectionMilestones'), icon: Tag },
+    { key: 'weekly', label: t('restore.selectSnapshot.sectionWeekly'), icon: Clock, limit: 12 },
+    { key: 'daily', label: t('restore.selectSnapshot.sectionDaily'), icon: Clock, limit: 30 },
   ]
 
   return (
@@ -95,8 +97,8 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
       <div className="w-full max-w-[480px] relative z-10">
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
-            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">Select a snapshot</h2>
-            <p className="text-[11px] text-[#4a5a6e] mt-1">Choose which version to restore</p>
+            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('restore.selectSnapshot.title')}</h2>
+            <p className="text-[11px] text-[#4a5a6e] mt-1">{t('restore.selectSnapshot.subtitle')}</p>
           </div>
 
           <div className="px-7 py-6 space-y-4">
@@ -150,8 +152,8 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
                     className="mt-0.5 accent-[#00FFA7]"
                   />
                   <div>
-                    <p className="text-[12px] font-medium text-[#e2e8f0]">Include kb-mirror/ (reimport Knowledge Base)</p>
-                    <p className="text-[10px] text-[#5a6b7f] mt-0.5">Restores knowledge base content from this snapshot</p>
+                    <p className="text-[12px] font-medium text-[#e2e8f0]">{t('restore.selectSnapshot.includeKb')}</p>
+                    <p className="text-[10px] text-[#5a6b7f] mt-0.5">{t('restore.selectSnapshot.includeKbDesc')}</p>
                   </div>
                 </label>
 
@@ -159,7 +161,7 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
                   <div className="mt-2 flex items-start gap-2 p-3 rounded-lg bg-[#1a1400] border border-[#3a3015]">
                     <AlertTriangle size={13} className="text-[#F59E0B] flex-shrink-0 mt-0.5" />
                     <p className="text-[11px] text-[#b89070]">
-                      Restoring kb-mirror requires the master key used when the snapshot was created. Without it, KB content cannot be decrypted.
+                      {t('restore.selectSnapshot.kbWarning')}
                     </p>
                   </div>
                 )}
@@ -171,14 +173,14 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
                 onClick={onBack}
                 className="flex-none py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
               >
-                Back
+                {t('restore.back')}
               </button>
               <button
                 onClick={handleNext}
                 disabled={!selected}
                 className="flex-1 py-3 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
               >
-                Next
+                {t('restore.next')}
               </button>
             </div>
           </div>

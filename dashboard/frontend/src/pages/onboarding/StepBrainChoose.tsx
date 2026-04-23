@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Plus, GitBranch, Loader2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
 
@@ -18,6 +19,7 @@ interface StepBrainChooseProps {
 }
 
 export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChooseProps) {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const [mode, setMode] = useState<'create' | 'existing'>('create')
   const [repoName, setRepoName] = useState(`evo-brain-${user?.username || 'workspace'}`)
@@ -43,14 +45,14 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
     try {
       if (mode === 'create') {
         if (!repoName.trim()) {
-          setError('Repository name is required')
+          setError(t('onboarding.choose.repoNameRequired'))
           setSaving(false)
           return
         }
         await api.post('/brain-repo/connect', { token, create_repo: repoName.trim() })
       } else {
         if (!selectedRepo) {
-          setError('Please select a repository')
+          setError(t('onboarding.choose.selectRepo'))
           setSaving(false)
           return
         }
@@ -58,7 +60,7 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
       }
       onNext()
     } catch (ex: unknown) {
-      setError(ex instanceof Error ? ex.message : 'Failed to configure repository')
+      setError(ex instanceof Error ? ex.message : t('onboarding.choose.failed'))
     } finally {
       setSaving(false)
     }
@@ -69,7 +71,7 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
       <div className="w-full max-w-[480px] relative z-10">
         {/* Step indicator */}
         <div className="flex items-center justify-center gap-2 mb-6">
-          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">Step 2b of 3</span>
+          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">{t('onboarding.stepIndicator.step2bOf3')}</span>
           <div className="flex gap-1.5">
             <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
             <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
@@ -79,8 +81,8 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
 
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
-            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">Choose a repository</h2>
-            <p className="text-[11px] text-[#4a5a6e] mt-1">Create a new one or connect an existing brain repo</p>
+            <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('onboarding.choose.title')}</h2>
+            <p className="text-[11px] text-[#4a5a6e] mt-1">{t('onboarding.choose.subtitle')}</p>
           </div>
 
           <div className="px-7 py-6 space-y-4">
@@ -102,8 +104,8 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
               >
                 <Plus size={14} className={mode === 'create' ? 'text-[#00FFA7]' : 'text-[#5a6b7f]'} />
                 <div>
-                  <p className="text-[12px] font-semibold text-[#e2e8f0]">Create new</p>
-                  <p className="text-[10px] text-[#5a6b7f]">New private repo</p>
+                  <p className="text-[12px] font-semibold text-[#e2e8f0]">{t('onboarding.choose.createNew')}</p>
+                  <p className="text-[10px] text-[#5a6b7f]">{t('onboarding.choose.createNewDesc')}</p>
                 </div>
               </button>
               <button
@@ -116,8 +118,8 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
               >
                 <GitBranch size={14} className={mode === 'existing' ? 'text-[#00FFA7]' : 'text-[#5a6b7f]'} />
                 <div>
-                  <p className="text-[12px] font-semibold text-[#e2e8f0]">Use existing</p>
-                  <p className="text-[10px] text-[#5a6b7f]">Detected repos</p>
+                  <p className="text-[12px] font-semibold text-[#e2e8f0]">{t('onboarding.choose.useExisting')}</p>
+                  <p className="text-[10px] text-[#5a6b7f]">{t('onboarding.choose.useExistingDesc')}</p>
                 </div>
               </button>
             </div>
@@ -126,7 +128,7 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
             {mode === 'create' && (
               <div>
                 <label className="block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase">
-                  Repository name
+                  {t('onboarding.choose.repoName')}
                 </label>
                 <input
                   type="text"
@@ -137,7 +139,7 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
                   autoFocus
                 />
                 <p className="text-[10px] text-[#5a6b7f] mt-1.5">
-                  Will be created as a private repository in your GitHub account.
+                  {t('onboarding.choose.repoNameHint')}
                 </p>
               </div>
             )}
@@ -146,7 +148,7 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
             {mode === 'existing' && (
               <div>
                 <label className="block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase">
-                  Detected repositories
+                  {t('onboarding.choose.detectedRepos')}
                 </label>
                 {loadingRepos ? (
                   <div className="flex items-center justify-center py-6">
@@ -154,8 +156,8 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
                   </div>
                 ) : repos.length === 0 ? (
                   <div className="py-4 text-center">
-                    <p className="text-[12px] text-[#5a6b7f]">No compatible repositories found</p>
-                    <p className="text-[11px] text-[#2d3d4f] mt-1">Repositories must contain .evo-brain metadata</p>
+                    <p className="text-[12px] text-[#5a6b7f]">{t('onboarding.choose.noReposFound')}</p>
+                    <p className="text-[11px] text-[#2d3d4f] mt-1">{t('onboarding.choose.noReposHint')}</p>
                   </div>
                 ) : (
                   <div className="space-y-1.5 max-h-48 overflow-y-auto">
@@ -186,14 +188,14 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
                 onClick={onBack}
                 className="flex-none py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
               >
-                Back
+                {t('onboarding.back')}
               </button>
               <button
                 onClick={handleSave}
                 disabled={saving || (mode === 'existing' && !selectedRepo)}
                 className="flex-1 py-3 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
               >
-                {saving ? 'Connecting...' : 'Next'}
+                {saving ? t('onboarding.choose.connecting') : t('onboarding.next')}
               </button>
             </div>
           </div>

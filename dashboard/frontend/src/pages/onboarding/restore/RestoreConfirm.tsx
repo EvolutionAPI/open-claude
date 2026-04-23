@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../../context/AuthContext'
 
 const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
@@ -17,6 +18,7 @@ interface RestoreConfirmProps {
 }
 
 export default function RestoreConfirm({ snapshot, onConfirm, onBack }: RestoreConfirmProps) {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const workspaceName = user?.username || 'workspace'
   const [confirm, setConfirm] = useState('')
@@ -33,8 +35,8 @@ export default function RestoreConfirm({ snapshot, onConfirm, onBack }: RestoreC
                 <AlertTriangle size={18} className="text-[#f87171]" />
               </div>
               <div>
-                <h2 className="text-[16px] font-semibold text-[#e2e8f0]">Confirm restore</h2>
-                <p className="text-[11px] text-[#4a5a6e] mt-0.5">This action cannot be undone</p>
+                <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('restore.confirm.title')}</h2>
+                <p className="text-[11px] text-[#4a5a6e] mt-0.5">{t('restore.confirm.subtitle')}</p>
               </div>
             </div>
           </div>
@@ -42,17 +44,20 @@ export default function RestoreConfirm({ snapshot, onConfirm, onBack }: RestoreC
           <div className="px-7 py-6 space-y-4">
             <div className="p-3 rounded-lg bg-[#1a0a0a] border border-[#3a1515]">
               <p className="text-[11px] text-[#f87171] leading-relaxed">
-                You are about to restore your workspace to snapshot{' '}
-                <span className="font-semibold">{snapshot.label}</span>.
+                {t('restore.confirm.warningPart1')}
+                <span className="font-semibold">{snapshot.label}</span>
+                {'.'}
                 {snapshot.includeKb && (
-                  <span> Knowledge Base content will also be reimported.</span>
+                  <span>{t('restore.confirm.warningKb')}</span>
                 )}
               </p>
             </div>
 
             <div>
               <label className="block text-[11px] font-semibold text-[#5a6b7f] mb-1.5 tracking-[0.08em] uppercase">
-                Type <span className="text-[#e2e8f0]">{workspaceName}</span> to confirm
+                {t('restore.confirm.typeToConfirmPart1')}
+                <span className="text-[#e2e8f0]">{workspaceName}</span>
+                {t('restore.confirm.typeToConfirmPart2')}
               </label>
               <input
                 type="text"
@@ -69,14 +74,14 @@ export default function RestoreConfirm({ snapshot, onConfirm, onBack }: RestoreC
                 onClick={onBack}
                 className="flex-none py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
               >
-                Back
+                {t('restore.back')}
               </button>
               <button
                 onClick={onConfirm}
                 disabled={!isMatch}
                 className="flex-1 py-3 rounded-lg bg-[#f87171] text-[#1a0a0a] hover:bg-[#ef4444] text-sm font-semibold transition-colors disabled:opacity-40"
               >
-                Restore workspace
+                {t('restore.confirm.restoreBtn')}
               </button>
             </div>
           </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { CheckCircle, XCircle, Loader2, RefreshCw } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface SelectedSnapshot {
   ref: string
@@ -23,11 +24,12 @@ interface RestoreExecuteProps {
 const API = import.meta.env.DEV ? 'http://localhost:8080' : ''
 
 export default function RestoreExecute({ snapshot, onComplete, onRetry }: RestoreExecuteProps) {
+  const { t } = useTranslation()
   const [progress, setProgress] = useState(0)
   const [steps, setSteps] = useState<RestoreStep[]>([])
   const [failed, setFailed] = useState(false)
   const [done, setDone] = useState(false)
-  const [statusMessage, setStatusMessage] = useState('Starting restore...')
+  const [statusMessage, setStatusMessage] = useState(t('restore.execute.starting'))
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -46,7 +48,7 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
 
         if (!res.ok) {
           setFailed(true)
-          setStatusMessage(`Error: ${res.status} ${res.statusText}`)
+          setStatusMessage(`${t('restore.execute.errorPrefix')}${res.status} ${res.statusText}`)
           return
         }
 
@@ -110,13 +112,13 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
               if (event.type === 'complete') {
                 setProgress(100)
                 setDone(true)
-                setStatusMessage('Restore complete!')
+                setStatusMessage(t('restore.execute.complete'))
                 setTimeout(() => onComplete(), 2000)
               }
 
               if (event.type === 'error') {
                 setFailed(true)
-                setStatusMessage(event.message || 'Restore failed')
+                setStatusMessage(event.message || t('restore.execute.failedDefault'))
               }
             } catch {
               // ignore parse errors
@@ -126,14 +128,14 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
       } catch (ex) {
         if ((ex as Error).name !== 'AbortError') {
           setFailed(true)
-          setStatusMessage('Connection error during restore')
+          setStatusMessage(t('restore.execute.connectionError'))
         }
       }
     }
 
     run()
     return () => ctrl.abort()
-  }, [snapshot, onComplete])
+  }, [snapshot, onComplete, t])
 
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif]">
@@ -141,7 +143,7 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
             <h2 className="text-[16px] font-semibold text-[#e2e8f0]">
-              {done ? 'Restore complete' : failed ? 'Restore failed' : 'Restoring...'}
+              {done ? t('restore.execute.titleDone') : failed ? t('restore.execute.titleFailed') : t('restore.execute.titleRunning')}
             </h2>
             <p className="text-[11px] text-[#4a5a6e] mt-1">{snapshot.label}</p>
           </div>
@@ -196,7 +198,7 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
             {done && (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-[#0a1a12] border border-[#00FFA7]/20">
                 <CheckCircle size={16} className="text-[#00FFA7]" />
-                <p className="text-[12px] text-[#4a9a6a]">Redirecting to your workspace...</p>
+                <p className="text-[12px] text-[#4a9a6a]">{t('restore.execute.redirecting')}</p>
               </div>
             )}
 
@@ -207,7 +209,7 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
                 className="w-full flex items-center justify-center gap-2 py-3 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
               >
                 <RefreshCw size={14} />
-                Try again
+                {t('restore.execute.tryAgain')}
               </button>
             )}
           </div>
