@@ -641,6 +641,23 @@ const translations = {
       clear: 'Clear conversation',
       export: 'Export',
     },
+
+    brainRepo: {
+      brain_repo_enable_prompt: 'Enable Brain Repo? (version your memory/workspace to GitHub)',
+      brain_repo_auth_method: 'Authentication method',
+      brain_repo_defer_to_web: 'Configure in web UI later',
+      brain_repo_pat_instructions: 'Create a GitHub PAT at https://github.com/settings/tokens/new?scopes=repo',
+      brain_repo_pat_prompt: 'GitHub Personal Access Token (scope: repo)',
+      brain_repo_pat_saved: 'Brain repo PAT saved. Complete setup in the web UI.',
+      brain_repo_pat_skipped: 'Skipped. You can configure Brain Repo in Settings > Integrations.',
+      brain_repo_configure_later: 'OK! You can connect GitHub in Settings > Integrations.',
+      brain_repo_connect: 'Connect Brain Repo',
+      brain_repo_disconnect: 'Disconnect',
+      brain_repo_sync_now: 'Sync Now',
+      brain_repo_create_milestone: 'Create Milestone',
+      brain_repo_status_connected: 'Connected',
+      brain_repo_status_disconnected: 'Not connected',
+    },
   },
 } as const
 
