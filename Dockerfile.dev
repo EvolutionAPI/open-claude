@@ -1,7 +1,6 @@
 # Dockerfile.dev — versão simplificada para testes locais no Windows
 # Diferença do Dockerfile.swarm.dashboard:
 #   - npm install com --legacy-peer-deps (resolve conflito de peer deps)
-#   - Sem instalação de claude-code/openclaude (mais rápido de buildar)
 #   - Flask roda em modo desenvolvimento
 
 # ---- Stage 1: Frontend build ----------------------------------------
@@ -31,6 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# CLIs usadas pelo terminal embutido (/agents) e pela página de providers (/providers)
+RUN npm install -g \
+        @anthropic-ai/claude-code \
+        @gitlawb/openclaude@latest
 
 # uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -63,7 +67,8 @@ RUN mkdir -p dashboard/data ADWs/logs
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY start-dashboard.sh /usr/local/bin/start-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-dashboard.sh
+RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh /usr/local/bin/start-dashboard.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-dashboard.sh
 
 ENV EVONEXUS_PORT=8080
 ENV TERMINAL_SERVER_PORT=32352
