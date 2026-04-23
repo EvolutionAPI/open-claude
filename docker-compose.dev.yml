@@ -15,7 +15,7 @@ services:
   dashboard:
     build:
       context: .
-      dockerfile: Dockerfile.swarm.dashboard
+      dockerfile: Dockerfile.dev
     container_name: evonexus-dev
     ports:
       - "8080:8080"        # Dashboard Flask + React
