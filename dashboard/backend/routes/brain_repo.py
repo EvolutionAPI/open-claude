@@ -2,32 +2,160 @@
 
 import os
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Blueprint, request, jsonify, abort, Response, stream_with_context
 from flask_login import login_required, current_user
+from werkzeug.exceptions import HTTPException
 from models import db, BrainRepoConfig
+
+log = logging.getLogger(__name__)
 
 bp = Blueprint("brain_repo", __name__)
 
 
-def _get_master_key() -> bytes:
+@bp.errorhandler(HTTPException)
+def _http_exception_to_json(exc: HTTPException):
+    """Convert all abort() calls inside this blueprint into JSON responses.
+
+    Flask's default for ``abort(400, description="...")`` is HTML — the description
+    is buried inside an HTML body that the SPA can't usefully parse. Returning
+    JSON lets ``lib/api.ts`` surface ``data.error`` to the user verbatim
+    (e.g. "Failed to create repo: name already exists on this account").
+    """
+    return jsonify({"error": exc.description, "code": exc.code}), exc.code or 500
+
+
+def _get_master_key() -> bytes | None:
+    """Return the Fernet master key from env, or None if missing/empty.
+
+    Callers must handle a None return gracefully — ``Fernet(b"")`` would
+    crash, so we surface the absence explicitly instead. ``app.py`` is
+    supposed to auto-generate ``BRAIN_REPO_MASTER_KEY`` at startup, so a
+    None here means that bootstrap did not run (e.g. tests, bare imports).
+    """
     key = os.environ.get("BRAIN_REPO_MASTER_KEY", "")
-    return key.encode() if key else b""
+    if not key:
+        return None
+    return key.encode()
 
 
 def _get_config() -> BrainRepoConfig | None:
     return BrainRepoConfig.query.filter_by(user_id=current_user.id).first()
 
 
+def _initialize_remote_brain_repo(
+    token: str,
+    repo_url: str,
+    repo_name: str,
+    owner_username: str,
+    github_username: str,
+) -> str | None:
+    """Bootstrap a freshly-created (empty) GitHub repo with the brain-repo skeleton.
+
+    Steps:
+        1. Create a local working copy under
+           ``<WORKSPACE>/dashboard/data/brain-repos/<repo_name>``
+        2. ``git init`` + ``remote add origin`` (token-embedded URL)
+        3. Call ``manifest.initialize_brain_repo`` to drop in the directory
+           structure, ``.evo-brain`` marker, ``manifest.yaml``, README, and
+           ``.gitignore``
+        4. Configure git author (commits show as the GitHub user)
+        5. Commit everything and push to ``origin/main``
+
+    Returns the local path on success, or None on failure (callers should not
+    abort the connect — the GitHub repo exists, only the bootstrap commit is
+    missing, and a future sync will repopulate it).
+    """
+    import subprocess
+
+    workspace = Path(__file__).resolve().parent.parent.parent.parent
+    base_dir = workspace / "dashboard" / "data" / "brain-repos"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    local_path = base_dir / repo_name
+
+    # Wipe stale clone if present (re-connect after a disconnect)
+    if local_path.exists():
+        import shutil
+        shutil.rmtree(local_path, ignore_errors=True)
+
+    try:
+        from brain_repo import git_ops, manifest
+    except ImportError as exc:
+        log.warning("brain_repo helpers unavailable, skipping bootstrap: %s", exc)
+        return None
+
+    try:
+        local_path.mkdir(parents=True, exist_ok=True)
+
+        # We use ``git init`` + ``remote add`` rather than ``git clone`` because
+        # the remote is empty and ``clone`` of an empty repo emits warnings and
+        # leaves an unhelpful state.
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=local_path, check=True, capture_output=True, timeout=30,
+        )
+        # Token-embedded auth URL — never logged
+        if "://" in repo_url:
+            scheme, rest = repo_url.split("://", 1)
+            auth_url = f"{scheme}://{token}@{rest}"
+        else:
+            auth_url = repo_url
+        subprocess.run(
+            ["git", "remote", "add", "origin", auth_url],
+            cwd=local_path, check=True, capture_output=True, timeout=30,
+        )
+
+        # Drop in the brain-repo skeleton (.evo-brain marker, manifest.yaml, dirs)
+        manifest.initialize_brain_repo(local_path, {
+            "workspace_name": owner_username or "",
+            "owner_username": owner_username or "",
+            "github_username": github_username or "",
+        })
+
+        # Commit author — use the GitHub username so the commit attributes correctly
+        author_name = github_username or owner_username or "EvoNexus"
+        author_email = (
+            f"{github_username}@users.noreply.github.com"
+            if github_username else "evonexus@users.noreply.github.com"
+        )
+        subprocess.run(
+            ["git", "config", "user.name", author_name],
+            cwd=local_path, check=True, capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", author_email],
+            cwd=local_path, check=True, capture_output=True, timeout=10,
+        )
+
+        committed = git_ops.commit_all(local_path, "feat(brain-repo): initial structure")
+        if committed:
+            pushed = git_ops.push(local_path, token)
+            if not pushed:
+                log.warning("brain repo initial push failed for %s", repo_name)
+        return str(local_path)
+    except Exception as exc:
+        log.warning("Failed to bootstrap brain repo %s: %s", repo_name, exc)
+        return None
+
+
 def _decrypt_token(config: BrainRepoConfig) -> str:
     """Decrypt the stored GitHub PAT. Returns empty string if not available."""
     if not config or not config.github_token_encrypted:
         return ""
+    master_key = _get_master_key()
+    if master_key is None:
+        # No master key available — fall back to treating the stored blob as
+        # raw token bytes (matches the encrypt-side fallback below).
+        log.warning("BRAIN_REPO_MASTER_KEY missing; decrypting as raw bytes")
+        try:
+            return config.github_token_encrypted.decode("utf-8")
+        except Exception:
+            return ""
     try:
-        from brain_repo.pat_auth import PATAuthProvider
-        provider = PATAuthProvider(_get_master_key())
-        return provider.decrypt(config.github_token_encrypted)
+        from brain_repo.github_oauth import decrypt_token
+        return decrypt_token(config.github_token_encrypted, master_key)
     except ImportError:
         # Fallback: attempt raw decode (for testing without full module)
         try:
@@ -48,6 +176,54 @@ def status():
     if config is None:
         return jsonify({"connected": False})
     return jsonify(config.to_dict())
+
+
+# ── Validate token ────────────────────────────────────
+
+@bp.route("/api/brain-repo/validate-token", methods=["POST"])
+@login_required
+def validate_token():
+    """Validate a GitHub PAT without persisting anything.
+
+    Body (JSON):
+        token - GitHub PAT (required)
+
+    Returns on success:
+        {"ok": true, "scopes": [...], "username": "..."}
+    On invalid token:
+        400 {"ok": false, "error": "..."}
+    """
+    data = request.get_json() or {}
+    token = data.get("token", "").strip()
+    if not token:
+        return jsonify({"ok": False, "error": "token required"}), 400
+
+    try:
+        from brain_repo.github_api import validate_pat_scopes, get_github_username
+    except ImportError:
+        # Graceful fallback — module unavailable in this environment
+        return jsonify({"ok": False, "error": "brain_repo.github_api unavailable"}), 400
+
+    try:
+        ok, scopes = validate_pat_scopes(token)
+    except Exception as exc:
+        log.warning("validate_pat_scopes failed: %s", exc)
+        return jsonify({"ok": False, "error": f"validation failed: {exc}"}), 400
+
+    if not ok:
+        return jsonify({
+            "ok": False,
+            "error": "GitHub PAT validation failed — check token and ensure 'repo' scope is granted",
+            "scopes": scopes,
+        }), 400
+
+    try:
+        username = get_github_username(token)
+    except Exception as exc:
+        log.warning("get_github_username failed: %s", exc)
+        username = ""
+
+    return jsonify({"ok": True, "scopes": scopes, "username": username})
 
 
 # ── Connect ───────────────────────────────────────────
@@ -83,9 +259,10 @@ def connect():
         abort(400, description="GitHub PAT validation failed — check token scopes (needs 'repo')")
 
     # Create or validate the repo
+    bootstrap_local_path: str | None = None
     if create_repo:
         try:
-            from brain_repo.github_api import create_private_repo
+            from brain_repo.github_api import create_private_repo, get_github_username
             repo_info = create_private_repo(token, create_repo)
         except ImportError:
             # Fallback stub
@@ -95,15 +272,39 @@ def connect():
                 "name": create_repo,
             }
         except Exception as exc:
-            abort(400, description=f"Failed to create repo: {exc}")
+            # Friendlier message for the common case (repo already exists → 422)
+            err_str = str(exc)
+            if "422" in err_str or "already exists" in err_str.lower():
+                abort(400, description=(
+                    f"O repositório '{create_repo}' já existe na sua conta. "
+                    "Use a opção 'Usar existente' para conectá-lo, "
+                    "ou escolha um nome diferente."
+                ))
+            abort(400, description=f"Falha ao criar repo: {exc}")
         repo_url = repo_info.get("html_url", "")
         repo_owner = repo_info.get("owner", {}).get("login", "")
         repo_name = repo_info.get("name", create_repo)
+
+        # Bootstrap the empty remote: clone-init + initialize_brain_repo + commit + push.
+        # Without this, the repo has no .evo-brain marker so detect_brain_repos
+        # (GitHub code search) cannot find it later, and Use-existing rejects it
+        # as "incompatible".
+        try:
+            github_username = get_github_username(token)
+        except Exception:
+            github_username = repo_owner
+        bootstrap_local_path = _initialize_remote_brain_repo(
+            token=token,
+            repo_url=repo_url,
+            repo_name=repo_name,
+            owner_username=current_user.username or repo_owner,
+            github_username=github_username,
+        )
     else:
         # Validate existing repo is private
         try:
-            from brain_repo.github_api import validate_repo_is_private
-            ok_private, repo_info = validate_repo_is_private(token, repo_url)
+            from brain_repo.github_api import get_repo_info
+            ok_private, repo_info = get_repo_info(token, repo_url)
         except ImportError:
             ok_private, repo_info = True, {}  # graceful fallback
 
@@ -113,13 +314,20 @@ def connect():
         repo_name = repo_info.get("name", "")
 
     # Encrypt and store token
-    try:
-        from brain_repo.pat_auth import PATAuthProvider
-        provider = PATAuthProvider(_get_master_key())
-        encrypted = provider.encrypt(token)
-    except ImportError:
-        # Fallback: store token bytes directly (only for dev without pat_auth module)
+    master_key = _get_master_key()
+    if master_key is None:
+        # No master key configured — fall back to storing raw bytes and warn.
+        # The decrypt side mirrors this behaviour.
+        log.warning("BRAIN_REPO_MASTER_KEY missing; storing token as raw bytes")
         encrypted = token.encode("utf-8")
+    else:
+        try:
+            from brain_repo.github_oauth import PATAuthProvider
+            provider = PATAuthProvider(token, master_key)
+            encrypted = provider.encrypt_token()
+        except ImportError:
+            # Fallback: store token bytes directly (only for dev without module)
+            encrypted = token.encode("utf-8")
 
     config = _get_config()
     if config is None:
@@ -130,6 +338,8 @@ def connect():
     config.repo_url = repo_url
     config.repo_owner = repo_owner
     config.repo_name = repo_name
+    if bootstrap_local_path:
+        config.local_path = bootstrap_local_path
     config.sync_enabled = True
     config.last_error = None
     db.session.commit()

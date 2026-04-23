@@ -140,6 +140,29 @@ def validate_repo_is_private(token: str, owner: str, repo: str) -> bool:
     return bool(body.get("private", False))
 
 
+def get_repo_info(token: str, repo_url: str) -> tuple[bool, dict]:
+    """Parse repo_url, fetch repo info, return (is_private, info).
+
+    repo_url examples:
+        https://github.com/owner/name
+        https://github.com/owner/name.git
+        git@github.com:owner/name.git
+    """
+    import re
+    m = re.match(
+        r"(?:https?://github\.com/|git@github\.com:)([^/]+)/([^/.]+)(?:\.git)?/?$",
+        repo_url.strip(),
+    )
+    if not m:
+        return False, {}
+    owner, name = m.group(1), m.group(2)
+    url = f"{_API_BASE}/repos/{owner}/{name}"
+    status, body, _ = _get(url, token)
+    if status != 200 or not isinstance(body, dict):
+        return False, {}
+    return bool(body.get("private", False)), body
+
+
 def list_snapshots(token: str, owner: str, repo: str) -> dict:
     """List snapshot tags grouped by type (daily, weekly, milestones, head).
 
