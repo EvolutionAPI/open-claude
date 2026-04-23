@@ -415,6 +415,33 @@ with app.app_context():
     _conn.close()
     # --- End auto-migrate ---
 
+    # --- Migration: providers.json schema normalization ---
+    # If the file exists but is missing the canonical keys
+    # ({active_provider, providers: {...}}), copy providers.example.json
+    # over it. This recovers from broken state left by older versions of
+    # the onboarding wizard that naively wrote {<id>: {api_key, enabled}}.
+    try:
+        _providers_file = WORKSPACE / "config" / "providers.json"
+        _providers_example = WORKSPACE / "config" / "providers.example.json"
+        if _providers_file.is_file():
+            try:
+                import json as _json
+                _data = _json.loads(_providers_file.read_text(encoding="utf-8"))
+                _ok = (
+                    isinstance(_data, dict)
+                    and "active_provider" in _data
+                    and isinstance(_data.get("providers"), dict)
+                )
+            except Exception:
+                _ok = False
+            if not _ok and _providers_example.is_file():
+                import shutil as _shutil
+                _shutil.copy2(_providers_example, _providers_file)
+                print("[migration] providers.json had invalid schema, restored from providers.example.json")
+    except Exception as _mig_exc:
+        print(f"[migration] providers.json normalization skipped: {_mig_exc}")
+    # --- End providers.json migration ---
+
     seed_roles()
     seed_systems()
     # Sync trigger definitions from YAML config
