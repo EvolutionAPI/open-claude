@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { api } from '../../lib/api'
+import { useAuth } from '../../context/AuthContext'
 import Welcome from './Welcome'
 import StepProvider from './StepProvider'
 import StepBrainRepo from './StepBrainRepo'
@@ -20,6 +22,8 @@ interface OnboardingState {
 
 export default function OnboardingRouter() {
   const navigate = useNavigate()
+  const { t } = useTranslation()
+  const { refreshUser } = useAuth()
   const [flow, setFlow] = useState<Flow>(null)
   const [step, setStep] = useState(0)
   const [patToken, setPatToken] = useState('')
@@ -67,6 +71,10 @@ export default function OnboardingRouter() {
     } catch {
       // ignore
     }
+    // Refresh React user state BEFORE navigating, otherwise the App.tsx onboarding
+    // guard still sees onboarding_state = 'pending' from cache and bounces us back
+    // to /onboarding, creating an infinite loop with the OnboardingRouter useEffect.
+    await refreshUser()
     navigate('/agents', { replace: true })
   }
 
@@ -76,13 +84,14 @@ export default function OnboardingRouter() {
     } catch {
       // ignore
     }
+    await refreshUser()
     navigate('/agents', { replace: true })
   }
 
   if (loading) {
     return (
       <div className="min-h-screen bg-[#080c14] flex items-center justify-center">
-        <div className="text-[#5a6b7f] text-sm">Loading...</div>
+        <div className="text-[#5a6b7f] text-sm">{t('onboarding.loading')}</div>
       </div>
     )
   }

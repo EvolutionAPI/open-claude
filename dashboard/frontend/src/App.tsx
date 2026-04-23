@@ -104,11 +104,11 @@ function AppContent() {
   if (needsSetup) return <Setup />
   if (!user) return <Login />
 
-  // Onboarding guard — redirect to /onboarding if needs_onboarding is true
-  // Don't redirect if already on the onboarding route
+  // Onboarding guard — redirect to /onboarding if user hasn't completed/skipped it.
+  // For brand-new users onboarding_state is null (column nullable), which counts as "needs onboarding".
   if (
     !isOnboarding &&
-    extUser?.onboarding_state != null &&
+    extUser &&
     extUser.onboarding_state !== 'completed' &&
     extUser.onboarding_state !== 'skipped'
   ) {
