@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.4] - 2026-04-24
+
+Patch release with a **P0 race-condition fix** in the container entrypoint plus a complete Docker install experience (ready-to-run compose + full tutorial).
+
+### Fixed
+
+- **Race condition on shared `/workspace/config` volume (P0)** — when `dashboard`, `telegram` and `scheduler` boot in parallel against the same named volume (the canonical Docker / Swarm / Portainer deploy pattern), the first-boot bootstrap raced on four operations:
+  - `[ ! -f .env ] && cp .env.example .env` — one container wins, others crash with `File exists`. Scheduler died visibly on every fresh v0.30.3 deploy.
+  - `[ ! -f ] && cp` for `providers.json` / `heartbeats.yaml` — same race.
+  - `grep -q EVONEXUS_SECRET_KEY || echo … >> .env` — two processes both see "not found" and append **two different keys**; Flask picks one at random per request, invalidating sessions silently.
+  - Same pattern for `KNOWLEDGE_MASTER_KEY` — silently corrupted Knowledge Base encryption, losing all configured DB connections on second boot.
+
+  Fix: wrap the whole bootstrap in `flock` on a lockfile inside the shared volume, serializing all containers regardless of start order. Also added `cp -n` (no-clobber) as belt-and-suspenders. `flock` is part of `util-linux`, already present in both base images.
+
+### Added
+
+- **`docker-compose.hub.yml`** — ready-to-run compose file that pulls `evoapicloud/evo-nexus-*` from Docker Hub instead of building from source. Uses `depends_on: condition: service_healthy` to order the boot (dashboard first, then telegram/scheduler) — defense-in-depth on top of the flock fix. This is the recommended install for end users: `curl -O …docker-compose.hub.yml && docker compose -f docker-compose.hub.yml up -d`.
+- **`docs/guides/docker-install.md`** — complete Docker install guide. Prerequisites (Docker Engine 24+ is the only requirement — image ships everything), one-command boot, first-boot wizard walkthrough, update flow (`docker compose pull && up -d`), backup/restore recipes, advanced section documenting how to pass secrets via `environment:` or Docker Secrets (for CI/CD and immutable-infra users who prefer to keep secrets out of the `.env` volume), running behind Caddy for public HTTPS, troubleshooting table.
+- **Install method chooser in `docs/getting-started.md`** — table at the top comparing Docker vs CLI (`npx`) vs manual clone, with clear guidance on which to pick.
+
+### Changed
+
+- **`README.md`** — Docker promoted to Method 1 in Quick Start. Prerequisites split into two tracks (Docker-only vs CLI-flow), reflecting that the Docker image ships Claude Code, Python, Node, uv and `gh` baked in.
+- **`docs/guides/updating.md`** — new `docker compose -f docker-compose.hub.yml pull && up -d` section documenting the Docker Hub upgrade path. Swarm examples bumped to `v0.30.4`.
+
+## [0.30.3] - 2026-04-24
+
+Patch release completing the Docker Hub migration: official images now ship as **multi-arch manifests** (`linux/amd64` + `linux/arm64`) so ARM hosts (Apple Silicon, AWS Graviton, Oracle Cloud ARM, Raspberry Pi, many modern VPS) can pull without platform overrides.
+
+### Added
+
+- **Multi-arch Docker images** — `.github/workflows/docker-publish.yml` now runs `docker/setup-qemu-action@v3` and passes `platforms: linux/amd64,linux/arm64` to `build-push-action`. Every published tag (`latest`, `vX.Y.Z`, `X.Y`, `X.Y.Z`, `main`, `sha-*`) ships a manifest list covering both architectures. The `node-pty` native addon compiles from source via node-gyp inside the arm64 builder, so there's no prebuilt-binary-per-arch concern.
+
+### Removed
+
+- **`evonexus.portainer.stack.yml`** — deleted the personal Portainer template from the repo root. It was a pre-configured stack for a specific host (`advancedbot.com.br`, `network_public` network) pointing at a fork's Docker Hub namespace (`marcelolealhub/*`), which could mislead new users into pulling from the wrong registry. The canonical template remains at [`evonexus.stack.yml`](https://github.com/EvolutionAPI/evo-nexus/blob/main/evonexus.stack.yml), which already supports Portainer/Traefik deployments and points at the official `evoapicloud/evo-nexus-*` images.
+
+## [0.30.2] - 2026-04-23
+
+Patch release focused on CI/distribution: Docker images now ship from the official `evoapicloud` namespace on Docker Hub (public, no auth required on Swarm managers), and the legacy dashboard-only workflow was removed to unblock the build pipeline.
+
+### Changed
+
+- **Docker images published to Docker Hub under `evoapicloud/`** — the Swarm workflow (`.github/workflows/docker-publish.yml`) now pushes `evo-nexus-runtime` and `evo-nexus-dashboard` to `docker.io/evoapicloud/*` instead of `ghcr.io`. Requires `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` secrets on the repo. The `evonexus.stack.yml` template and `README.swarm.md` were updated to reference the public images — no `OWNER` placeholder to fill in, no `docker login` needed on Swarm managers.
+
+### Removed
+
+- **Redundant `dashboard.yml` workflow** — deleted `.github/workflows/dashboard.yml`, which built a Python+React-only dashboard image (`Dockerfile.dashboard`) that nothing consumes. The Swarm workflow already produces a strict superset (with terminal-server and both CLIs). This also fixes the build failure on `main` caused by a TypeScript peer-dep conflict in the legacy Dockerfile.
+
+## [0.30.1] - 2026-04-23
+
+Patch release focused on thread UX polish: session now swaps cleanly when switching threads via the sidebar, the agent is briefed explicitly about running inside a persistent thread (not a fresh one-shot session), the assignee dropdown stops hiding agents, and fresh installs no longer inherit Evolution-specific goal seed data.
+
+### Fixed
+
+- **Thread switch leaked previous conversation** — switching threads via the sidebar kept `threadSessionId` pinned to the old ticket and `<AgentChat>` kept rendering the old messages until a full page reload (or going back to `/topics` and entering again). Two fixes in `TicketDetail.tsx`: (1) a new effect resets `threadSessionId` whenever `ticket?.id` changes so the auto-init re-runs for the new ticket; (2) `<AgentChat key={ticket.id}>` forces a full remount so the WebSocket, message buffer and internal effects restart cleanly.
+- **Topics assignee dropdown hid 18 of 38 agents** — the Assign-to-agent combobox in `/topics` sliced the filtered list at 20 items (`filteredAgents.slice(0, 20)`), silently dropping agents whose slugs come later alphabetically (from `m` onward). Removed the slice and bumped `max-h-48` to `max-h-72` so ~12 agents are visible at once without scrolling and all 38 are reachable.
+- **Goals: Evolution-specific seed leaking into open-source installs** — `dashboard/backend/app.py` was seeding a hardcoded "Evolution Revenue $1M Q4 2026" mission with 3 projects (evo-ai, evo-summit, evo-academy) and 5 goals on first boot. Removed the seed block so new instances start empty. The `/goals` empty state now points users at the `/create-goal` skill instead of the misleading "Run the backend migration to seed initial data" message. Existing installations with the seed applied can clean it with `DELETE FROM goal_tasks; DELETE FROM goals; DELETE FROM projects; DELETE FROM missions;`.
+
+### Changed
+
+- **Thread context now always injected into the agent's system prompt** — when a thread session initialises, `TicketDetail.initThreadSession` always builds a "Thread Context" block explaining that the agent is running inside a persistent thread (not a fresh session): the thread title, description, assigned agent slug, default workspace folder, memory file path, summarization cadence, and resume behaviour. It also tells the agent **not** to re-invoke itself via the `Agent` tool (which was causing confusing `@zara-cs` calling `@zara-cs` patterns). Memory.md content is appended when present, so empty threads still get the full context and populated threads still surface prior-session knowledge. Respects the existing `!sdkSessionId` guard in `chat-bridge.js` — only injected on fresh sessions, not on `--resume`.
+
 ## [0.30.0] - 2026-04-23
 
 Minor release adding a unified Activity Log — a single page aggregating execution history across routines, heartbeats and triggers so the user can answer "what did the system just do?" without visiting three separate pages.
