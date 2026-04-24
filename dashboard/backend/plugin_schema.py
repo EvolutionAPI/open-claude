@@ -53,6 +53,9 @@ class Capability(str, Enum):
     goals = "goals"
     tasks = "tasks"
     triggers = "triggers"
+    # Wave 2.1 — full-screen plugin UI pages + writable data
+    ui_pages = "ui_pages"
+    writable_data = "writable_data"
 
 
 class WidgetSpec(BaseModel):
@@ -267,6 +270,151 @@ class PluginAgentEntry(BaseModel):
         return v
 
 
+class PluginPage(BaseModel):
+    """A full-screen page declared in plugin.yaml under ui_entry_points.pages (Wave 2.1).
+
+    The page bundle is a vanilla JS Web Component (no bundler, no framework).
+    It is served by the existing /plugins/<slug>/ui/<path> endpoint.
+    """
+
+    id: Annotated[str, Field(min_length=1, max_length=100)]
+    label: Annotated[str, Field(min_length=1, max_length=200)]
+    # React Router sub-path under /plugins-ui/<slug>/ (e.g. "projects")
+    path: Annotated[str, Field(min_length=1, max_length=200)]
+    # Relative path inside the tarball, e.g. "ui/pages/projects.js"
+    bundle: Annotated[str, Field(min_length=1, max_length=500)]
+    # Web component tag name registered by the bundle via customElements.define()
+    custom_element_name: Annotated[str, Field(min_length=1, max_length=200)]
+    # sidebar_group id to inject into (matches PluginSidebarGroup.id or native group)
+    sidebar_group: Optional[str] = None
+    # Lucide icon name or null
+    icon: Optional[str] = None
+    # Order within the sidebar group (lower = higher up; default 999)
+    order: int = 999
+
+    @field_validator("id")
+    @classmethod
+    def id_pattern(cls, v: str) -> str:
+        if not re.match(r"^[a-z0-9-]+$", v):
+            raise ValueError(f"PluginPage id '{v}' must match ^[a-z0-9-]+$")
+        return v
+
+    @field_validator("path")
+    @classmethod
+    def path_no_leading_slash(cls, v: str) -> str:
+        if v.startswith("/"):
+            raise ValueError(f"PluginPage path '{v}' must not start with '/'")
+        return v
+
+    @field_validator("bundle")
+    @classmethod
+    def bundle_path_valid(cls, v: str) -> str:
+        """Bundle must be relative, under ui/, with a .js or .mjs extension."""
+        if v.startswith(("/", "http://", "https://")):
+            raise ValueError(
+                f"PluginPage bundle '{v}' must be a relative path starting with 'ui/'"
+            )
+        if not v.startswith("ui/"):
+            raise ValueError(
+                f"PluginPage bundle '{v}' must start with 'ui/' to be served "
+                "by the existing /plugins/<slug>/ui/<path> endpoint."
+            )
+        ext = Path(v).suffix.lower()
+        if ext not in {".js", ".mjs"}:
+            raise ValueError(
+                f"PluginPage bundle '{v}' must have a .js or .mjs extension."
+            )
+        return v
+
+    @field_validator("custom_element_name")
+    @classmethod
+    def custom_element_name_has_hyphen(cls, v: str) -> str:
+        """Web Components spec: custom element names must contain at least one hyphen."""
+        if "-" not in v:
+            raise ValueError(
+                f"custom_element_name '{v}' must contain at least one hyphen "
+                "(Web Components specification requirement)."
+            )
+        return v
+
+
+class PluginSidebarGroup(BaseModel):
+    """A sidebar navigation group declared by a plugin (Wave 2.1).
+
+    Injected into the dashboard Sidebar alongside native groups.
+    """
+
+    id: Annotated[str, Field(min_length=1, max_length=100)]
+    label: Annotated[str, Field(min_length=1, max_length=200)]
+    # Rendering order among all sidebar groups; native groups occupy 1-5
+    order: int = 999
+    collapsible: bool = True
+
+    @field_validator("id")
+    @classmethod
+    def id_pattern(cls, v: str) -> str:
+        if not re.match(r"^[a-z0-9-]+$", v):
+            raise ValueError(f"PluginSidebarGroup id '{v}' must match ^[a-z0-9-]+$")
+        return v
+
+
+class WritableResourceJsonSchema(BaseModel):
+    """Inline JSON Schema stored in plugin.yaml for payload validation."""
+
+    type: str = "object"
+    properties: Optional[Dict[str, Any]] = None
+    required: Optional[List[str]] = None
+    additionalProperties: bool = True
+
+
+class PluginWritableResource(BaseModel):
+    """A writable data resource exposed via POST/PUT/DELETE (Wave 2.1).
+
+    Mirrors readonly_data structure but supports mutations.
+    All SQL must target {slug}_* tables only (enforced at schema and runtime).
+    """
+
+    id: Annotated[str, Field(min_length=1, max_length=100)]
+    description: Annotated[str, Field(min_length=1, max_length=500)]
+    table: Annotated[str, Field(min_length=1, max_length=200)]
+    # Explicit column allowlist — only these columns may appear in POST/PUT payloads
+    allowed_columns: List[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        default_factory=list
+    )
+    # Optional JSON Schema for payload validation (jsonschema library)
+    json_schema: Optional[WritableResourceJsonSchema] = None
+
+    @field_validator("id")
+    @classmethod
+    def id_pattern(cls, v: str) -> str:
+        if not re.match(r"^[a-z0-9_]+$", v):
+            raise ValueError(
+                f"WritableResource id '{v}' must match ^[a-z0-9_]+$"
+            )
+        return v
+
+    @field_validator("table")
+    @classmethod
+    def table_pattern(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*$", v):
+            raise ValueError(
+                f"WritableResource table '{v}' must match ^[a-z][a-z0-9_]*$"
+            )
+        return v
+
+
+class PluginUIEntryPoints(BaseModel):
+    """Typed container for ui_entry_points in plugin.yaml (Wave 2.1).
+
+    Replaces the previous Optional[Dict[str, Any]] with typed sub-models.
+    Widgets remain as raw dicts for backward compatibility; pages is new.
+    """
+
+    widgets: Optional[List[Dict[str, Any]]] = None
+    pages: Optional[List[PluginPage]] = None
+    sidebar_groups: Optional[List[PluginSidebarGroup]] = None
+
+
 class PluginManifest(BaseModel):
     """Full plugin.yaml manifest schema for v1a."""
 
@@ -292,8 +440,11 @@ class PluginManifest(BaseModel):
     # --- Conflict declarations ---
     conflicts: Dict[str, Any] = Field(default_factory=dict)
 
-    # --- UI extensions (v1a: widgets only) ---
-    ui_entry_points: Optional[Dict[str, Any]] = None
+    # --- UI extensions (v1a: widgets; Wave 2.1: pages + sidebar_groups) ---
+    ui_entry_points: Optional[PluginUIEntryPoints] = None
+
+    # --- Wave 2.1: Writable data resources (POST/PUT/DELETE mutations) ---
+    writable_data: Optional[List[PluginWritableResource]] = None
 
     # --- Dependencies (empty in v1a) ---
     dependencies: Dict[str, str] = Field(default_factory=dict)
@@ -386,6 +537,48 @@ class PluginManifest(BaseModel):
                         "All plugin queries must only access the plugin's own tables."
                     )
         return self
+
+    @model_validator(mode="after")
+    def writable_resources_use_slug_prefix(self) -> "PluginManifest":
+        """Wave 2.1: writable_data table names must start with {slug_under}.
+
+        Same guard as readonly_queries_use_slug_prefix but for the `table` field
+        on each PluginWritableResource entry.
+        """
+        if not self.writable_data:
+            return self
+        slug_under = self.id.replace("-", "_") + "_"
+        for resource in self.writable_data:
+            if not resource.table.lower().startswith(slug_under):
+                raise ValueError(
+                    f"WritableResource '{resource.id}' references table "
+                    f"'{resource.table}' which does not start with required prefix "
+                    f"'{slug_under}'. Plugin writable resources must only target "
+                    "the plugin's own tables."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def pages_bundle_paths_unique(self) -> "PluginManifest":
+        """Wave 2.1: page ids and paths within a plugin must be unique."""
+        if not self.ui_entry_points or not self.ui_entry_points.pages:
+            return self
+        pages = self.ui_entry_points.pages
+        seen_ids: set[str] = set()
+        seen_paths: set[str] = set()
+        for page in pages:
+            if page.id in seen_ids:
+                raise ValueError(
+                    f"Duplicate PluginPage id '{page.id}' in ui_entry_points.pages."
+                )
+            if page.path in seen_paths:
+                raise ValueError(
+                    f"Duplicate PluginPage path '{page.path}' in ui_entry_points.pages."
+                )
+            seen_ids.add(page.id)
+            seen_paths.add(page.path)
+        return self
+
 
 def load_plugin_manifest(plugin_dir: Path) -> PluginManifest:
     """Load and validate plugin.yaml from a plugin directory.

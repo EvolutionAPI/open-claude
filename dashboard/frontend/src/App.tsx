@@ -2,6 +2,9 @@ import { lazy, Suspense, useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { hydrateAgentMeta } from './lib/agent-meta'
+import { hydratePluginUiRegistry } from './lib/plugin-ui-registry'
+import { initEvoNexusSdk } from './lib/evonexus-sdk'
+import PluginPageHost from './pages/PluginPageHost'
 import { NotificationProvider } from './context/NotificationContext'
 import Sidebar from './components/Sidebar'
 import Overview from './pages/Overview'
@@ -71,11 +74,13 @@ function AppContent() {
   const { user, loading, needsSetup, hasPermission } = useAuth()
   const extUser = user as (typeof user & OnboardingUser) | null
 
-  // Wave 2.0: hydrate agent meta once per authenticated session.
+  // Wave 2.0/2.1: hydrate registries once per authenticated session.
   // Must be declared before any early return (Rules of Hooks).
   useEffect(() => {
     if (user) {
       hydrateAgentMeta()
+      hydratePluginUiRegistry()
+      initEvoNexusSdk()
     }
   }, [user])
 
@@ -193,6 +198,8 @@ function AppContent() {
           <Route path="/goals" element={<Goals />} />
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/plugins/:slug" element={<PluginDetail />} />
+          {/* Wave 2.1: full-screen plugin UI pages (catch-all, must come after /plugins/:slug) */}
+          <Route path="/plugins-ui/:slug/*" element={<PluginPageHost />} />
           {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
           {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
           {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}

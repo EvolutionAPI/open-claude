@@ -1456,6 +1456,247 @@ def readonly_data(slug: str, query_name: str):
 
 
 # ---------------------------------------------------------------------------
+# POST/PUT/DELETE /api/plugins/<slug>/data/<resource> — writable data (Wave 2.1)
+# ADR-4 extension: table name must start with {slug_under}_ (validated at
+# install via plugin_schema.py and re-checked at runtime).
+# Only allowed_columns declared in the manifest may be written.
+# Payload validated against optional json_schema if declared.
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugins/<slug>/data/<resource_id>", methods=["POST", "PUT", "DELETE"])
+@login_required
+def writable_data(slug: str, resource_id: str):
+    """Execute a declared writable-data mutation (POST=insert, PUT=update, DELETE=delete).
+
+    Wave 2.1 / ADR extension:
+    - Only columns in allowed_columns are written (whitelist enforcement)
+    - Table name prefix guard re-checked at runtime
+    - Optional jsonschema validation if json_schema declared in manifest
+    - Zero string interpolation — all values via SQLite bind params
+    """
+    plugin_dir = PLUGINS_DIR / slug
+    manifest_path = plugin_dir / ".install-manifest.json"
+
+    if not manifest_path.exists():
+        return jsonify({"error": "Plugin not found"}), 404
+
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        plugin_manifest = manifest_data.get("manifest", {})
+    except Exception:
+        return jsonify({"error": "Manifest unreadable"}), 500
+
+    # Check plugin is enabled + active; check capability-level disable
+    conn = _get_db()
+    try:
+        pi_row = conn.execute(
+            "SELECT capabilities_disabled FROM plugins_installed "
+            "WHERE slug = ? AND enabled = 1 AND status = 'active'",
+            (slug,),
+        ).fetchone()
+        if not pi_row:
+            return jsonify({"error": "Plugin not found or not active"}), 404
+        try:
+            caps_disabled = json.loads(pi_row["capabilities_disabled"] or "{}")
+            if resource_id in caps_disabled.get("writable_data", []):
+                return jsonify({"error": "Resource disabled"}), 404
+        except (json.JSONDecodeError, TypeError):
+            pass
+    finally:
+        conn.close()
+
+    # Locate resource declaration
+    wd_list = plugin_manifest.get("writable_data") or []
+    resource_decl = next(
+        (r for r in wd_list if isinstance(r, dict) and r.get("id") == resource_id),
+        None,
+    )
+    if not resource_decl:
+        return jsonify({"error": f"Resource '{resource_id}' not declared in plugin manifest"}), 404
+
+    table = resource_decl.get("table", "")
+    slug_under = slug.replace("-", "_") + "_"
+
+    # Runtime prefix guard (belt + suspenders — already validated at install)
+    if not table.lower().startswith(slug_under):
+        logger.error(
+            "writable_data runtime guard: table '%s' not prefixed with '%s'",
+            table, slug_under,
+        )
+        return jsonify({"error": "Internal manifest error"}), 500
+
+    allowed_columns: list[str] = resource_decl.get("allowed_columns") or []
+    method = request.method
+
+    if method == "DELETE":
+        row_id = request.args.get("id") or (request.json or {}).get("id")
+        if row_id is None or row_id == "":
+            return jsonify({"error": "id required for DELETE"}), 400
+        # Accept both integer and string primary keys (plugin tables may use
+        # either INTEGER AUTOINCREMENT or TEXT PRIMARY KEY DEFAULT random-hex).
+        try:
+            conn = _get_db()
+            # Parameterised — table name from whitelist, id from bind
+            conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))  # noqa: S608
+            conn.commit()
+            conn.close()
+            return jsonify({"deleted": row_id})
+        except sqlite3.Error as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    # POST / PUT — parse body
+    try:
+        body: dict = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    # Optional JSON Schema validation — strip routing field `id` so schemas with
+    # additionalProperties:false don't reject PUT bodies that carry the row id.
+    # Also strip None values from the schema itself (Pydantic emits Optional
+    # fields as None, which the jsonschema metaschema rejects for keys like
+    # `required` that must be arrays).
+    json_schema_decl = resource_decl.get("json_schema")
+    if json_schema_decl:
+        try:
+            import jsonschema
+            validate_body = {k: v for k, v in body.items() if k != "id"}
+            clean_schema = {k: v for k, v in json_schema_decl.items() if v is not None}
+            jsonschema.validate(validate_body, clean_schema)
+        except jsonschema.ValidationError as exc:
+            return jsonify({"error": f"Payload validation failed: {exc.message}"}), 400
+
+    # Column allowlist filtering — reject unknown columns
+    unknown = [c for c in body if c not in allowed_columns and c != "id"]
+    if unknown:
+        return jsonify({"error": f"Columns not allowed: {unknown}"}), 400
+
+    if method == "POST":
+        # INSERT
+        cols = [c for c in body if c in allowed_columns]
+        if not cols:
+            return jsonify({"error": "No valid columns provided"}), 400
+        placeholders = ", ".join("?" for _ in cols)
+        col_list = ", ".join(cols)
+        values = [body[c] for c in cols]
+        try:
+            conn = _get_db()
+            cur = conn.execute(
+                f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})",  # noqa: S608
+                values,
+            )
+            conn.commit()
+            # Tables may have INTEGER PK (where lastrowid IS the id) or TEXT PK
+            # with a DEFAULT expression (where id was generated server-side and
+            # lastrowid is just the rowid). Fetch the actual id from the row.
+            row = conn.execute(
+                f"SELECT id FROM {table} WHERE rowid = ?",  # noqa: S608
+                (cur.lastrowid,),
+            ).fetchone()
+            conn.close()
+            new_id = row["id"] if row else cur.lastrowid
+            return jsonify({"id": new_id}), 201
+        except sqlite3.Error as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    # PUT — UPDATE by id (accepts both integer and string primary keys)
+    row_id = body.get("id")
+    if row_id is None or row_id == "":
+        return jsonify({"error": "id required for PUT"}), 400
+
+    cols = [c for c in body if c in allowed_columns]
+    if not cols:
+        return jsonify({"error": "No valid columns to update"}), 400
+    set_clause = ", ".join(f"{c} = ?" for c in cols)
+    values = [body[c] for c in cols] + [row_id]
+    try:
+        conn = _get_db()
+        conn.execute(
+            f"UPDATE {table} SET {set_clause} WHERE id = ?",  # noqa: S608
+            values,
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"updated": row_id})
+    except sqlite3.Error as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# GET /api/plugin-ui-registry — aggregated pages + sidebar_groups (Wave 2.1)
+# Called once post-login by hydratePluginUiRegistry() in the frontend.
+# Returns only enabled+active plugins; respects capabilities_disabled["ui_pages"].
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugin-ui-registry", methods=["GET"])
+@login_required
+def plugin_ui_registry():
+    """Return aggregated page + sidebar_group declarations from all active plugins.
+
+    Shape:
+    {
+      "plugins": [
+        {
+          "slug": "pm-essentials",
+          "version": "0.3.0",
+          "pages": [...],          // PluginPage dicts (filtered by disabled list)
+          "sidebar_groups": [...]  // PluginSidebarGroup dicts
+        }
+      ]
+    }
+    """
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT slug, capabilities_disabled FROM plugins_installed "
+            "WHERE enabled = 1 AND status = 'active'",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result = []
+    for row in rows:
+        slug_val = row["slug"]
+        plugin_dir = PLUGINS_DIR / slug_val
+        manifest_path = plugin_dir / ".install-manifest.json"
+        if not manifest_path.exists():
+            continue
+
+        try:
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            plugin_manifest = manifest_data.get("manifest", {})
+        except Exception:
+            continue
+
+        ui_ep = plugin_manifest.get("ui_entry_points") or {}
+        pages_raw: list[dict] = ui_ep.get("pages") or []
+        sidebar_groups_raw: list[dict] = ui_ep.get("sidebar_groups") or []
+
+        if not pages_raw and not sidebar_groups_raw:
+            continue
+
+        # Filter disabled pages
+        try:
+            caps_disabled = json.loads(row["capabilities_disabled"] or "{}")
+            disabled_pages: list[str] = caps_disabled.get("ui_pages", [])
+        except (json.JSONDecodeError, TypeError):
+            disabled_pages = []
+
+        pages_filtered = [p for p in pages_raw if p.get("id") not in disabled_pages]
+
+        # Attach version for cache-busting bundle URLs on the frontend
+        version = plugin_manifest.get("version", "0")
+
+        result.append({
+            "slug": slug_val,
+            "version": version,
+            "pages": pages_filtered,
+            "sidebar_groups": sidebar_groups_raw,
+        })
+
+    return jsonify({"plugins": result})
+
+
+# ---------------------------------------------------------------------------
 # GET /plugins/<slug>/ui/<path:subpath> — widget file serving (Step 10)
 # C5 (Vault F5): realpath + startswith containment
 # ---------------------------------------------------------------------------
