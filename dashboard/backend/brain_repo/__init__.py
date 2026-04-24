@@ -66,7 +66,58 @@ def _verify_api_compat() -> None:
         _log.warning("brain_repo API check: restore module unavailable: %s", exc)
 
 
+def _verify_crypto_ready() -> None:
+    """Validate that token encryption is actually wired up.
+
+    Emits CRITICAL-level logs when crypto is broken so the failure appears in
+    production log aggregators (Sentry, syslog, etc.) — the previous WARNING
+    was routinely ignored. Flagged in PR review by @davidsoncelestino:
+    'log.warning não é notado por ninguém em produção'.
+    """
+    import os as _os
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        _log.critical(
+            "brain_repo CRYPTO CHECK: cryptography module unavailable — "
+            "connect/sync endpoints will return 500; stored tokens cannot be decrypted",
+        )
+        return
+    key = _os.environ.get("BRAIN_REPO_MASTER_KEY", "")
+    if not key:
+        _log.critical(
+            "brain_repo CRYPTO CHECK: BRAIN_REPO_MASTER_KEY not set — "
+            "connect/sync endpoints will return 500 with code=CRYPTO_UNAVAILABLE",
+        )
+        return
+    try:
+        Fernet(key.encode())  # validates format (must be 32-byte url-safe base64)
+    except Exception as exc:
+        _log.critical(
+            "brain_repo CRYPTO CHECK: master key invalid format (%s) — connect/sync will fail",
+            exc,
+        )
+
+
+def is_crypto_ready() -> bool:
+    """Runtime check exposed so the HTTP /status endpoint can report it."""
+    import os as _os
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        return False
+    key = _os.environ.get("BRAIN_REPO_MASTER_KEY", "")
+    if not key:
+        return False
+    try:
+        Fernet(key.encode())
+    except Exception:
+        return False
+    return True
+
+
 try:
     _verify_api_compat()
+    _verify_crypto_ready()
 except Exception as _exc:  # pragma: no cover — belt-and-suspenders
-    _log.warning("brain_repo API check raised unexpectedly: %s", _exc)
+    _log.warning("brain_repo API/crypto check raised unexpectedly: %s", _exc)

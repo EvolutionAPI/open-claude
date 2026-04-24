@@ -257,11 +257,25 @@ def _decrypt_token(config: BrainRepoConfig) -> str:
 @bp.route("/api/brain-repo/status")
 @login_required
 def status():
-    """Return current BrainRepoConfig or minimal disconnected state."""
+    """Return current BrainRepoConfig plus crypto readiness.
+
+    ``crypto_ready`` reflects whether the server can actually encrypt/decrypt
+    tokens right now — covers the case where a config exists but the master
+    key was lost (e.g. after a restart where the .env write failed, or key
+    was rotated without re-connecting). When false, the UI renders the
+    Brain Repo card with a warning and offers Reconnect instead of pretending
+    everything is fine.
+    """
+    try:
+        from brain_repo import is_crypto_ready
+        crypto_ready = is_crypto_ready()
+    except Exception:
+        crypto_ready = False
+
     config = _get_config()
     if config is None:
-        return jsonify({"connected": False})
-    return jsonify(config.to_dict())
+        return jsonify({"connected": False, "crypto_ready": crypto_ready})
+    return jsonify({**config.to_dict(), "crypto_ready": crypto_ready})
 
 
 # ── Validate token ────────────────────────────────────
