@@ -32,6 +32,8 @@ import ShareLinks from './pages/ShareLinks'
 import HeartbeatsList, { HeartbeatDetail } from './pages/Heartbeats'
 import Activity from './pages/Activity'
 import Goals from './pages/Goals'
+import Plugins from './pages/Plugins'
+import PluginDetail from './pages/PluginDetail'
 import Topics from './pages/Topics'
 import TicketDetail from './pages/TicketDetail'
 import KnowledgeLayout from './pages/Knowledge/KnowledgeLayout'
@@ -133,6 +135,8 @@ function AppContent() {
           {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
           {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
           <Route path="/goals" element={<Goals />} />
+          <Route path="/plugins" element={<Plugins />} />
+          <Route path="/plugins/:slug" element={<PluginDetail />} />
           {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
           {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
           {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
