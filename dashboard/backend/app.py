@@ -297,6 +297,21 @@ with app.app_context():
         _conn.commit()
     # --- End thread-areas migration ---
 
+    # --- Plugin provenance: source_plugin on tables that plugins can seed ---
+    # When a plugin installs rows into projects/goals/missions/goal_tasks/
+    # tickets/triggers, the row gets tagged with its slug. Uninstall then
+    # deletes WHERE source_plugin = ? — user-created rows stay. Required for
+    # the `goals`, `tasks`, and `triggers` plugin capabilities (v1b).
+    for _tbl in ("tickets", "projects", "goals", "missions", "goal_tasks", "triggers"):
+        try:
+            _cols = {row[1] for row in _cur.execute(f"PRAGMA table_info({_tbl})").fetchall()}
+        except _sqlite3.OperationalError:
+            continue  # table doesn't exist yet in this build
+        if "source_plugin" not in _cols:
+            _cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN source_plugin TEXT")
+            _conn.commit()
+    # --- End plugin provenance migration ---
+
     # --- End tickets migration ---
 
     # --- Knowledge connections migration (pgvector-knowledge feature) ---

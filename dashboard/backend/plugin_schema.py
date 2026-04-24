@@ -31,7 +31,7 @@ _VALID_HOOK_EVENTS = frozenset(
 
 
 class Capability(str, Enum):
-    """Declared plugin capability enum (v1a capabilities)."""
+    """Declared plugin capability enum."""
 
     agents = "agents"
     skills = "skills"
@@ -41,6 +41,11 @@ class Capability(str, Enum):
     widgets = "widgets"
     claude_hooks = "claude_hooks"
     readonly_data = "readonly_data"
+    # v1a extension — seed host-managed rows on install, tagged with
+    # source_plugin so uninstall can clean them without touching user rows.
+    goals = "goals"
+    tasks = "tasks"
+    triggers = "triggers"
 
 
 class WidgetSpec(BaseModel):

@@ -64,6 +64,164 @@ def _plugin_to_dict(row: sqlite3.Row) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Seed host rows on plugin install: goals / tasks / triggers capabilities.
+# Each YAML is optional — a plugin that doesn't ship one of these just skips
+# the corresponding pass. All rows inserted here carry `source_plugin` so
+# uninstall can delete them with a single DELETE WHERE source_plugin = ?.
+# ---------------------------------------------------------------------------
+
+def _seed_plugin_host_rows(conn: sqlite3.Connection, slug: str, plugin_dir: Path) -> None:
+    import yaml
+
+    def _load_yaml(name: str) -> dict:
+        path = plugin_dir / name / f"{name}.yaml"
+        if not path.is_file():
+            return {}
+        try:
+            return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("Plugin %s: failed to parse %s: %s", slug, name, exc)
+            return {}
+
+    # ---- goals/goals.yaml: projects + goals ----
+    goals_spec = _load_yaml("goals")
+    now = _now_iso()
+
+    project_slug_to_id: dict[str, int] = {}
+    for proj in goals_spec.get("projects", []) or []:
+        pslug = proj.get("slug") or proj.get("id")
+        title = proj.get("title") or proj.get("name")
+        if not pslug or not title:
+            continue
+        namespaced = f"plugin-{slug}-{pslug}" if not pslug.startswith(f"plugin-{slug}-") else pslug
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO projects "
+            "(slug, mission_id, title, description, status, created_at, updated_at, source_plugin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                namespaced,
+                proj.get("mission_id"),
+                title,
+                proj.get("description"),
+                proj.get("status") or "active",
+                now, now, slug,
+            ),
+        )
+        row = conn.execute("SELECT id FROM projects WHERE slug = ?", (namespaced,)).fetchone()
+        if row:
+            project_slug_to_id[pslug] = row["id"]
+    conn.commit()
+
+    goal_slug_to_id: dict[str, int] = {}
+    for g in goals_spec.get("goals", []) or []:
+        gslug = g.get("slug") or g.get("id")
+        title = g.get("title")
+        proj_ref = g.get("project_slug") or g.get("project_id")
+        project_id = project_slug_to_id.get(proj_ref) if isinstance(proj_ref, str) else proj_ref
+        if not gslug or not title or not project_id:
+            continue
+        namespaced = f"plugin-{slug}-{gslug}" if not gslug.startswith(f"plugin-{slug}-") else gslug
+        conn.execute(
+            "INSERT OR IGNORE INTO goals "
+            "(slug, project_id, title, description, target_metric, metric_type, "
+            " target_value, current_value, due_date, status, created_at, updated_at, source_plugin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                namespaced,
+                project_id,
+                title,
+                g.get("description"),
+                g.get("target_metric"),
+                g.get("metric_type") or "count",
+                float(g.get("target_value") or 0),
+                float(g.get("current_value") or 0),
+                g.get("due_date"),
+                g.get("status") or "active",
+                now, now, slug,
+            ),
+        )
+        row = conn.execute("SELECT id FROM goals WHERE slug = ?", (namespaced,)).fetchone()
+        if row:
+            goal_slug_to_id[gslug] = row["id"]
+    conn.commit()
+
+    # ---- tasks/tasks.yaml: tickets ----
+    tasks_spec = _load_yaml("tasks")
+    for t in tasks_spec.get("tasks", []) or []:
+        title = t.get("title")
+        if not title:
+            continue
+        assignee = t.get("assignee_agent")
+        # Auto-prefix the agent slug if the plugin declared a bare name that
+        # belongs to this plugin. Matches the file_ops convention.
+        if isinstance(assignee, str) and assignee and not assignee.startswith("plugin-"):
+            candidate = f"plugin-{slug}-{assignee}"
+            if (WORKSPACE / ".claude" / "agents" / f"{candidate}.md").exists():
+                assignee = candidate
+
+        goal_ref = t.get("goal_slug") or t.get("goal_id")
+        goal_id = goal_slug_to_id.get(goal_ref) if isinstance(goal_ref, str) else goal_ref
+
+        priority = t.get("priority") or "medium"
+        priority_rank = {"urgent": 4, "high": 3, "medium": 2, "low": 1}.get(priority, 2)
+
+        import uuid as _uuid
+        ticket_id = str(_uuid.uuid4())
+        conn.execute(
+            "INSERT OR IGNORE INTO tickets "
+            "(id, title, description, status, priority, priority_rank, "
+            " goal_id, assignee_agent, created_by, created_at, updated_at, source_plugin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ticket_id,
+                title,
+                t.get("description"),
+                t.get("status") or "open",
+                priority,
+                priority_rank,
+                goal_id,
+                assignee,
+                f"plugin:{slug}",
+                now, now, slug,
+            ),
+        )
+    conn.commit()
+
+    # ---- triggers/triggers.yaml: triggers (disabled by default for safety) ----
+    triggers_spec = _load_yaml("triggers")
+    for tr in triggers_spec.get("triggers", []) or []:
+        tr_slug = tr.get("slug") or tr.get("id")
+        name = tr.get("name") or tr_slug
+        if not tr_slug or not name:
+            continue
+        namespaced = f"plugin-{slug}-{tr_slug}" if not tr_slug.startswith(f"plugin-{slug}-") else tr_slug
+        import secrets as _secrets
+        conn.execute(
+            "INSERT OR IGNORE INTO triggers "
+            "(name, slug, type, source, event_filter, action_type, action_payload, "
+            " agent, secret, enabled, from_yaml, source_plugin, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                name,
+                namespaced,
+                tr.get("type") or "webhook",
+                tr.get("source") or "webhook",
+                json.dumps(tr.get("event_filter")) if tr.get("event_filter") is not None else None,
+                tr.get("action_type") or "skill",
+                json.dumps(tr.get("action_payload") or {}),
+                tr.get("agent"),
+                tr.get("secret") or _secrets.token_urlsafe(32),
+                # Safety default: disabled so the user has to review and enable explicitly.
+                1 if tr.get("enabled") is True else 0,
+                1,  # from_yaml
+                slug,
+                now, now,
+            ),
+        )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # GET /api/plugins — list installed plugins
 # ---------------------------------------------------------------------------
 
@@ -376,6 +534,16 @@ def install_plugin():
         })
         save_state(slug, state)
 
+        # --- Step: seed host rows (goals / tasks / triggers) ---
+        # Plugin may declare YAMLs under goals/, tasks/, triggers/ to seed
+        # workspace-scoped rows on install. Each insert tags `source_plugin`
+        # so uninstall deletes WHERE source_plugin = slug (user-created
+        # rows stay). All three capabilities are opt-in — a missing YAML
+        # just skips the step.
+        _seed_plugin_host_rows(conn, slug, plugin_dir)
+        state["completed_steps"].append({"step": "seed_host_rows"})
+        save_state(slug, state)
+
         # --- Step: widget mount_point limit check (AC27) ---
         # Max 3 widgets per mount_point across all active plugins (excluding self).
         _WIDGET_MOUNT_LIMIT = 3
@@ -574,6 +742,16 @@ def uninstall_plugin(slug: str):
             remove_rules_index(slug)
         except Exception as exc:
             logger.warning("rules index removal failed: %s", exc)
+
+        # Delete host rows this plugin seeded (goals/tasks/triggers capabilities).
+        # DELETE WHERE source_plugin = ? leaves user-created rows untouched.
+        # Deletion order matters because of FKs: tickets → goals → projects.
+        for _tbl in ("triggers", "tickets", "goal_tasks", "goals", "projects"):
+            try:
+                conn.execute(f"DELETE FROM {_tbl} WHERE source_plugin = ?", (slug,))
+                conn.commit()
+            except Exception as exc:
+                logger.warning("Uninstall: failed to clean %s: %s", _tbl, exc)
 
         # SQL uninstall
         uninstall_sql = plugin_dir / "migrations" / "uninstall.sql"
