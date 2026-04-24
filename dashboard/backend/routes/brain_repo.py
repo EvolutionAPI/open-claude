@@ -45,6 +45,79 @@ def _get_config() -> BrainRepoConfig | None:
     return BrainRepoConfig.query.filter_by(user_id=current_user.id).first()
 
 
+_WATCH_PATHS = ["memory", "workspace", "customizations", "config-safe"]
+_EXCLUDE_RELATIVE_PATHS = ["memory/raw-transcripts"]
+
+
+def _sync_workspace_to_brain_repo(workspace: Path, brain_dir: Path) -> tuple[int, int]:
+    """Mirror watched workspace folders into the local brain repo working tree.
+
+    Without this step, ``git_ops.commit_all`` runs against a brain-repo dir that
+    nobody has updated since the initial bootstrap — so it always reports
+    "nothing to commit", no matter how many files the user changed in the
+    workspace. This is the function the user expected to be running but wasn't.
+
+    Steps:
+        1. For each path in ``_WATCH_PATHS``, mirror ``workspace/<path>`` →
+           ``brain_dir/<path>`` using ``shutil.copytree(dirs_exist_ok=True)``,
+           skipping anything whose relative path starts with one of
+           ``_EXCLUDE_RELATIVE_PATHS`` (e.g. raw transcripts).
+        2. Run secrets scanner on the resulting brain_dir; **delete** any file
+           that triggers a finding and log a warning. Better to drop a couple
+           of files than to leak a token to GitHub.
+
+    Returns ``(files_copied, secrets_removed)``.
+    """
+    import shutil
+
+    files_copied = 0
+
+    def _ignore(src_dir: str, names: list[str]) -> list[str]:
+        ignored = []
+        for n in names:
+            full = Path(src_dir) / n
+            try:
+                rel = full.resolve().relative_to(workspace.resolve()).as_posix()
+            except Exception:
+                continue
+            for excl in _EXCLUDE_RELATIVE_PATHS:
+                if rel == excl or rel.startswith(excl + "/"):
+                    ignored.append(n)
+                    break
+        return ignored
+
+    for watch in _WATCH_PATHS:
+        src = workspace / watch
+        if not src.is_dir():
+            continue
+        dst = brain_dir / watch
+        try:
+            shutil.copytree(src, dst, dirs_exist_ok=True, ignore=_ignore)
+            for _ in dst.rglob("*"):
+                files_copied += 1
+        except Exception as exc:
+            log.warning("sync_workspace: failed to copy %s -> %s: %s", src, dst, exc)
+
+    # Secrets scan after copy — drop any offending file from the brain_dir
+    # before the commit. Never push a secret.
+    secrets_removed = 0
+    try:
+        from brain_repo import secrets_scanner
+        findings = secrets_scanner.scan_directory(brain_dir, exclude=[".git"])
+        offending = {f["file"] for f in findings}
+        for path_str in offending:
+            try:
+                Path(path_str).unlink(missing_ok=True)
+                secrets_removed += 1
+                log.warning("sync_workspace: removed file with secret(s): %s", path_str)
+            except Exception as exc:
+                log.warning("sync_workspace: could not remove %s: %s", path_str, exc)
+    except ImportError:
+        log.warning("sync_workspace: secrets_scanner unavailable, skipping scan")
+
+    return files_copied, secrets_removed
+
+
 def _initialize_remote_brain_repo(
     token: str,
     repo_url: str,
@@ -131,9 +204,9 @@ def _initialize_remote_brain_repo(
 
         committed = git_ops.commit_all(local_path, "feat(brain-repo): initial structure")
         if committed:
-            pushed = git_ops.push(local_path, token)
+            pushed, push_err = git_ops.push(local_path, token, with_tags=False)
             if not pushed:
-                log.warning("brain repo initial push failed for %s", repo_name)
+                log.warning("brain repo initial push failed for %s: %s", repo_name, push_err)
         return str(local_path)
     except Exception as exc:
         log.warning("Failed to bootstrap brain repo %s: %s", repo_name, exc)
@@ -424,7 +497,11 @@ def restore_start():
     """
     data = request.get_json() or {}
     ref = data.get("ref", "").strip()
-    include_kb = data.get("include_kb", True)
+    include_kb = bool(data.get("include_kb", False))
+    # kb_key_matches is declared by the user ("I still have the original
+    # master key") — when False, KB import silently degrades to metadata-only,
+    # which is the safe default.
+    kb_key_matches = bool(data.get("kb_key_matches", False))
 
     if not ref:
         abort(400, description="ref required")
@@ -439,18 +516,21 @@ def restore_start():
 
     # Capture needed values before entering generator (avoids app context issues)
     repo_url = config.repo_url
-    local_path = config.local_path
-    user_id = current_user.id
+    # install_dir is where SWAP_DIRS (memory/workspace/customizations/config-safe)
+    # get replaced — i.e. the EvoNexus workspace root, NOT the brain-repo clone
+    # path. Confusing these two is what broke the restore endpoint.
+    install_dir = Path(__file__).resolve().parent.parent.parent.parent
 
     def generate():
         try:
             from brain_repo import restore
             for event in restore.execute_restore(
-                token=token,
                 repo_url=repo_url,
-                local_path=local_path,
                 ref=ref,
+                token=token,
+                install_dir=install_dir,
                 include_kb=include_kb,
+                kb_key_matches=kb_key_matches,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except ImportError:
@@ -474,43 +554,90 @@ def restore_start():
 @bp.route("/api/brain-repo/sync/force", methods=["POST"])
 @login_required
 def sync_force():
-    """Force an immediate commit + push with a milestone tag.
+    """Force a workspace → brain-repo sync, then commit + push (tags included).
 
-    Creates a tag ``milestone/manual-YYYY-MM-DD-HH-MM`` after pushing.
+    Steps:
+        1. Mirror watched workspace folders (memory, workspace, customizations,
+           config-safe) into the local brain-repo working tree, with secrets
+           scan applied.
+        2. ``git add -A`` + commit if there is anything to commit.
+        3. Create an annotated milestone tag (timestamp includes seconds so
+           rapid re-clicks don't collide; ``-f`` so a same-second collision
+           overwrites locally instead of erroring).
+        4. ``git push --follow-tags`` so the commit AND the new tag both reach
+           GitHub in a single round-trip.
+
+    Failures are persisted to ``BrainRepoConfig.last_error`` so the UI can
+    surface them via the status endpoint.
     """
     config = _get_config()
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
 
     token = _decrypt_token(config)
+    if not token:
+        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
+
     local_path = config.local_path
     if not local_path:
         abort(400, description="local_path not configured — repo not yet cloned")
 
     repo_dir = Path(local_path)
+    if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
+        abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
 
     try:
         from brain_repo import git_ops
     except ImportError:
         abort(500, description="git_ops module unavailable")
 
+    workspace = Path(__file__).resolve().parent.parent.parent.parent
     now = datetime.now(timezone.utc)
-    tag_name = f"milestone/manual-{now.strftime('%Y-%m-%d-%H-%M')}"
+    # Seconds in the tag name avoids "tag already exists" on rapid re-clicks
+    tag_name = f"milestone/manual-{now.strftime('%Y-%m-%d-%H-%M-%S')}"
 
     try:
+        # 1. Mirror workspace → brain-repo working tree (this is what was missing)
+        copied, secrets_dropped = _sync_workspace_to_brain_repo(workspace, repo_dir)
+        log.info("sync_force: copied=%d files, secrets_removed=%d", copied, secrets_dropped)
+
+        # 2. Stage + commit
         committed = git_ops.commit_all(repo_dir, f"manual sync {now.isoformat()}")
-        git_ops.push(repo_dir, token)
-        git_ops.create_tag(repo_dir, tag_name, f"Manual sync at {now.isoformat()}")
+
+        # 3. Create the milestone tag (force=True so same-second re-runs don't 500)
+        tag_created = git_ops.create_tag(
+            repo_dir, tag_name, f"Manual sync at {now.isoformat()}", force=True,
+        )
+
+        # 4. Push branch + tags together
+        pushed, push_err = git_ops.push(repo_dir, token, with_tags=True)
     except Exception as exc:
-        config.last_error = str(exc)
+        config.last_error = str(exc)[:300]
         db.session.commit()
         abort(500, description=str(exc))
 
+    if not pushed:
+        config.last_error = f"push failed: {push_err}"
+        db.session.commit()
+        return jsonify({
+            "ok": False,
+            "committed": committed,
+            "tag": tag_name if tag_created else None,
+            "error": f"git push failed — {push_err}",
+        }), 500
+
     config.last_sync = now
     config.last_error = None
+    config.pending_count = 0
     db.session.commit()
 
-    return jsonify({"ok": True, "committed": committed, "tag": tag_name})
+    return jsonify({
+        "ok": True,
+        "committed": committed,
+        "tag": tag_name if tag_created else None,
+        "files_copied": copied,
+        "secrets_removed": secrets_dropped,
+    })
 
 
 # ── Tag milestone ─────────────────────────────────────
@@ -518,10 +645,16 @@ def sync_force():
 @bp.route("/api/brain-repo/tag/milestone", methods=["POST"])
 @login_required
 def tag_milestone():
-    """Create a named milestone tag in the brain repo.
+    """Create a named milestone tag pointing at the *current* workspace state.
 
     Body (JSON):
         name - tag suffix, result will be ``milestone/<name>``
+
+    Same shape as ``sync_force`` (mirror workspace → commit → tag → push) but
+    with a user-supplied tag name instead of a timestamp. ``force=True`` on
+    create_tag means re-tagging an existing milestone moves it to the new
+    snapshot rather than 500-ing — which is what users expect when they
+    "re-tag" something.
     """
     data = request.get_json() or {}
     name = data.get("name", "").strip()
@@ -532,27 +665,66 @@ def tag_milestone():
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
 
+    token = _decrypt_token(config)
+    if not token:
+        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
+
     local_path = config.local_path
     if not local_path:
         abort(400, description="local_path not configured — repo not yet cloned")
 
-    tag = f"milestone/{name}"
+    repo_dir = Path(local_path)
+    if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
+        abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
 
     try:
         from brain_repo import git_ops
     except ImportError:
         abort(500, description="git_ops module unavailable")
 
+    workspace = Path(__file__).resolve().parent.parent.parent.parent
+    tag = f"milestone/{name}"
+    now = datetime.now(timezone.utc)
+
     try:
-        ok = git_ops.create_tag(
-            Path(local_path),
-            tag,
-            f"Milestone: {name}",
+        # Mirror workspace so the tag captures the current state (not the
+        # frozen state from when the brain repo was first initialised).
+        copied, secrets_dropped = _sync_workspace_to_brain_repo(workspace, repo_dir)
+        log.info("tag_milestone: copied=%d, secrets_removed=%d", copied, secrets_dropped)
+
+        committed = git_ops.commit_all(repo_dir, f"milestone: {name}")
+
+        tag_created = git_ops.create_tag(
+            repo_dir, tag, f"Milestone: {name} ({now.isoformat()})", force=True,
         )
+        if not tag_created:
+            abort(500, description=f"git tag {tag} failed locally — see server logs")
+
+        pushed, push_err = git_ops.push(repo_dir, token, with_tags=True)
     except Exception as exc:
+        config.last_error = str(exc)[:300]
+        db.session.commit()
         abort(500, description=str(exc))
 
-    if not ok:
-        abort(500, description=f"Failed to create tag '{tag}'")
+    if not pushed:
+        config.last_error = f"push failed: {push_err}"
+        db.session.commit()
+        return jsonify({
+            "ok": False,
+            "tag": tag,
+            "committed": committed,
+            "error": f"git push failed — {push_err}",
+        }), 500
 
-    return jsonify({"ok": True, "tag": tag})
+    config.last_sync = now
+    config.last_error = None
+    config.pending_count = 0
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "tag": tag,
+        "committed": committed,
+        "files_copied": copied,
+        "secrets_removed": secrets_dropped,
+    })
