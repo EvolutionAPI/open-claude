@@ -118,3 +118,6 @@ entities.json
 # ── Plugins (installed plugin directories are not committed) ──
 plugins/*/
 !plugins/.gitkeep
+
+# ── Claude hook bootstrap artifacts ──
+.claude/.settings.json.backup-*
