@@ -110,6 +110,7 @@ def get_plugin(slug: str):
 def preview_plugin():
     data = request.get_json(force=True, silent=True) or {}
     source_url = data.get("source_url", "")
+    auth_token = data.get("auth_token") or None
     if not source_url:
         return jsonify({"error": "source_url required"}), 400
 
@@ -117,7 +118,7 @@ def preview_plugin():
 
     installer = PluginInstaller()
     try:
-        preview = installer.preview(source_url)
+        preview = installer.preview(source_url, auth_token=auth_token)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -125,6 +126,52 @@ def preview_plugin():
         return jsonify(preview), 409
 
     return jsonify(preview)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/upload — upload and stage a plugin archive (.zip / .tar.gz)
+# Returns a temporary source_path that can be passed to /preview and /install
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugins/upload", methods=["POST"])
+@login_required
+def upload_plugin_archive():
+    """Accept a multipart upload (.zip/.tar.gz), extract into staging, return the path.
+
+    The caller then passes `source_url: <returned_path>` to /preview and /install.
+    """
+    import time
+    import secrets
+
+    if "file" not in request.files:
+        return jsonify({"error": "file field required"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "empty filename"}), 400
+
+    # Size cap — 20MB — matches reasonable plugin scope
+    max_bytes = 20 * 1024 * 1024
+    f.stream.seek(0, 2)
+    size = f.stream.tell()
+    f.stream.seek(0)
+    if size > max_bytes:
+        return jsonify({"error": f"archive too large ({size} bytes, max {max_bytes})"}), 413
+
+    staging_slug = f"upload-{int(time.time())}-{secrets.token_hex(4)}"
+
+    from plugin_loader import PluginInstaller
+    try:
+        extracted = PluginInstaller.extract_uploaded_archive(f, staging_slug)
+    except ValueError as exc:
+        return jsonify({"error": "invalid_format", "message": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": "extract_failed", "message": str(exc)}), 500
+
+    return jsonify({
+        "source_path": str(extracted),
+        "staging_slug": staging_slug,
+        "filename": f.filename,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +183,7 @@ def preview_plugin():
 def install_plugin():
     data = request.get_json(force=True, silent=True) or {}
     source_url = data.get("source_url", "")
+    auth_token = data.get("auth_token") or None
     if not source_url:
         return jsonify({"error": "source_url required"}), 400
 
@@ -155,7 +203,7 @@ def install_plugin():
 
     # Preview / validate first
     try:
-        preview = installer.preview(source_url)
+        preview = installer.preview(source_url, auth_token=auth_token)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -188,7 +236,7 @@ def install_plugin():
         plugin_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy entire source into plugin dir (resolver handles github:/https:/local)
-        source_path = installer.resolve_source(source_url)
+        source_path = installer.resolve_source(source_url, auth_token=auth_token)
         if source_path.is_dir():
             shutil.copytree(source_path, plugin_dir, dirs_exist_ok=True)
         else:
@@ -881,10 +929,16 @@ def update_plugin(slug: str):
         data = request.get_json(force=True, silent=True) or {}
         source_url = data.get("source_url", installed_source)
 
-        # 3. Resolve new plugin directory (must be a local directory in v1a)
-        new_plugin_dir = Path(source_url)
+        # 3. Resolve new plugin source (accepts local path, github:..., https://...)
+        from plugin_loader import PluginInstaller
+        try:
+            new_plugin_dir = PluginInstaller.resolve_source(source_url)
+        except ValueError as exc:
+            return jsonify({"error": "invalid_source", "message": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": "fetch_failed", "message": str(exc)}), 500
         if not new_plugin_dir.is_dir():
-            return jsonify({"error": "fetch_failed", "message": f"source_url must be a local directory: {source_url}"}), 500
+            return jsonify({"error": "fetch_failed", "message": f"resolved source is not a directory: {new_plugin_dir}"}), 500
 
         # 4. Load and validate new manifest
         try:

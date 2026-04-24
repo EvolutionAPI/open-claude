@@ -249,13 +249,19 @@ class PluginInstaller:
             )
 
     @staticmethod
-    def resolve_source(source_url: str) -> Path:
+    def resolve_source(source_url: str, auth_token: str | None = None) -> Path:
         """Resolve a source_url to a local directory containing plugin.yaml.
 
         Supported forms:
           - local path: `/abs/path` or `./rel/path`
           - GitHub shorthand: `github:owner/repo` or `github:owner/repo@ref`
           - HTTPS tarball: `https://.../archive.tar.gz`
+          - HTTPS zip: `https://.../archive.zip`
+
+        Args:
+            source_url: One of the forms above.
+            auth_token: Optional GitHub Personal Access Token for private
+                repos. Sent as `Authorization: token <pat>` header.
 
         Returns:
             Path to a directory containing plugin.yaml.
@@ -274,24 +280,80 @@ class PluginInstaller:
             tar_url = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{ref}"
             staging_slug = f"{owner}-{repo}-{ref}".replace("/", "-")
             try:
-                return PluginInstaller.fetch_from_tarball(tar_url, staging_slug)
+                return PluginInstaller.fetch_from_tarball(tar_url, staging_slug, auth_token=auth_token)
             except RuntimeError:
                 # fallback: try as tag ref
                 tar_url_tag = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/tags/{ref}"
-                return PluginInstaller.fetch_from_tarball(tar_url_tag, staging_slug)
+                return PluginInstaller.fetch_from_tarball(tar_url_tag, staging_slug, auth_token=auth_token)
 
         if s.startswith("https://"):
             # Use a safe staging slug derived from the URL
             staging_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", s)[-80:]
-            return PluginInstaller.fetch_from_tarball(s, staging_slug)
+            return PluginInstaller.fetch_from_tarball(s, staging_slug, auth_token=auth_token)
 
         return Path(s)
 
-    def preview(self, plugin_dir: str | Path) -> Dict[str, Any]:
+    @staticmethod
+    def extract_uploaded_archive(file_storage, staging_slug: str) -> Path:
+        """Extract an uploaded .zip or .tar.gz into staging and return the root dir.
+
+        Args:
+            file_storage: Flask FileStorage (request.files['file']).
+            staging_slug: Unique slug for the staging subdir.
+
+        Returns:
+            Path to the extracted plugin directory.
+
+        Raises:
+            ValueError: unsupported archive format.
+            RuntimeError: extraction failure.
+        """
+        import zipfile
+
+        filename = (file_storage.filename or "").lower()
+        STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        staging_dir = STAGING_DIR / staging_slug
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True)
+
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            file_storage.save(tmp.name)
+            tmp_path = Path(tmp.name)
+
+        try:
+            if filename.endswith(".zip"):
+                with zipfile.ZipFile(tmp_path, "r") as zf:
+                    for member in zf.namelist():
+                        # Reject absolute paths and parent-dir traversal
+                        if member.startswith("/") or ".." in Path(member).parts:
+                            raise RuntimeError(f"Unsafe entry in archive: {member}")
+                    zf.extractall(staging_dir)
+            elif filename.endswith(".tar.gz") or filename.endswith(".tgz") or filename.endswith(".tar"):
+                mode = "r:gz" if filename.endswith((".tar.gz", ".tgz")) else "r:"
+                with tarfile.open(tmp_path, mode) as tf:
+                    tf.extractall(staging_dir, filter="data")  # type: ignore[call-arg]
+            else:
+                raise ValueError(f"Unsupported archive format: {filename}. Use .zip or .tar.gz")
+
+            # Descend into single-root-dir if present (mirrors fetch_from_tarball)
+            if not (staging_dir / "plugin.yaml").exists():
+                entries = [p for p in staging_dir.iterdir() if not p.name.startswith(".")]
+                if len(entries) == 1 and entries[0].is_dir() and (entries[0] / "plugin.yaml").exists():
+                    return entries[0]
+            return staging_dir
+        except Exception as exc:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise RuntimeError(f"Failed to extract uploaded archive: {exc}") from exc
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def preview(self, plugin_dir: str | Path, auth_token: str | None = None) -> Dict[str, Any]:
         """Validate and preview a plugin install without writing anything.
 
         Args:
             plugin_dir: Local directory, `github:owner/repo[@ref]`, or HTTPS tarball.
+            auth_token: Optional GitHub PAT for private repos.
 
         Returns:
             Dict with keys:
@@ -308,7 +370,10 @@ class PluginInstaller:
         }
 
         try:
-            plugin_dir = self.resolve_source(str(plugin_dir) if not isinstance(plugin_dir, Path) else str(plugin_dir))
+            plugin_dir = self.resolve_source(
+                str(plugin_dir) if not isinstance(plugin_dir, Path) else str(plugin_dir),
+                auth_token=auth_token,
+            )
         except ValueError as exc:
             result["conflicts"].append(str(exc))
             return result
@@ -349,7 +414,7 @@ class PluginInstaller:
         return result
 
     @staticmethod
-    def fetch_from_tarball(url: str, staging_slug: str) -> Path:
+    def fetch_from_tarball(url: str, staging_slug: str, auth_token: str | None = None) -> Path:
         """Download and extract a plugin tarball from a remote URL.
 
         Vault condition C7: uses tarfile.extractall(filter='data') to prevent
@@ -357,8 +422,8 @@ class PluginInstaller:
 
         Args:
             url: HTTPS URL to a .tar.gz plugin archive.
-            source_url scheme is already validated by PluginManifest.source_url.
             staging_slug: Unique identifier for the staging directory.
+            auth_token: Optional GitHub PAT / bearer token for private repos.
 
         Returns:
             Path to the extracted plugin directory in .staging/.
@@ -389,7 +454,12 @@ class PluginInstaller:
 
         try:
             logger.info("Fetching plugin archive from %s", url)
-            urllib.request.urlretrieve(url, tmp_path)  # noqa: S310 — scheme validated above
+            if auth_token:
+                req = urllib.request.Request(url, headers={"Authorization": f"token {auth_token}"})
+                with urllib.request.urlopen(req) as resp, open(tmp_path, "wb") as out:  # noqa: S310 — scheme validated above
+                    shutil.copyfileobj(resp, out)
+            else:
+                urllib.request.urlretrieve(url, tmp_path)  # noqa: S310 — scheme validated above
 
             # Vault C7: filter='data' strips absolute paths and .. components
             with tarfile.open(tmp_path, "r:gz") as tf:

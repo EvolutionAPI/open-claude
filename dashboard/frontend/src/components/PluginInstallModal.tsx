@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { X, Link2, Eye, Download, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react'
+import { X, Link2, Eye, Download, CheckCircle, AlertTriangle, Loader2, Lock, Upload, ChevronDown, ChevronUp } from 'lucide-react'
 import { api } from '../lib/api'
 
 interface PreviewResult {
@@ -20,6 +20,11 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   const { t } = useTranslation()
   const [step, setStep] = useState<Step>(1)
   const [sourceUrl, setSourceUrl] = useState('')
+  const [authToken, setAuthToken] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadedPath, setUploadedPath] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [preview, setPreview] = useState<PreviewResult | null>(null)
   const [loadingPreview, setLoadingPreview] = useState(false)
   const [installing, setInstalling] = useState(false)
@@ -27,12 +32,40 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   const [installError, setInstallError] = useState<string | null>(null)
   const [installedSlug, setInstalledSlug] = useState<string | null>(null)
 
+  // Effective source: uploaded staged path wins over URL input
+  const effectiveSource = () => (uploadedPath ?? sourceUrl.trim())
+  const canPreview = effectiveSource().length > 0 && !loadingPreview
+
+  async function handleFileSelect(file: File) {
+    setPreviewError(null)
+    setUploading(true)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const resp = await fetch('/api/plugins/upload', { method: 'POST', body: form, credentials: 'include' })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.message ?? err.error ?? `upload failed (${resp.status})`)
+      }
+      const result = await resp.json() as { source_path: string }
+      setUploadedPath(result.source_path)
+      setSourceUrl('')
+    } catch (e: unknown) {
+      setPreviewError(e instanceof Error ? e.message : t('common.unexpectedError'))
+    } finally {
+      setUploading(false)
+    }
+  }
+
   async function handlePreview() {
-    if (!sourceUrl.trim()) return
+    const src = effectiveSource()
+    if (!src) return
     setLoadingPreview(true)
     setPreviewError(null)
     try {
-      const result = await api.post('/plugins/preview', { source_url: sourceUrl.trim() }) as PreviewResult
+      const body: Record<string, string> = { source_url: src }
+      if (authToken.trim()) body.auth_token = authToken.trim()
+      const result = await api.post('/plugins/preview', body) as PreviewResult
       setPreview(result)
       setStep(2)
     } catch (e: unknown) {
@@ -43,11 +76,14 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   }
 
   async function handleInstall() {
-    if (!sourceUrl.trim()) return
+    const src = effectiveSource()
+    if (!src) return
     setInstalling(true)
     setInstallError(null)
     try {
-      const result = await api.post('/plugins/install', { source_url: sourceUrl.trim() }) as { slug: string }
+      const body: Record<string, string> = { source_url: src }
+      if (authToken.trim()) body.auth_token = authToken.trim()
+      const result = await api.post('/plugins/install', body) as { slug: string }
       setInstalledSlug(result.slug)
       setStep(3)
     } catch (e: unknown) {
@@ -98,22 +134,85 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
         <div className="px-6 py-5">
           {/* Step 1: URL input */}
           {step === 1 && (
-            <div>
-              <label className="block text-sm font-medium text-[#D0D5DD] mb-2 flex items-center gap-2">
-                <Link2 size={14} className="text-[#00FFA7]" />
-                {t('plugins.sourceUrl')}
-              </label>
-              <input
-                type="url"
-                value={sourceUrl}
-                onChange={(e) => setSourceUrl(e.target.value)}
-                placeholder="https://github.com/org/plugin-name"
-                className="w-full bg-[#0C111D] border border-[#344054] rounded-lg px-3 py-2.5 text-sm text-[#e6edf3] placeholder-[#667085] focus:outline-none focus:border-[#00FFA7]/50 transition-colors"
-                onKeyDown={(e) => { if (e.key === 'Enter') handlePreview() }}
-              />
-              <p className="mt-2 text-xs text-[#667085]">{t('plugins.onlyHttpsAllowed')}</p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-[#D0D5DD] mb-2 flex items-center gap-2">
+                  <Link2 size={14} className="text-[#00FFA7]" />
+                  {t('plugins.sourceUrl')}
+                </label>
+                <input
+                  type="text"
+                  value={sourceUrl}
+                  onChange={(e) => { setSourceUrl(e.target.value); setUploadedPath(null) }}
+                  placeholder="github:org/plugin-name or https://..."
+                  className="w-full bg-[#0C111D] border border-[#344054] rounded-lg px-3 py-2.5 text-sm text-[#e6edf3] placeholder-[#667085] focus:outline-none focus:border-[#00FFA7]/50 transition-colors"
+                  onKeyDown={(e) => { if (e.key === 'Enter') handlePreview() }}
+                />
+                <p className="mt-2 text-xs text-[#667085]">Formatos: github:owner/repo[@ref] · https://…/arquivo.tar.gz</p>
+              </div>
+
+              {/* Upload alternative */}
+              <div className="relative">
+                <div className="flex items-center gap-3 my-1">
+                  <div className="flex-1 h-px bg-[#21262d]" />
+                  <span className="text-[10px] text-[#667085] uppercase tracking-wider">ou</span>
+                  <div className="flex-1 h-px bg-[#21262d]" />
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".zip,.tar.gz,.tgz"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) handleFileSelect(f)
+                  }}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 border border-dashed border-[#344054] rounded-lg text-sm text-[#D0D5DD] hover:border-[#00FFA7]/40 hover:bg-[#00FFA7]/5 disabled:opacity-50 transition-colors"
+                >
+                  {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                  {uploadedPath ? 'Trocar arquivo' : 'Selecionar arquivo (.zip ou .tar.gz)'}
+                </button>
+                {uploadedPath && (
+                  <p className="mt-2 text-xs text-[#00FFA7] flex items-center gap-1.5">
+                    <CheckCircle size={12} /> Arquivo pronto — clique em Visualizar
+                  </p>
+                )}
+              </div>
+
+              {/* Advanced options (auth token) */}
+              <div>
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-1.5 text-xs text-[#667085] hover:text-[#D0D5DD] transition-colors"
+                >
+                  {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  Opções avançadas
+                </button>
+                {showAdvanced && (
+                  <div className="mt-3">
+                    <label className="block text-xs font-medium text-[#D0D5DD] mb-1.5 flex items-center gap-1.5">
+                      <Lock size={12} className="text-[#00FFA7]" />
+                      Personal Access Token (repos privados)
+                    </label>
+                    <input
+                      type="password"
+                      value={authToken}
+                      onChange={(e) => setAuthToken(e.target.value)}
+                      placeholder="ghp_..."
+                      className="w-full bg-[#0C111D] border border-[#344054] rounded-lg px-3 py-2 text-xs text-[#e6edf3] placeholder-[#667085] focus:outline-none focus:border-[#00FFA7]/50 transition-colors"
+                      autoComplete="off"
+                    />
+                    <p className="mt-1 text-[10px] text-[#667085]">Usado apenas para baixar o arquivo; não é armazenado.</p>
+                  </div>
+                )}
+              </div>
+
               {previewError && (
-                <p className="mt-2 text-xs text-red-400 flex items-center gap-1.5">
+                <p className="text-xs text-red-400 flex items-center gap-1.5">
                   <AlertTriangle size={12} /> {previewError}
                 </p>
               )}
@@ -204,7 +303,7 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
           {step === 1 && (
             <button
               onClick={handlePreview}
-              disabled={!sourceUrl.trim() || loadingPreview}
+              disabled={!canPreview}
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#00FFA7] text-black rounded-lg hover:bg-[#00FFA7]/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loadingPreview ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
