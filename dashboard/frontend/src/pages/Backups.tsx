@@ -608,8 +608,10 @@ function BrainRepoSnapshots({
   const viewOnGitHub = (snapshot: BrainSnapshot) => {
     if (!repoUrl) return
     // Strip "refs/tags/" so the link resolves to GitHub's tag page
-    const ref = snapshot.ref.replace(/^refs\/tags\//, '')
-    const url = ref === 'HEAD' ? repoUrl : `${repoUrl}/tree/${encodeURIComponent(ref)}`
+    // Guard against malformed snapshots (e.g. legacy HEAD shape without `ref`).
+    const rawRef = snapshot.ref ?? snapshot.label ?? ''
+    const ref = rawRef.replace(/^refs\/tags\//, '')
+    const url = !ref || ref === 'HEAD' ? repoUrl : `${repoUrl}/tree/${encodeURIComponent(ref)}`
     window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -619,7 +621,7 @@ function BrainRepoSnapshots({
         <div className="flex items-center gap-2">
           <span className={iconClass}>{icon}</span>
           <span className="text-[#e6edf3] font-mono text-xs truncate max-w-[280px] lg:max-w-none">
-            {s.label || s.ref.replace(/^refs\/tags\//, '')}
+            {s.label || (s.ref ?? '').replace(/^refs\/tags\//, '') || '(unnamed)'}
           </span>
         </div>
       </td>
@@ -1313,7 +1315,7 @@ export default function Backups() {
               <div>
                 <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('backups.brainRestore.title')}</h2>
                 <p className="text-[11px] text-[#5a6b7f] mt-0.5 font-mono truncate">
-                  {brainRestoreModal.label || brainRestoreModal.ref.replace(/^refs\/tags\//, '')}
+                  {brainRestoreModal.label || (brainRestoreModal.ref ?? '').replace(/^refs\/tags\//, '') || '(unnamed)'}
                 </p>
               </div>
             </div>

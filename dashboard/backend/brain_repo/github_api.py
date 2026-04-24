@@ -166,23 +166,35 @@ def get_repo_info(token: str, repo_url: str) -> tuple[bool, dict]:
 def list_snapshots(token: str, owner: str, repo: str) -> dict:
     """List snapshot tags grouped by type (daily, weekly, milestones, head).
 
-    Returns:
+    All list items AND the head item use the same shape so the frontend can
+    render them uniformly without null checks on optional fields:
+
         {
-            "daily": [{"ref": str, "sha": str}, ...],
-            "weekly": [...],
-            "milestones": [...],
-            "head": {"sha": str} | {}
+          "daily":      [{ref, sha, label}, ...],
+          "weekly":     [...],
+          "milestones": [...],
+          "head":        {ref, sha, label} | null,
         }
+
+    ``label`` is derived from the ref (strips ``refs/tags/``) so the UI has
+    one display string to render without needing to know git ref conventions.
+    ``head`` uses ref="HEAD" and label="HEAD" (instead of an empty dict)
+    which prevents the ``Cannot read properties of undefined`` crash the
+    frontend used to hit when rendering the HEAD row.
     """
     url = f"{_API_BASE}/repos/{owner}/{repo}/git/refs/tags"
     status, body, _ = _get(url, token)
 
-    result: dict[str, list | dict] = {
+    result: dict[str, list | dict | None] = {
         "daily": [],
         "weekly": [],
         "milestones": [],
-        "head": {},
+        "head": None,
     }
+
+    def _label(ref: str) -> str:
+        # refs/tags/milestone/teste → milestone/teste
+        return ref[len("refs/tags/"):] if ref.startswith("refs/tags/") else ref
 
     if status != 200 or not isinstance(body, list):
         log.warning("list_snapshots: status %d", status)
@@ -191,18 +203,23 @@ def list_snapshots(token: str, owner: str, repo: str) -> dict:
     for ref_obj in body:
         ref = ref_obj.get("ref", "")
         sha = ref_obj.get("object", {}).get("sha", "")
+        item = {"ref": ref, "sha": sha, "label": _label(ref)}
         if ref.startswith(_SNAPSHOT_PREFIXES["daily"]):
-            result["daily"].append({"ref": ref, "sha": sha})  # type: ignore[union-attr]
+            result["daily"].append(item)  # type: ignore[union-attr]
         elif ref.startswith(_SNAPSHOT_PREFIXES["weekly"]):
-            result["weekly"].append({"ref": ref, "sha": sha})  # type: ignore[union-attr]
+            result["weekly"].append(item)  # type: ignore[union-attr]
         elif ref.startswith(_SNAPSHOT_PREFIXES["milestones"]):
-            result["milestones"].append({"ref": ref, "sha": sha})  # type: ignore[union-attr]
+            result["milestones"].append(item)  # type: ignore[union-attr]
 
     # Get HEAD commit SHA
     head_url = f"{_API_BASE}/repos/{owner}/{repo}/git/refs/heads"
     h_status, h_body, _ = _get(head_url, token)
     if h_status == 200 and isinstance(h_body, list) and h_body:
-        result["head"] = {"sha": h_body[-1].get("object", {}).get("sha", "")}
+        result["head"] = {
+            "ref": "HEAD",
+            "sha": h_body[-1].get("object", {}).get("sha", ""),
+            "label": "HEAD",
+        }
 
     return result
 
