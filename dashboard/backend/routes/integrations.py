@@ -36,8 +36,8 @@ DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
 # — that file owns the UI schema (labels, hints, ordering) and declares the
 # same env keys for each integration.
 INTEGRATIONS = [
-    {"name": "Omie", "keys": ["OMIE_APP_KEY"], "category": "erp"},
-    {"name": "Bling", "keys": ["BLING_ACCESS_TOKEN"], "category": "erp"},
+    {"name": "Omie", "keys": ["OMIE_APP_KEY", "OMIE_APP_SECRET"], "category": "erp"},
+    {"name": "Bling", "keys": ["BLING_CLIENT_ID", "BLING_CLIENT_SECRET"], "category": "erp"},
     {"name": "Stripe", "keys": ["STRIPE_SECRET_KEY"], "category": "payments"},
     {"name": "Asaas", "keys": ["ASAAS_API_KEY"], "category": "payments"},
     {"name": "Todoist", "keys": ["TODOIST_API_TOKEN"], "category": "productivity"},
