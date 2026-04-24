@@ -371,6 +371,89 @@ def remove_rules_index(slug: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Wave 1.1: per-file capability toggle (skills / agents / commands)
+# ---------------------------------------------------------------------------
+
+# Map from capability type to the .claude/ subdirectory
+_CAP_DIR: dict[str, str] = {
+    "skills": "skills",
+    "agents": "agents",
+    "commands": "commands",
+}
+
+
+def _toggle_file_disabled(cap_type: str, slug: str, stem: str, disable: bool) -> bool:
+    """Rename a plugin capability to/from its disabled form to hide/show it from Claude Code.
+
+    Handles both file-based capabilities (.md files for agents/commands) and
+    directory-based capabilities (skill directories). The disabled form is:
+      - For .md files:    plugin-slug-name.md       -> plugin-slug-name.md.disabled
+      - For directories:  plugin-slug-name/          -> plugin-slug-name.disabled/
+
+    Args:
+        cap_type: One of 'skills', 'agents', 'commands'.
+        slug: Plugin slug (e.g. 'pm-essentials').
+        stem: Namespaced name WITHOUT extension, e.g. 'plugin-pm-essentials-sprint-health'.
+        disable: True to disable (rename to disabled form); False to re-enable.
+
+    Returns:
+        True if the operation succeeded or was a no-op; False on error.
+    """
+    # Security: reject cap_ids that could escape the target directory.
+    # Valid stems are namespaced as plugin-{slug}-<name> where <name> is
+    # alphanumeric plus hyphens/underscores/dots (covers .md filenames used
+    # by rules). Anything with path separators or parent-dir segments is
+    # rejected before any filesystem operation.
+    _STEM_RE = re.compile(r"^plugin-[a-zA-Z0-9_-]+-[a-zA-Z0-9_.@-]+$")
+    if not _STEM_RE.match(stem):
+        logger.warning(
+            "_toggle_file_disabled: rejected invalid cap_id '%s' for plugin '%s'", stem, slug
+        )
+        return False
+
+    subdir = _CAP_DIR.get(cap_type)
+    if not subdir:
+        logger.warning("_toggle_file_disabled: unknown cap_type '%s'", cap_type)
+        return False
+
+    target_dir = WORKSPACE / ".claude" / subdir
+
+    # Determine which form exists (file .md, directory, or their disabled counterparts)
+    src_file = target_dir / f"{stem}.md"
+    dst_file = target_dir / f"{stem}.md.disabled"
+    src_dir = target_dir / stem          # directory form (e.g. skill bundles)
+    dst_dir = target_dir / f"{stem}.disabled"
+
+    try:
+        if disable:
+            if src_file.exists():
+                src_file.rename(dst_file)
+                logger.info("Disabled capability file: %s -> %s", src_file.name, dst_file.name)
+            elif src_dir.is_dir():
+                src_dir.rename(dst_dir)
+                logger.info("Disabled capability dir: %s -> %s", src_dir.name, dst_dir.name)
+            elif dst_file.exists() or dst_dir.is_dir():
+                logger.debug("_toggle_file_disabled: already disabled: %s", stem)
+            else:
+                logger.warning("_toggle_file_disabled: source not found: %s", stem)
+        else:
+            if dst_file.exists():
+                dst_file.rename(src_file)
+                logger.info("Re-enabled capability file: %s -> %s", dst_file.name, src_file.name)
+            elif dst_dir.is_dir():
+                dst_dir.rename(src_dir)
+                logger.info("Re-enabled capability dir: %s -> %s", dst_dir.name, src_dir.name)
+            elif src_file.exists() or src_dir.is_dir():
+                logger.debug("_toggle_file_disabled: already enabled: %s", stem)
+            else:
+                logger.warning("_toggle_file_disabled: neither enabled nor disabled form found: %s", stem)
+        return True
+    except OSError as exc:
+        logger.error("_toggle_file_disabled failed for '%s': %s", stem, exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # reverse_remove_from_manifest (uninstall)
 # ---------------------------------------------------------------------------
 

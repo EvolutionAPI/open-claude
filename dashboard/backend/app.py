@@ -478,6 +478,26 @@ with app.app_context():
         _conn.commit()
     # --- End Brain Repo migration ---
 
+    # --- Plugins Wave 1.1: per-capability toggle ---
+    # capabilities_disabled: JSON column storing which capabilities of a plugin
+    # are individually disabled (widgets, readonly_data, claude_hooks, skills,
+    # agents, commands, rules, routines). Heartbeats and triggers use their own
+    # `enabled` column instead — they are intentionally absent from this JSON.
+    _plugins_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugins_installed)").fetchall()}
+    if "capabilities_disabled" not in _plugins_cols:
+        _cur.execute(
+            "ALTER TABLE plugins_installed ADD COLUMN capabilities_disabled TEXT NOT NULL DEFAULT '{}'"
+        )
+        _conn.commit()
+
+    # source_plugin: tag heartbeats that were contributed by a plugin so the
+    # plugin detail page can filter them via GET /api/heartbeats?source_plugin=.
+    _hb_cols = {row[1] for row in _cur.execute("PRAGMA table_info(heartbeats)").fetchall()}
+    if "source_plugin" not in _hb_cols:
+        _cur.execute("ALTER TABLE heartbeats ADD COLUMN source_plugin TEXT")
+        _conn.commit()
+    # --- End Plugins Wave 1.1 migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:

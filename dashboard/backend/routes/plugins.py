@@ -868,11 +868,71 @@ def update_plugin_status(slug: str):
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT id FROM plugins_installed WHERE slug = ?", (slug,)
+            "SELECT id, capabilities_disabled FROM plugins_installed WHERE slug = ?", (slug,)
         ).fetchone()
         if not row:
             return jsonify({"error": "Plugin not found"}), 404
 
+        # Wave 1.1 (ADR BN-2): FS rename cascade for skills/agents/commands
+        # and rules-index rebuild when plugin is enabled/disabled at the plugin level.
+        # capabilities_disabled is NOT mutated — per-capability state is preserved.
+        try:
+            caps_disabled: dict = json.loads(row["capabilities_disabled"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            caps_disabled = {}
+
+        from plugin_file_ops import _toggle_file_disabled
+        plugin_prefix = f"plugin-{slug}-"
+
+        if not enabled:
+            # Plugin OFF: disable ALL .claude/{agents,skills,commands}/plugin-{slug}-* entries
+            # Handles both .md files (agents/commands) and directories (skill bundles)
+            for cap_type in ("agents", "skills", "commands"):
+                target_dir = WORKSPACE / ".claude" / cap_type
+                if not target_dir.is_dir():
+                    continue
+                for entry in target_dir.iterdir():
+                    if not entry.name.startswith(plugin_prefix):
+                        continue
+                    # Skip already-disabled entries
+                    if entry.name.endswith(".md.disabled") or entry.name.endswith(".disabled"):
+                        continue
+                    try:
+                        if entry.is_file() and entry.name.endswith(".md"):
+                            entry.rename(entry.with_name(entry.name + ".disabled"))
+                        elif entry.is_dir():
+                            entry.rename(entry.with_name(entry.name + ".disabled"))
+                    except OSError as exc:
+                        logger.warning("plugin OFF rename failed for %s: %s", entry, exc)
+        else:
+            # Plugin ON: re-enable .disabled entries EXCEPT those in capabilities_disabled
+            for cap_type in ("agents", "skills", "commands"):
+                target_dir = WORKSPACE / ".claude" / cap_type
+                if not target_dir.is_dir():
+                    continue
+                individually_disabled = set(caps_disabled.get(cap_type, []))
+                for entry in target_dir.iterdir():
+                    if not entry.name.startswith(plugin_prefix):
+                        continue
+                    # Handle both .md.disabled (files) and .disabled (dirs)
+                    if entry.name.endswith(".md.disabled"):
+                        stem_no_ext = entry.name[: -len(".md.disabled")]
+                        original_name = entry.name[: -len(".disabled")]
+                    elif entry.is_dir() and entry.name.endswith(".disabled"):
+                        stem_no_ext = entry.name[: -len(".disabled")]
+                        original_name = stem_no_ext
+                    else:
+                        continue
+                    if stem_no_ext in individually_disabled:
+                        continue  # stay disabled per per-capability state
+                    try:
+                        entry.rename(entry.with_name(original_name))
+                    except OSError as exc:
+                        logger.warning("plugin ON rename failed for %s: %s", entry, exc)
+
+        # Rebuild rules index (handles both plugin ON and OFF via the existing filter
+        # in regenerate-markers: enabled=1 AND status='active')
+        # We do this after the DB write below so the new status is visible.
         status = "active" if enabled else "disabled"
         conn.execute(
             "UPDATE plugins_installed SET enabled = ?, status = ? WHERE slug = ?",
@@ -880,9 +940,187 @@ def update_plugin_status(slug: str):
         )
         conn.commit()
         _audit(conn, slug, "enable" if enabled else "disable")
+
+        # Rebuild rules index after status update so enabled/disabled filter is correct
+        try:
+            disabled_rules = caps_disabled.get("rules", [])
+            if enabled:
+                _rebuild_rules_index_for_plugin(slug, disabled_rules)
+            else:
+                # Plugin disabled — remove its block from index entirely
+                from plugin_file_ops import remove_rules_index
+                remove_rules_index(slug)
+        except Exception as exc:
+            logger.warning("rules index rebuild failed after plugin toggle: %s", exc)
+
         return jsonify({"slug": slug, "enabled": enabled, "status": status})
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/plugins/<slug>/capabilities — Wave 1.1 per-capability toggle
+#
+# Body: { "type": "<cap_type>", "id": "<capability-id>", "enabled": <bool> }
+# Response: { "slug": "...", "capabilities_disabled": { ... } }
+#
+# Cap types handled here (DB-only side effects):
+#   widgets, readonly_data, claude_hooks, routines
+# Cap types handled in Step 3 (FS side effects):
+#   skills, agents, commands, rules
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugins/<slug>/capabilities", methods=["PATCH"])
+@login_required
+def update_plugin_capability(slug: str):
+    data = request.get_json(force=True, silent=True) or {}
+    cap_type = data.get("type", "")
+    cap_id = data.get("id", "")
+    enabled = data.get("enabled")
+
+    if not cap_type or not cap_id or enabled is None:
+        return jsonify({"error": "type, id, and enabled fields are required"}), 400
+
+    VALID_TYPES = {
+        "widgets", "readonly_data", "claude_hooks", "routines",
+        "skills", "agents", "commands", "rules",
+    }
+    if cap_type not in VALID_TYPES:
+        return jsonify({"error": f"unsupported capability type: {cap_type}"}), 400
+
+    # Security: reject cap_ids that could be used for path traversal.
+    # IDs must follow the namespaced pattern plugin-{slug}-<name>.
+    import re as _re
+    _CAP_ID_RE = _re.compile(r"^plugin-[a-zA-Z0-9_-]+-[a-zA-Z0-9_.@-]+$")
+    if not _CAP_ID_RE.match(cap_id):
+        return jsonify({"error": "invalid capability id"}), 400
+
+    conn = _get_db()
+    # Use isolation_level=None (autocommit mode) so we can issue an explicit
+    # BEGIN IMMEDIATE, preventing lost-update races when concurrent requests
+    # read the same capabilities_disabled JSON and each write back their own
+    # version (Flask threaded=True is the live scenario).
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id, enabled AS plugin_enabled, status, capabilities_disabled "
+            "FROM plugins_installed WHERE slug = ?",
+            (slug,),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return jsonify({"error": "Plugin not found"}), 404
+
+        # Parse existing capabilities_disabled JSON
+        try:
+            caps_disabled: dict = json.loads(row["capabilities_disabled"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            caps_disabled = {}
+
+        # Update the set for this capability type
+        disabled_set: list = caps_disabled.get(cap_type, [])
+        if enabled:
+            # Remove from disabled set
+            disabled_set = [x for x in disabled_set if x != cap_id]
+        else:
+            # Add to disabled set (deduplicate)
+            if cap_id not in disabled_set:
+                disabled_set.append(cap_id)
+
+        if disabled_set:
+            caps_disabled[cap_type] = disabled_set
+        else:
+            caps_disabled.pop(cap_type, None)
+
+        new_caps_json = json.dumps(caps_disabled)
+
+        conn.execute(
+            "UPDATE plugins_installed SET capabilities_disabled = ? WHERE slug = ?",
+            (new_caps_json, slug),
+        )
+        conn.execute("COMMIT")
+
+        # --- Side effects per capability type ---
+        if cap_type in ("skills", "agents", "commands"):
+            # FS rename: .md <-> .md.disabled
+            from plugin_file_ops import _toggle_file_disabled
+            _toggle_file_disabled(cap_type, slug, cap_id, disable=not enabled)
+
+        elif cap_type == "rules":
+            # Rebuild rules index (regenerate-markers logic inline)
+            _rebuild_rules_index_for_plugin(slug, caps_disabled.get("rules", []))
+
+        elif cap_type == "routines":
+            # SIGHUP scheduler to re-read routines with updated disabled set
+            try:
+                from plugin_loader import _reload_scheduler
+                _reload_scheduler()
+            except Exception as exc:
+                logger.warning("Could not send SIGHUP after routine toggle: %s", exc)
+
+        # widgets / readonly_data / claude_hooks: DB-only, no FS side effect
+        _audit(conn, slug, "capability_toggle", payload={
+            "type": cap_type, "id": cap_id, "enabled": enabled,
+        })
+        return jsonify({"slug": slug, "capabilities_disabled": caps_disabled})
+    finally:
+        conn.close()
+
+
+def _rebuild_rules_index_for_plugin(slug: str, disabled_rule_names: list[str]) -> None:
+    """Rebuild the rules index block for a plugin, skipping disabled rules."""
+    from plugin_file_ops import _atomic_write, _build_block, RULES_INDEX_PATH, _MARKER_START, _MARKER_END
+    import re as _re
+
+    plugin_dir = PLUGINS_DIR / slug
+    manifest_path = plugin_dir / ".install-manifest.json"
+    if not manifest_path.exists():
+        return
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("_rebuild_rules_index_for_plugin: cannot read manifest for %s: %s", slug, exc)
+        return
+
+    # The manifest has a top-level "rules" key (list of {src, dest, sha256, category}).
+    # Fall back to "files" for forward-compatibility with any future manifest shapes
+    # that may flatten everything under "files".
+    rule_records = manifest.get("rules") or [
+        f for f in manifest.get("files", []) if f.get("category") == "rules"
+    ]
+    all_rule_names = [
+        f.get("dest_filename") or Path(f.get("dest", "")).name
+        for f in rule_records
+        if f.get("dest_filename") or f.get("dest", "")
+    ]
+    # Filter out disabled rules
+    disabled_set = set(disabled_rule_names)
+    active_rule_names = [n for n in all_rule_names if n not in disabled_set]
+
+    existing = RULES_INDEX_PATH.read_text(encoding="utf-8") if RULES_INDEX_PATH.exists() else ""
+    pattern = _re.compile(
+        rf"<!-- PLUGIN:{_re.escape(slug)}:START -->.+?<!-- PLUGIN:{_re.escape(slug)}:END -->",
+        _re.DOTALL,
+    )
+
+    if active_rule_names:
+        new_block = _build_block(slug, active_rule_names)
+        if pattern.search(existing):
+            updated = pattern.sub(new_block, existing)
+        else:
+            sep = "\n" if existing and not existing.endswith("\n") else ""
+            updated = existing + sep + new_block + "\n"
+    else:
+        # All rules disabled — remove the block entirely
+        pattern2 = _re.compile(
+            rf"\n?<!-- PLUGIN:{_re.escape(slug)}:START -->.+?<!-- PLUGIN:{_re.escape(slug)}:END -->\n?",
+            _re.DOTALL,
+        )
+        updated = pattern2.sub("", existing)
+
+    _atomic_write(RULES_INDEX_PATH, updated)
 
 
 # ---------------------------------------------------------------------------
@@ -917,7 +1155,10 @@ def plugin_health(slug: str):
         if not dest.exists():
             tampered.append(f"missing:{dest}")
             continue
-        if expected_sha and _sha256(dest) != expected_sha:
+        # Skills are copied as directories; their sha256 is taken from the inner SKILL.md
+        # (see plugin_file_ops._copy_skill_dir). Everything else is a single file.
+        hash_target = dest / "SKILL.md" if dest.is_dir() else dest
+        if expected_sha and hash_target.is_file() and _sha256(hash_target) != expected_sha:
             tampered.append(f"tampered:{dest}")
 
     if tampered:
@@ -942,9 +1183,17 @@ def list_widgets():
     conn = _get_db()
     try:
         rows = conn.execute(
-            "SELECT slug FROM plugins_installed WHERE enabled = 1 AND status = 'active'"
+            "SELECT slug, capabilities_disabled FROM plugins_installed WHERE enabled = 1 AND status = 'active'"
         ).fetchall()
+        # Map slug -> set of disabled widget ids (Wave 1.1 per-capability filter)
         active_slugs = {r["slug"] for r in rows}
+        disabled_widgets_by_slug: dict[str, set] = {}
+        for r in rows:
+            try:
+                caps = json.loads(r["capabilities_disabled"] or "{}")
+                disabled_widgets_by_slug[r["slug"]] = set(caps.get("widgets", []))
+            except (json.JSONDecodeError, TypeError):
+                disabled_widgets_by_slug[r["slug"]] = set()
     finally:
         conn.close()
 
@@ -964,8 +1213,13 @@ def list_widgets():
         plugin_manifest = manifest.get("manifest", {}) or {}
         installed_files = manifest.get("widgets", []) or []
         widget_specs = ((plugin_manifest.get("ui_entry_points") or {}).get("widgets")) or []
+        plugin_disabled_widgets = disabled_widgets_by_slug.get(slug, set())
         for wspec in widget_specs:
             if mount and wspec.get("mount_point") != mount:
+                continue
+            widget_id = wspec.get("id")
+            # Wave 1.1: skip widgets individually disabled via capabilities_disabled
+            if widget_id and widget_id in plugin_disabled_widgets:
                 continue
             # Derive filename: explicit field wins; otherwise basename of `route`.
             filename = wspec.get("filename")
@@ -977,8 +1231,8 @@ def list_widgets():
                 continue
             widgets.append({
                 "slug": slug,
-                "widget_id": wspec.get("id"),
-                "custom_element_name": wspec.get("custom_element_name") or wspec.get("id"),
+                "widget_id": widget_id,
+                "custom_element_name": wspec.get("custom_element_name") or widget_id,
                 "bundle_url": f"/plugins/{slug}/ui/widgets/{filename}",
                 "mount_point": wspec.get("mount_point"),
                 "label": wspec.get("label"),
@@ -1061,6 +1315,25 @@ def readonly_data(slug: str, query_name: str):
         plugin_manifest = manifest_data.get("manifest", {})
     except Exception:
         return jsonify({"error": "Manifest unreadable"}), 500
+
+    # Wave 1.1: check if this specific query is individually disabled
+    _rd_conn = _get_db()
+    try:
+        _pi_row = _rd_conn.execute(
+            "SELECT capabilities_disabled FROM plugins_installed WHERE slug = ? AND enabled = 1 AND status = 'active'",
+            (slug,),
+        ).fetchone()
+        if _pi_row:
+            try:
+                _caps = json.loads(_pi_row["capabilities_disabled"] or "{}")
+                if query_name in _caps.get("readonly_data", []):
+                    return jsonify({"error": "Query disabled"}), 404
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif not _pi_row:
+            return jsonify({"error": "Plugin not found or not active"}), 404
+    finally:
+        _rd_conn.close()
 
     # Find query declaration — readonly_data is a list of {id, description, sql}
     rd = plugin_manifest.get("readonly_data") or []
@@ -1307,14 +1580,63 @@ def update_plugin(slug: str):
         # 10. Build updated manifest dict
         new_manifest_dict = new_manifest.model_dump()
 
-        # 11. Update DB
+        # 11. Wave 1.1: prune capabilities_disabled for IDs that no longer exist in new manifest.
+        # IDs that persist keep their disabled state. IDs removed by the new version are pruned.
+        # (ADR §7 — capability-id stability is author's contract; renames lose state by design)
+        row_caps = conn.execute(
+            "SELECT capabilities_disabled FROM plugins_installed WHERE slug = ?", (slug,)
+        ).fetchone()
+        if row_caps:
+            try:
+                existing_caps: dict = json.loads(row_caps["capabilities_disabled"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                existing_caps = {}
+
+            if existing_caps:
+                # Build set of valid IDs from the new manifest for each capability type
+                new_manifest_raw = new_manifest.model_dump()
+                valid_ids: dict[str, set] = {
+                    "widgets": {
+                        (w.get("id") or "") for w in (
+                            ((new_manifest_raw.get("ui_entry_points") or {}).get("widgets")) or []
+                        )
+                    },
+                    "readonly_data": {
+                        (q.get("id") or "") for q in (new_manifest_raw.get("readonly_data") or [])
+                    },
+                    "claude_hooks": {
+                        (h.get("handler_path") or "") for h in (new_manifest_raw.get("claude_hooks") or [])
+                    },
+                    "routines": set(),  # no stable ID available pre-load; skip pruning
+                    "skills": set(),    # file-based; pruning deferred (file ops handle it)
+                    "agents": set(),    # same
+                    "commands": set(),  # same
+                    "rules": set(),     # same
+                }
+                pruned = {}
+                for cap_type, disabled_ids in existing_caps.items():
+                    valid = valid_ids.get(cap_type)
+                    if valid is not None and valid:
+                        # Prune IDs no longer in new manifest (empty string excluded too)
+                        kept = [x for x in disabled_ids if x and x in valid]
+                    else:
+                        # No valid set available — preserve all (FS ops handle cleanup)
+                        kept = disabled_ids
+                    if kept:
+                        pruned[cap_type] = kept
+                conn.execute(
+                    "UPDATE plugins_installed SET capabilities_disabled = ? WHERE slug = ?",
+                    (json.dumps(pruned), slug),
+                )
+
+        # 12. Update DB
         conn.execute(
             "UPDATE plugins_installed SET version = ?, manifest_json = ? WHERE slug = ?",
             (new_version, json.dumps(new_manifest_dict), slug)
         )
         conn.commit()
 
-        # 12. Audit log
+        # 13. Audit log
         _audit(conn, slug, "update", {"from": installed_version, "to": new_version, "sql_sha_preserved": True})
 
         return jsonify({

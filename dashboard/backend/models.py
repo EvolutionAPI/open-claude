@@ -260,6 +260,7 @@ class Trigger(db.Model):
     enabled = db.Column(db.Boolean, default=True)
     from_yaml = db.Column(db.Boolean, default=False)
     remote_trigger_id = db.Column(db.String(100), nullable=True)
+    source_plugin = db.Column(db.Text, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -298,6 +299,7 @@ class Trigger(db.Model):
             "enabled": self.enabled,
             "from_yaml": self.from_yaml,
             "remote_trigger_id": self.remote_trigger_id,
+            "source_plugin": self.source_plugin,
             "created_by": self.created_by,
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
             "updated_at": self.updated_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.updated_at else None,
@@ -479,6 +481,7 @@ class Heartbeat(db.Model):
     goal_id = db.Column(db.String(100), nullable=True)  # FK stub for Feature 1.2
     required_secrets = db.Column(db.Text, nullable=True, default="[]")  # JSON array
     decision_prompt = db.Column(db.Text, nullable=False)
+    source_plugin = db.Column(db.Text, nullable=True)  # Wave 1.1: plugin slug if contributed by a plugin
     created_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
     updated_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"), onupdate=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
 
@@ -525,6 +528,7 @@ class Heartbeat(db.Model):
             "updated_at": self.updated_at,
             "last_run": last_run.to_dict() if last_run else None,
             "run_count": self.runs.count(),
+            "source_plugin": self.source_plugin,
         }
 
 

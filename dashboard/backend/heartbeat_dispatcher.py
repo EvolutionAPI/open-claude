@@ -189,13 +189,15 @@ def _sync_heartbeats_to_db():
                     """INSERT INTO heartbeats
                        (id, agent, interval_seconds, max_turns, timeout_seconds,
                         lock_timeout_seconds, wake_triggers, enabled, goal_id,
-                        required_secrets, decision_prompt, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        required_secrets, decision_prompt, source_plugin,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         hb.id, hb.agent, hb.interval_seconds, hb.max_turns,
                         hb.timeout_seconds, hb.lock_timeout_seconds,
                         json.dumps(hb.wake_triggers), int(hb.enabled), hb.goal_id,
                         json.dumps(hb.required_secrets), hb.decision_prompt,
+                        hb.source_plugin,
                         now, now,
                     ),
                 )
@@ -205,12 +207,14 @@ def _sync_heartbeats_to_db():
                     """UPDATE heartbeats SET
                        agent=?, interval_seconds=?, max_turns=?, timeout_seconds=?,
                        lock_timeout_seconds=?, wake_triggers=?, goal_id=?,
-                       required_secrets=?, decision_prompt=?, updated_at=?
+                       required_secrets=?, decision_prompt=?, source_plugin=?,
+                       updated_at=?
                        WHERE id=?""",
                     (
                         hb.agent, hb.interval_seconds, hb.max_turns, hb.timeout_seconds,
                         hb.lock_timeout_seconds, json.dumps(hb.wake_triggers), hb.goal_id,
-                        json.dumps(hb.required_secrets), hb.decision_prompt, now,
+                        json.dumps(hb.required_secrets), hb.decision_prompt,
+                        hb.source_plugin, now,
                         hb.id,
                     ),
                 )

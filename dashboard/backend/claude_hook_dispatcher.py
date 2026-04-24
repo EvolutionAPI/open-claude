@@ -252,15 +252,47 @@ def _runner_cmd(handler_path: str) -> list[str]:
     return []  # unsupported extension — caller logs and skips
 
 
+def _load_disabled_hooks() -> dict[str, set]:
+    """Load per-plugin disabled claude_hooks from capabilities_disabled column.
+
+    Wave 1.1: returns mapping {slug -> set of disabled handler_paths}.
+    Returns empty dict on any DB error — fail-open (handlers run unless explicitly disabled).
+    """
+    result: dict[str, set] = {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT slug, capabilities_disabled FROM plugins_installed "
+            "WHERE enabled = 1 AND status = 'active'"
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            try:
+                caps = json.loads(row["capabilities_disabled"] or "{}")
+                disabled = caps.get("claude_hooks", [])
+                if disabled:
+                    result[row["slug"]] = set(disabled)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    except Exception:
+        pass  # DB unavailable — degrade gracefully, don't block hooks
+    return result
+
+
 def _discover_handlers(event_name: str) -> list[dict]:
     """Scan plugins/*/plugin.yaml for handlers matching event_name.
 
     C2 (Vault F2): validates handler_path containment before adding to result.
     Returns handlers ordered by (slug, handler_rel) — alphabetical (ADR-3).
+    Wave 1.1: also filters handlers listed in capabilities_disabled["claude_hooks"].
     """
     handlers: list[dict] = []
     if not PLUGINS_DIR.exists():
         return handlers
+
+    # Wave 1.1: load per-plugin disabled hooks (fail-open: empty dict on error)
+    disabled_hooks = _load_disabled_hooks()
 
     for plugin_dir in sorted(PLUGINS_DIR.glob("*/")):
         if plugin_dir.name.startswith("."):
@@ -278,11 +310,23 @@ def _discover_handlers(event_name: str) -> list[dict]:
         if not slug:
             continue
 
+        plugin_disabled = disabled_hooks.get(slug, set())
+
         for hook in data.get("claude_hooks", []) or []:
             if hook.get("event") != event_name:
                 continue
             handler_rel = hook.get("handler_path", "")
             if not handler_rel:
+                continue
+
+            # Wave 1.1: skip handlers individually disabled via capabilities_disabled
+            if handler_rel in plugin_disabled:
+                _log_event(slug, {
+                    "event": event_name,
+                    "slug": slug,
+                    "handler": handler_rel,
+                    "status": "skipped_capability_disabled",
+                })
                 continue
 
             # C2: containment guard at discovery time

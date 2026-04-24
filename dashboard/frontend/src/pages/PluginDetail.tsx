@@ -3,7 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   ArrowLeft, Package, CheckCircle, XCircle, AlertTriangle,
-  Loader2, RefreshCw, Trash2, ShieldCheck, Download,
+  Loader2, RefreshCw, Trash2, ShieldCheck, Download, Layers,
+  ToggleRight, ToggleLeft,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import type { Plugin } from '../components/PluginCard'
@@ -23,6 +24,105 @@ interface AuditEntry {
   payload?: string
 }
 
+interface Heartbeat {
+  id: string
+  agent: string
+  enabled: boolean
+  source_plugin?: string
+  interval_seconds: number
+}
+
+interface Trigger {
+  id: number
+  name: string
+  enabled: boolean
+  source_plugin?: string
+  type: string
+}
+
+interface CapabilityItem {
+  id: string
+  label: string
+  type: string
+  enabled: boolean
+}
+
+// ---------------------------------------------------------------------------
+// CapabilitySwitch — single row with label and toggle
+// ---------------------------------------------------------------------------
+function CapabilitySwitch({
+  item,
+  onToggle,
+  loading,
+}: {
+  item: CapabilityItem
+  onToggle: (type: string, id: string, enabled: boolean) => void
+  loading: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-[#21262d]/50 transition-colors">
+      <div className="flex-1 min-w-0 mr-3">
+        <p className="text-sm text-[#D0D5DD] truncate">{item.label}</p>
+        <p className="text-xs text-[#667085]">{item.type}</p>
+      </div>
+      <button
+        onClick={() => onToggle(item.type, item.id, !item.enabled)}
+        disabled={loading}
+        className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-colors border ${
+          item.enabled
+            ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/20 hover:bg-[#00FFA7]/20'
+            : 'bg-[#21262d] text-[#667085] border-[#344054] hover:text-[#D0D5DD]'
+        } disabled:opacity-50`}
+        title={item.enabled ? 'Disable' : 'Enable'}
+      >
+        {loading ? (
+          <Loader2 size={11} className="animate-spin" />
+        ) : item.enabled ? (
+          <ToggleRight size={11} />
+        ) : (
+          <ToggleLeft size={11} />
+        )}
+        {item.enabled ? 'On' : 'Off'}
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// CapabilityGroup — collapsible section per capability type
+// ---------------------------------------------------------------------------
+function CapabilityGroup({
+  title,
+  items,
+  onToggle,
+  loadingId,
+}: {
+  title: string
+  items: CapabilityItem[]
+  onToggle: (type: string, id: string, enabled: boolean) => void
+  loadingId: string | null
+}) {
+  if (items.length === 0) return null
+  return (
+    <div className="mt-3 first:mt-0">
+      <p className="text-xs text-[#667085] font-medium uppercase tracking-wide mb-1 px-1">{title}</p>
+      <div className="space-y-0.5">
+        {items.map((item) => (
+          <CapabilitySwitch
+            key={`${item.type}:${item.id}`}
+            item={item}
+            onToggle={onToggle}
+            loading={loadingId === `${item.type}:${item.id}`}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 export default function PluginDetail() {
   const { slug } = useParams<{ slug: string }>()
   const navigate = useNavigate()
@@ -38,18 +138,27 @@ export default function PluginDetail() {
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Wave 1.1 — Capabilities section state
+  const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([])
+  const [triggers, setTriggers] = useState<Trigger[]>([])
+  const [capLoadingId, setCapLoadingId] = useState<string | null>(null)
+
   useEffect(() => {
     if (!slug) return
     setLoading(true)
     Promise.all([
       api.get('/plugins') as Promise<Plugin[]>,
       api.get(`/plugins/${slug}/audit`) as Promise<AuditEntry[]>,
+      api.get(`/heartbeats?source_plugin=${encodeURIComponent(slug)}`) as Promise<{ heartbeats: Heartbeat[] }>,
+      api.get(`/triggers?source_plugin=${encodeURIComponent(slug)}`) as Promise<{ triggers: Trigger[] }>,
     ])
-      .then(([plugins, auditLog]) => {
+      .then(([plugins, auditLog, hbData, trigData]) => {
         const found = plugins.find((p) => p.slug === slug)
         if (!found) { setError('Plugin not found'); return }
         setPlugin(found)
         setAudit(Array.isArray(auditLog) ? auditLog : [])
+        setHeartbeats(Array.isArray(hbData.heartbeats) ? hbData.heartbeats : [])
+        setTriggers(Array.isArray(trigData.triggers) ? trigData.triggers : [])
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : t('common.unexpectedError')))
       .finally(() => setLoading(false))
@@ -117,6 +226,39 @@ export default function PluginDetail() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Wave 1.1 — per-capability toggle handler
+  // ---------------------------------------------------------------------------
+  async function handleCapabilityToggle(type: string, id: string, enabled: boolean) {
+    if (!slug) return
+    const loadingKey = `${type}:${id}`
+    setCapLoadingId(loadingKey)
+    try {
+      // Heartbeats and triggers reuse their own PATCH endpoints
+      if (type === 'heartbeats') {
+        await api.patch(`/heartbeats/${encodeURIComponent(id)}`, { enabled })
+        setHeartbeats((prev) => prev.map((hb) => hb.id === id ? { ...hb, enabled } : hb))
+      } else if (type === 'triggers') {
+        await api.patch(`/triggers/${id}`, { enabled })
+        setTriggers((prev) => prev.map((tr) => tr.id === Number(id) ? { ...tr, enabled } : tr))
+      } else {
+        // All other types via new PATCH capabilities endpoint
+        const result = await api.patch(`/plugins/${slug}/capabilities`, { type, id, enabled }) as {
+          slug: string
+          capabilities_disabled: Record<string, string[]>
+        }
+        // Update plugin state with new capabilities_disabled
+        if (plugin) {
+          setPlugin({ ...plugin, capabilities_disabled: JSON.stringify(result.capabilities_disabled) })
+        }
+      }
+    } catch (e: unknown) {
+      console.error('capability toggle failed:', e)
+    } finally {
+      setCapLoadingId(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -146,6 +288,123 @@ export default function PluginDetail() {
   }
 
   const capabilities = Array.isArray(manifest['capabilities']) ? manifest['capabilities'] as string[] : []
+
+  // ---------------------------------------------------------------------------
+  // Build capability items from manifest + capabilities_disabled
+  // ---------------------------------------------------------------------------
+  let capsDisabled: Record<string, string[]> = {}
+  try {
+    capsDisabled = JSON.parse(plugin.capabilities_disabled ?? '{}')
+  } catch {
+    // ignore
+  }
+
+  function isCapDisabled(type: string, id: string): boolean {
+    return (capsDisabled[type] ?? []).includes(id)
+  }
+
+  // Widgets from manifest
+  const manifestObj = manifest as Record<string, unknown>
+  const uiEntryPoints = (manifestObj['ui_entry_points'] as Record<string, unknown> | undefined) ?? {}
+  const widgetSpecs = Array.isArray(uiEntryPoints['widgets']) ? uiEntryPoints['widgets'] as Array<Record<string, string>> : []
+  const widgetItems: CapabilityItem[] = widgetSpecs.map((w) => ({
+    id: w['id'] ?? '',
+    label: w['label'] ?? w['id'] ?? '',
+    type: 'widgets',
+    enabled: !isCapDisabled('widgets', w['id'] ?? ''),
+  })).filter((w) => w.id)
+
+  // Readonly data from manifest
+  const rdSpecs = Array.isArray(manifestObj['readonly_data']) ? manifestObj['readonly_data'] as Array<Record<string, string>> : []
+  const rdItems: CapabilityItem[] = rdSpecs.map((q) => ({
+    id: q['id'] ?? '',
+    label: q['id'] ?? '',
+    type: 'readonly_data',
+    enabled: !isCapDisabled('readonly_data', q['id'] ?? ''),
+  })).filter((q) => q.id)
+
+  // Claude hooks from manifest
+  const hookSpecs = Array.isArray(manifestObj['claude_hooks']) ? manifestObj['claude_hooks'] as Array<Record<string, string>> : []
+  const hookItems: CapabilityItem[] = hookSpecs.map((h) => ({
+    id: h['handler_path'] ?? '',
+    label: `${h['event'] ?? ''}: ${h['handler_path'] ?? ''}`,
+    type: 'claude_hooks',
+    enabled: !isCapDisabled('claude_hooks', h['handler_path'] ?? ''),
+  })).filter((h) => h.id)
+
+  // Skills from manifest (installed manifest lists them)
+  // Note: manifest_json contains the plugin.yaml manifest, not .install-manifest.json
+  // So we derive skill/agent/command names from the capabilities array and plugin prefix
+  const pluginPrefix = `plugin-${slug}-`
+  const skillNames = capabilities.includes('skills')
+    ? (Array.isArray(manifestObj['skills']) ? manifestObj['skills'] as Array<Record<string, string>> : [])
+        .map((s) => ({ name: s['name'] ?? s['src']?.split('/').pop()?.replace('.md', '') ?? '', src: s['src'] ?? '' }))
+        .filter((s) => s.name)
+    : []
+  const skillItems: CapabilityItem[] = skillNames.map((s) => {
+    const id = `${pluginPrefix}${s.name}`
+    return { id, label: s.name, type: 'skills', enabled: !isCapDisabled('skills', id) }
+  })
+
+  // Agents from manifest
+  const agentNames = Array.isArray(manifestObj['agents'])
+    ? (manifestObj['agents'] as Array<Record<string, string>>)
+        .map((a) => a['name'] ?? a['src']?.split('/').pop()?.replace('.md', '') ?? '')
+        .filter(Boolean)
+    : []
+  const agentItems: CapabilityItem[] = agentNames.map((name) => {
+    const id = `${pluginPrefix}${name}`
+    return { id, label: name, type: 'agents', enabled: !isCapDisabled('agents', id) }
+  })
+
+  // Commands from manifest
+  const commandNames = Array.isArray(manifestObj['commands'])
+    ? (manifestObj['commands'] as Array<Record<string, string>>)
+        .map((c) => c['name'] ?? c['src']?.split('/').pop()?.replace('.md', '') ?? '')
+        .filter(Boolean)
+    : []
+  const commandItems: CapabilityItem[] = commandNames.map((name) => {
+    const id = `${pluginPrefix}${name}`
+    return { id, label: name, type: 'commands', enabled: !isCapDisabled('commands', id) }
+  })
+
+  // Rules from manifest
+  const ruleNames = Array.isArray(manifestObj['rules'])
+    ? (manifestObj['rules'] as Array<Record<string, string>>)
+        .map((r) => r['name'] ?? r['src']?.split('/').pop() ?? '')
+        .filter(Boolean)
+    : []
+  const ruleItems: CapabilityItem[] = ruleNames.map((name) => {
+    const id = `${pluginPrefix}${name}`
+    return { id, label: name, type: 'rules', enabled: !isCapDisabled('rules', id) }
+  })
+
+  // Heartbeat items (fetched from API)
+  const heartbeatItems: CapabilityItem[] = heartbeats.map((hb) => ({
+    id: hb.id,
+    label: `${hb.id} (${hb.agent})`,
+    type: 'heartbeats',
+    enabled: hb.enabled,
+  }))
+
+  // Trigger items (fetched from API)
+  const triggerItems: CapabilityItem[] = triggers.map((tr) => ({
+    id: String(tr.id),
+    label: tr.name,
+    type: 'triggers',
+    enabled: tr.enabled,
+  }))
+
+  const hasAnyCapabilities =
+    heartbeatItems.length > 0 ||
+    triggerItems.length > 0 ||
+    widgetItems.length > 0 ||
+    rdItems.length > 0 ||
+    hookItems.length > 0 ||
+    skillItems.length > 0 ||
+    agentItems.length > 0 ||
+    commandItems.length > 0 ||
+    ruleItems.length > 0
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -249,6 +508,28 @@ export default function PluginDetail() {
           )}
         </section>
 
+        {/* Capabilities — Wave 1.1 */}
+        {hasAnyCapabilities && (
+          <section className="bg-[#161b22] border border-[#21262d] rounded-2xl p-5">
+            <h2 className="text-sm font-semibold text-[#e6edf3] mb-1 flex items-center gap-2">
+              <Layers size={14} className="text-[#00FFA7]" />
+              Capabilities
+            </h2>
+            <p className="text-xs text-[#667085] mb-4">
+              Toggle individual capabilities. Plugin-level on/off overrides all.
+            </p>
+            <CapabilityGroup title="Heartbeats" items={heartbeatItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Triggers" items={triggerItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Widgets" items={widgetItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Read-only Queries" items={rdItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Claude Hooks" items={hookItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Skills" items={skillItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Agents" items={agentItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Commands" items={commandItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Rules" items={ruleItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+          </section>
+        )}
+
         {/* Health */}
         <section className="bg-[#161b22] border border-[#21262d] rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
@@ -320,6 +601,7 @@ export default function PluginDetail() {
           </section>
         )}
       </div>
+
     </div>
   )
 }

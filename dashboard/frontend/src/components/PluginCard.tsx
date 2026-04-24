@@ -13,6 +13,8 @@ export interface Plugin {
   manifest_json: string
   install_sha256: string
   last_error?: string
+  // Wave 1.1: per-capability disable state (JSON string from DB)
+  capabilities_disabled?: string
 }
 
 interface Props {

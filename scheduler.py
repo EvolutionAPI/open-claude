@@ -116,16 +116,22 @@ def setup_schedule():
     _load_custom_routines(schedule)
 
 
-def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = False):
+def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = False,
+                             disabled_make_ids: set | None = None):
     """Load routines from a single YAML file into the schedule.
 
     For plugin files, errors are swallowed (broken plugin doesn't kill core).
     For the core config, errors are re-raised.
+
+    Wave 1.1: if disabled_make_ids is provided, skip matching make-ids.
+    The make-id for a plugin routine is derived as: plugin-{slug}-{name.lower().replace(' ','-')}.
     """
     import yaml
 
     if not config_path.exists():
         return
+
+    _disabled = disabled_make_ids or set()
 
     try:
         with open(config_path) as f:
@@ -134,6 +140,8 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             return
 
         source_label = f"plugin:{config_path.parent.name}" if is_plugin else "core"
+        # Determine slug for make-id derivation (only used for plugin routines)
+        plugin_slug = config_path.parent.name if is_plugin else ""
 
         for r in config.get("daily", []) or []:
             if not r.get("enabled", True):
@@ -141,6 +149,12 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             script = r.get("script", "")
             name = r.get("name", script)
             args = r.get("args", "")
+            # Wave 1.1: check if this routine is individually disabled
+            if _disabled and is_plugin:
+                make_id = f"plugin-{plugin_slug}-{name.lower().replace(' ', '-')}"
+                if make_id in _disabled:
+                    print(f"  [{source_label}] skipped disabled routine '{name}' ({make_id})")
+                    continue
             if r.get("interval"):
                 schedule.every(int(r["interval"])).minutes.do(run_adw, name, f"custom/{script}", args)
             elif r.get("time"):
@@ -152,6 +166,12 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             script = r.get("script", "")
             name = r.get("name", script)
             args = r.get("args", "")
+            # Wave 1.1: check if this routine is individually disabled
+            if _disabled and is_plugin:
+                make_id = f"plugin-{plugin_slug}-{name.lower().replace(' ', '-')}"
+                if make_id in _disabled:
+                    print(f"  [{source_label}] skipped disabled routine '{name}' ({make_id})")
+                    continue
             day = r.get("day", "friday").lower()
             time_str = r.get("time", "09:00")
             days = r.get("days", [day])
@@ -162,6 +182,17 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
 
         global _monthly_routines
         monthly = config.get("monthly", []) or []
+        # Wave 1.1: filter disabled monthly routines for plugins
+        if _disabled and is_plugin:
+            filtered_monthly = []
+            for r in monthly:
+                name = r.get("name", r.get("script", ""))
+                make_id = f"plugin-{plugin_slug}-{name.lower().replace(' ', '-')}"
+                if make_id in _disabled:
+                    print(f"  [{source_label}] skipped disabled monthly routine '{name}' ({make_id})")
+                else:
+                    filtered_monthly.append(r)
+            monthly = filtered_monthly
         # Plugin monthly routines are appended; core replaces the list
         if is_plugin:
             _monthly_routines.extend(monthly)
@@ -175,8 +206,42 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             raise
 
 
+def _load_disabled_routines() -> dict[str, set]:
+    """Load per-plugin disabled routines from capabilities_disabled column.
+
+    Wave 1.1 (ADR BN-1): open short-lived read-only connection at setup_schedule() time.
+    Returns {slug -> set of disabled make-ids} — empty dict if DB unavailable (degrade gracefully).
+    """
+    result: dict[str, set] = {}
+    db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
+    try:
+        import sqlite3 as _sqlite3
+        import json as _json
+        conn = _sqlite3.connect(str(db_path), timeout=5)
+        conn.row_factory = _sqlite3.Row
+        rows = conn.execute(
+            "SELECT slug, capabilities_disabled FROM plugins_installed "
+            "WHERE enabled = 1 AND status = 'active'"
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            try:
+                caps = _json.loads(row["capabilities_disabled"] or "{}")
+                disabled = caps.get("routines", [])
+                if disabled:
+                    result[row["slug"]] = set(disabled)
+            except Exception:
+                pass
+    except Exception:
+        pass  # DB unavailable — degrade to "nothing disabled", scheduler must not crash
+    return result
+
+
 def _load_custom_routines(schedule):
-    """Load custom routines from config/routines.yaml + plugins/*/routines.yaml (ADR-2)."""
+    """Load custom routines from config/routines.yaml + plugins/*/routines.yaml (ADR-2).
+
+    Wave 1.1: skips plugin routines whose make-id is in capabilities_disabled["routines"].
+    """
     # 1. Core config
     _load_routines_from_yaml(schedule, WORKSPACE / "config" / "routines.yaml", is_plugin=False)
 
@@ -186,11 +251,18 @@ def _load_custom_routines(schedule):
     #      plugins/{slug}/routines/*.yaml        (directory, GAP-7)
     plugins_dir = WORKSPACE / "plugins"
     if plugins_dir.exists():
+        # Wave 1.1: fetch disabled routines once before iterating plugins
+        disabled_routines = _load_disabled_routines()
+
         plugin_routine_files: list[Path] = []
         plugin_routine_files.extend(plugins_dir.glob("*/routines.yaml"))
         plugin_routine_files.extend(plugins_dir.glob("*/routines/*.yaml"))
         for plugin_routines in sorted(plugin_routine_files):
-            _load_routines_from_yaml(schedule, plugin_routines, is_plugin=True)
+            plugin_slug = plugin_routines.parent.name
+            _load_routines_from_yaml(
+                schedule, plugin_routines, is_plugin=True,
+                disabled_make_ids=disabled_routines.get(plugin_slug, set()),
+            )
 
 
 _monthly_routines = []
