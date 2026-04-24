@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -13,6 +13,12 @@ WORKSPACE = Path(__file__).resolve().parent.parent.parent
 
 # Slug: starts and ends with alphanum, interior may have hyphens, 3-64 chars
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
+
+# MCP server name: lowercase alphanum + hyphens, 1-50 chars, starts with alphanum
+_MCP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
+
+# Shell metacharacters that must never appear in MCP args or env values
+_SHELL_METACHAR_RE = re.compile(r"[;&|<>`\\]")
 
 # Allowed asset extensions for plugin icon / avatar (Wave 2.0).
 # SVG is intentionally excluded — XSS surface, no sanitizer in v2.0.
@@ -56,6 +62,183 @@ class Capability(str, Enum):
     # Wave 2.1 — full-screen plugin UI pages + writable data
     ui_pages = "ui_pages"
     writable_data = "writable_data"
+
+
+class PluginMcpServer(BaseModel):
+    """Single MCP server declaration in plugin.yaml (Wave 2.3).
+
+    The effective name injected into ~/.claude.json is ``plugin-{slug}-{name}``
+    to avoid collisions with user-owned MCP entries.
+
+    Supported interpolations in ``args`` and ``env`` values (string-replace, no shell):
+      ${WORKSPACE}   — absolute path to the EvoNexus workspace
+      ${PLUGIN_DIR}  — absolute path to plugins/<slug>/ directory
+      ${ENV:NAME}    — value of NAME from .env file (install fails if absent)
+    """
+
+    name: Annotated[str, Field(min_length=1, max_length=50)]
+    command: Literal["npx", "node", "python", "python3", "uv", "uvx", "deno"]
+    args: List[str] = Field(default_factory=list)
+    env: Dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def name_pattern(cls, v: str) -> str:
+        if not _MCP_NAME_RE.match(v):
+            raise ValueError(
+                f"MCP server name '{v}' must match ^[a-z0-9][a-z0-9-]*[a-z0-9]$ "
+                "(1-50 chars, lowercase alphanum and hyphens, start/end with alphanum)"
+            )
+        return v
+
+    @field_validator("args", mode="before")
+    @classmethod
+    def args_no_shell_metachars(cls, v: object) -> object:
+        if not isinstance(v, list):
+            return v
+        for item in v:
+            if isinstance(item, str) and _SHELL_METACHAR_RE.search(item):
+                raise ValueError(
+                    f"MCP server arg '{item}' contains shell metacharacter. "
+                    "Characters [;&|<>`\\] are not allowed."
+                )
+        return v
+
+    @field_validator("env")
+    @classmethod
+    def env_keys_uppercase_and_values_safe(cls, v: Dict[str, str]) -> Dict[str, str]:
+        for key, value in v.items():
+            # Env keys must be uppercase identifiers
+            if not re.match(r"^[A-Z][A-Z0-9_]*$", key):
+                raise ValueError(
+                    f"MCP env key '{key}' must be an uppercase identifier "
+                    "(e.g. API_KEY, WORKSPACE_DIR)."
+                )
+            # Env values must not contain shell metacharacters
+            if _SHELL_METACHAR_RE.search(value):
+                raise ValueError(
+                    f"MCP env value for '{key}' contains shell metacharacter. "
+                    "Characters [;&|<>`\\] are not allowed."
+                )
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Wave 2.2r — Integration specs
+# ---------------------------------------------------------------------------
+
+# Closed enum of integration categories, mirroring INTEGRATIONS in routes/integrations.py
+_INTEGRATION_CATEGORIES = frozenset({
+    "erp", "payments", "crm", "messaging", "community",
+    "social", "productivity", "meetings", "creative", "other",
+})
+
+# Env var name: uppercase letter then uppercase letters/digits/underscores
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+# Integration slug: lowercase alphanum + hyphens, 1-50 chars
+_INTEGRATION_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
+
+
+class EnvVarSpec(BaseModel):
+    """A single environment variable declared in a plugin integration."""
+
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+    description: Optional[str] = None
+    required: bool = False
+    secret: bool = False
+    default: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def name_uppercase(cls, v: str) -> str:
+        if not _ENV_VAR_NAME_RE.match(v):
+            raise ValueError(
+                f"EnvVarSpec name '{v}' must match ^[A-Z][A-Z0-9_]*$ "
+                "(uppercase identifier, e.g. TODOIST_PLUGIN_API_KEY)"
+            )
+        return v
+
+
+class HealthCheckSpec(BaseModel):
+    """HTTP health check declared in a plugin integration (v1 supports http only)."""
+
+    type: Literal["http"]
+    url: Annotated[str, Field(min_length=1, max_length=2000)]
+    expect_status: int = 200
+    timeout_seconds: int = 5
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def clamp_timeout(cls, v: int) -> int:
+        """Hard clamp: [1, 10] seconds (ADR decision 4)."""
+        return max(1, min(10, v))
+
+    # url validation happens in PluginIntegration model_validator (needs env_vars)
+
+
+class PluginIntegration(BaseModel):
+    """A single integration declared by a plugin (Wave 2.2r).
+
+    Each integration may declare one or more env vars that skills/hooks consume,
+    plus an optional HTTP health check. Values are stored in .env (never DB).
+    """
+
+    slug: Annotated[str, Field(min_length=1, max_length=50)]
+    label: Annotated[str, Field(min_length=1, max_length=80)]
+    category: Annotated[str, Field(min_length=1, max_length=50)]
+    env_vars: List[EnvVarSpec] = Field(default_factory=list)
+    health_check: Optional[HealthCheckSpec] = None
+
+    @field_validator("slug")
+    @classmethod
+    def slug_pattern(cls, v: str) -> str:
+        if not _INTEGRATION_SLUG_RE.match(v):
+            raise ValueError(
+                f"Integration slug '{v}' must match ^[a-z0-9][a-z0-9-]*[a-z0-9]$ "
+                "(1-50 chars, lowercase alphanum and hyphens)"
+            )
+        return v
+
+    @field_validator("category")
+    @classmethod
+    def category_in_enum(cls, v: str) -> str:
+        if v not in _INTEGRATION_CATEGORIES:
+            raise ValueError(
+                f"Integration category '{v}' is not in the allowed set: "
+                f"{sorted(_INTEGRATION_CATEGORIES)}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def env_var_names_unique(self) -> "PluginIntegration":
+        """Each env var name must be unique within this integration."""
+        seen: set[str] = set()
+        for spec in self.env_vars:
+            if spec.name in seen:
+                raise ValueError(
+                    f"Duplicate env var name '{spec.name}' in integration '{self.slug}'. "
+                    "Each env var name must be unique within an integration."
+                )
+            seen.add(spec.name)
+        return self
+
+    @model_validator(mode="after")
+    def health_check_url_vars_declared(self) -> "PluginIntegration":
+        """${VAR} references in health_check.url must be declared in env_vars (ADR decision 4)."""
+        if not self.health_check:
+            return self
+        declared_names = {spec.name for spec in self.env_vars}
+        # Find all ${VAR} tokens in the URL
+        var_refs = re.findall(r"\$\{([^}]+)\}", self.health_check.url)
+        for ref in var_refs:
+            if ref not in declared_names:
+                raise ValueError(
+                    f"health_check.url references '${{{ref}}}' which is not declared "
+                    f"in env_vars of integration '{self.slug}'. Only env vars from the "
+                    "same integration may be referenced to prevent credential exfiltration."
+                )
+        return self
 
 
 class WidgetSpec(BaseModel):
@@ -463,6 +646,15 @@ class PluginManifest(BaseModel):
     metadata: Optional[PluginMetadata] = None
     agents: Optional[List[PluginAgentEntry]] = None
 
+    # --- Wave 2.3: MCP servers injected into ~/.claude.json on install ---
+    # Effective name in ~/.claude.json: plugin-{slug}-{server.name}
+    mcp_servers: Optional[List[PluginMcpServer]] = None
+
+    # --- Wave 2.2r: Integrations (env vars via plugin) ---
+    # Each entry declares a named integration with env vars + optional health check.
+    # env_vars_needed is kept as deprecated warning-only for backwards compatibility.
+    integrations: Optional[List["PluginIntegration"]] = None
+
     @field_validator("id")
     @classmethod
     def slug_pattern(cls, v: str) -> str:
@@ -556,6 +748,36 @@ class PluginManifest(BaseModel):
                     f"'{slug_under}'. Plugin writable resources must only target "
                     "the plugin's own tables."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def mcp_server_names_unique(self) -> "PluginManifest":
+        """Wave 2.3: MCP server names must be unique within this plugin manifest."""
+        if not self.mcp_servers:
+            return self
+        seen: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in seen:
+                raise ValueError(
+                    f"Duplicate MCP server name '{server.name}' in mcp_servers. "
+                    "Each name must be unique within the plugin manifest."
+                )
+            seen.add(server.name)
+        return self
+
+    @model_validator(mode="after")
+    def integration_slugs_unique(self) -> "PluginManifest":
+        """Wave 2.2r: integration slugs must be unique within this plugin manifest."""
+        if not self.integrations:
+            return self
+        seen: set[str] = set()
+        for integ in self.integrations:
+            if integ.slug in seen:
+                raise ValueError(
+                    f"Duplicate integration slug '{integ.slug}' in integrations. "
+                    "Each integration slug must be unique within the plugin manifest."
+                )
+            seen.add(integ.slug)
         return self
 
     @model_validator(mode="after")

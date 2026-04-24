@@ -498,6 +498,88 @@ with app.app_context():
         _conn.commit()
     # --- End Plugins Wave 1.1 migration ---
 
+    # --- Wave 2.5: plugin_scan_cache + plugin_audit_log tables ---
+    _existing_tables = {
+        row[0]
+        for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "plugin_scan_cache" not in _existing_tables:
+        _cur.execute(
+            """CREATE TABLE plugin_scan_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tarball_sha256 TEXT NOT NULL,
+                scanner_version TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                findings_json TEXT NOT NULL DEFAULT '[]',
+                scanned_files INTEGER NOT NULL DEFAULT 0,
+                llm_augmented INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                UNIQUE(tarball_sha256, scanner_version)
+            )"""
+        )
+        _conn.commit()
+
+    if "plugin_audit_log" not in _existing_tables:
+        _cur.execute(
+            """CREATE TABLE plugin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT NOT NULL,
+                event TEXT NOT NULL,
+                verdict TEXT,
+                actor_user_id INTEGER REFERENCES users(id),
+                actor_username TEXT,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            )"""
+        )
+        _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_slug ON plugin_audit_log(slug)")
+        _conn.commit()
+    else:
+        # Wave 1 created plugin_audit_log with a different schema; add Wave 2.5
+        # columns idempotently if missing.
+        _pal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugin_audit_log)").fetchall()}
+        if "slug" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN slug TEXT")
+            # Backfill from plugin_id for existing rows (Wave 1 schema)
+            if "plugin_id" in _pal_cols:
+                _cur.execute("UPDATE plugin_audit_log SET slug = plugin_id WHERE slug IS NULL")
+        if "event" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN event TEXT")
+            if "action" in _pal_cols:
+                _cur.execute("UPDATE plugin_audit_log SET event = action WHERE event IS NULL")
+        if "verdict" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN verdict TEXT")
+        if "actor_user_id" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN actor_user_id INTEGER")
+        if "actor_username" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN actor_username TEXT")
+        if "detail_json" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN detail_json TEXT DEFAULT '{}'")
+            if "payload" in _pal_cols:
+                _cur.execute("UPDATE plugin_audit_log SET detail_json = COALESCE(payload, '{}') WHERE detail_json = '{}'")
+        _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_slug ON plugin_audit_log(slug)")
+        _conn.commit()
+    # --- End Wave 2.5 migration ---
+
+    # --- Wave 2.2r: integration_health_cache ---
+    _existing_tables_w22r = {
+        row[0]
+        for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "integration_health_cache" not in _existing_tables_w22r:
+        _cur.execute(
+            """CREATE TABLE integration_health_cache (
+                plugin_slug TEXT NOT NULL,
+                integration_slug TEXT NOT NULL,
+                last_status TEXT,
+                last_checked_at TEXT,
+                last_error TEXT,
+                PRIMARY KEY (plugin_slug, integration_slug)
+            )"""
+        )
+        _conn.commit()
+    # --- End Wave 2.2r migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -741,6 +823,7 @@ from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
 from routes.plugins import bp as plugins_bp
+from routes.mcp_servers import bp as mcp_servers_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -792,6 +875,7 @@ app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
 app.register_blueprint(plugins_bp)
+app.register_blueprint(mcp_servers_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp

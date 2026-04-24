@@ -351,35 +351,47 @@ class PluginInstaller:
     def preview(self, plugin_dir: str | Path, auth_token: str | None = None) -> Dict[str, Any]:
         """Validate and preview a plugin install without writing anything.
 
+        Wave 2.5 — now returns ``staged_path`` and ``tarball_sha256`` so the
+        caller can pass the already-extracted directory to the security scanner
+        and avoid a second download (single-resolve invariant).
+
         Args:
             plugin_dir: Local directory, `github:owner/repo[@ref]`, or HTTPS tarball.
             auth_token: Optional GitHub PAT for private repos.
 
         Returns:
             Dict with keys:
-                manifest: serialized PluginManifest
-                warnings: list of warning strings
-                conflicts: list of conflict error strings (non-empty means blocked)
-                version_ok: bool
+                manifest:       serialized PluginManifest
+                warnings:       list of warning strings
+                conflicts:      list of conflict error strings (non-empty means blocked)
+                version_ok:     bool
+                staged_path:    Path to the extracted staging directory (or local dir)
+                tarball_sha256: hex SHA-256 of the raw tarball bytes (empty for local dirs)
         """
         result: Dict[str, Any] = {
             "manifest": None,
             "warnings": [],
             "conflicts": [],
             "version_ok": True,
+            "staged_path": None,
+            "tarball_sha256": "",
         }
 
         try:
-            plugin_dir = self.resolve_source(
+            resolved, tarball_sha256 = self.resolve_source_with_sha(
                 str(plugin_dir) if not isinstance(plugin_dir, Path) else str(plugin_dir),
                 auth_token=auth_token,
             )
+            plugin_dir = resolved
+            result["tarball_sha256"] = tarball_sha256
         except ValueError as exc:
             result["conflicts"].append(str(exc))
             return result
         except RuntimeError as exc:
             result["conflicts"].append(f"Failed to fetch plugin source: {exc}")
             return result
+
+        result["staged_path"] = plugin_dir
 
         # Validate manifest
         try:
@@ -412,6 +424,114 @@ class PluginInstaller:
             result["conflicts"].append(str(exc))
 
         return result
+
+    def resolve_source_with_sha(
+        self, source: str, auth_token: str | None = None
+    ) -> tuple[Path, str]:
+        """Resolve a plugin source and return (path, tarball_sha256).
+
+        For remote sources (github: / https:), captures the raw tarball bytes
+        SHA-256 *before* the temp file is unlinked, satisfying the Wave 2.5
+        cache key requirement.  For local directory sources, sha256 is "".
+
+        This is the single-resolve entry-point — ``preview()`` and
+        ``install_plugin()`` must both use this instead of calling
+        ``resolve_source()`` directly.
+        """
+        s = source.strip()
+
+        # Local directory path — no download, no SHA
+        if not s.startswith("github:") and not s.startswith("https://"):
+            return self.resolve_source(s, auth_token=auth_token), ""
+
+        # GitHub shorthand → tarball URL
+        if s.startswith("github:"):
+            rest = s[len("github:"):]
+            owner, _, rest2 = rest.partition("/")
+            if "@" in rest2:
+                repo, _, ref = rest2.partition("@")
+            else:
+                repo, ref = rest2, "main"
+            tar_url = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{ref}"
+            staging_slug = f"{owner}-{repo}-{ref}".replace("/", "-")
+            try:
+                path, sha = PluginInstaller.fetch_from_tarball_with_sha(
+                    tar_url, staging_slug, auth_token=auth_token
+                )
+                return path, sha
+            except RuntimeError:
+                tar_url_tag = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/tags/{ref}"
+                path, sha = PluginInstaller.fetch_from_tarball_with_sha(
+                    tar_url_tag, staging_slug, auth_token=auth_token
+                )
+                return path, sha
+
+        # Plain https:// tarball
+        staging_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", s)[-80:]
+        return PluginInstaller.fetch_from_tarball_with_sha(s, staging_slug, auth_token=auth_token)
+
+    @staticmethod
+    def fetch_from_tarball_with_sha(
+        url: str, staging_slug: str, auth_token: str | None = None
+    ) -> tuple[Path, str]:
+        """Like ``fetch_from_tarball`` but also returns the SHA-256 of the raw tarball.
+
+        Wave 2.5 — the SHA is captured *before* the temp file is unlinked so it
+        can be used as the cache key for ``plugin_scan_cache``.
+
+        Returns:
+            (extracted_path, hex_sha256)
+        """
+        import hashlib as _hashlib
+        from urllib.parse import urlparse
+        import urllib.request
+
+        parsed = urlparse(url)
+        if parsed.scheme not in _ALLOWED_SCHEMES:
+            raise ValueError(
+                f"Only https:// URLs are permitted for plugin sources. Got: {url}"
+            )
+
+        STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        staging_dir = STAGING_DIR / staging_slug
+
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True)
+
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            logger.info("Fetching plugin archive from %s", url)
+            if auth_token:
+                req = urllib.request.Request(url, headers={"Authorization": f"token {auth_token}"})
+                with urllib.request.urlopen(req) as resp, open(tmp_path, "wb") as out:  # noqa: S310
+                    shutil.copyfileobj(resp, out)
+            else:
+                urllib.request.urlretrieve(url, tmp_path)  # noqa: S310
+
+            # Capture SHA-256 before temp file is unlinked
+            tarball_sha256 = _hashlib.sha256(tmp_path.read_bytes()).hexdigest()
+
+            with tarfile.open(tmp_path, "r:gz") as tf:
+                tf.extractall(staging_dir, filter="data")  # type: ignore[call-arg]
+
+            logger.info("Extracted plugin archive to %s (sha256=%s)", staging_dir, tarball_sha256[:12])
+
+            if not (staging_dir / "plugin.yaml").exists():
+                entries = [p for p in staging_dir.iterdir() if not p.name.startswith(".")]
+                if len(entries) == 1 and entries[0].is_dir() and (entries[0] / "plugin.yaml").exists():
+                    logger.info("Descending into single-root dir %s", entries[0].name)
+                    return entries[0], tarball_sha256
+
+            return staging_dir, tarball_sha256
+
+        except Exception as exc:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise RuntimeError(f"Failed to fetch/extract plugin from {url}: {exc}") from exc
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     @staticmethod
     def fetch_from_tarball(url: str, staging_slug: str, auth_token: str | None = None) -> Path:

@@ -39,6 +39,7 @@ import Activity from './pages/Activity'
 import Goals from './pages/Goals'
 import Plugins from './pages/Plugins'
 import PluginDetail from './pages/PluginDetail'
+import McpServers from './pages/McpServers'
 import Topics from './pages/Topics'
 import TicketDetail from './pages/TicketDetail'
 import KnowledgeLayout from './pages/Knowledge/KnowledgeLayout'
@@ -198,6 +199,7 @@ function AppContent() {
           <Route path="/goals" element={<Goals />} />
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/plugins/:slug" element={<PluginDetail />} />
+          <Route path="/mcp-servers" element={<McpServers />} />
           {/* Wave 2.1: full-screen plugin UI pages (catch-all, must come after /plugins/:slug) */}
           <Route path="/plugins-ui/:slug/*" element={<PluginPageHost />} />
           {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}

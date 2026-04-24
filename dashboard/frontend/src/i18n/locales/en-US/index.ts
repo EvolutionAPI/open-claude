@@ -207,6 +207,7 @@ const translations = {
       profile: 'Profile',
       updateAvailable: 'Update available: v{{version}}',
       plugins: 'Plugins',
+      mcpServers: 'MCP Servers',
     },
 
     login: {

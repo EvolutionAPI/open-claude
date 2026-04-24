@@ -44,13 +44,18 @@ class HeartbeatConfig(BaseModel):
             return v
         agents_dir = WORKSPACE / ".claude" / "agents"
         agent_file = agents_dir / f"{v}.md"
-        if not agent_file.exists():
-            available = [p.stem for p in agents_dir.glob("*.md")]
-            raise ValueError(
-                f"Agent '{v}' not found in .claude/agents/. "
-                f"Available: {sorted(available)}"
-            )
-        return v
+        if agent_file.exists():
+            return v
+        # Plugin-provided agents are named `plugin-{slug}-{name}.md` and may
+        # not be present on disk at boot (installed async). Skip strict file
+        # check for these — runtime will resolve them when the plugin loads.
+        if v.startswith("plugin-"):
+            return v
+        available = [p.stem for p in agents_dir.glob("*.md")]
+        raise ValueError(
+            f"Agent '{v}' not found in .claude/agents/. "
+            f"Available: {sorted(available)}"
+        )
 
     @field_validator("wake_triggers")
     @classmethod

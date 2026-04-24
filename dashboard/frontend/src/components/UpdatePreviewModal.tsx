@@ -1,12 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  X, AlertTriangle, CheckCircle, Loader2, ChevronDown, ChevronUp, Download,
+  X, AlertTriangle, CheckCircle, Loader2, ChevronDown, ChevronUp, Download, Terminal,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import SecurityScanSection, { type ScanVerdict, type ScanResult } from './SecurityScanSection'
 
 interface DiffSection {
   [capType: string]: string[]
+}
+
+interface McpDiff {
+  added: string[]
+  removed: string[]
+  modified: string[]
 }
 
 interface PreviewResult {
@@ -19,6 +26,7 @@ interface PreviewResult {
   breaking_changes: string[]
   tarball_sha7?: string
   up_to_date?: boolean
+  mcp_diff?: McpDiff | null
 }
 
 interface Props {
@@ -89,6 +97,25 @@ export default function UpdatePreviewModal({
   const [applying, setApplying] = useState(false)
   const [applyError, setApplyError] = useState<string | null>(null)
 
+  // Wave 2.5 — security scan state
+  const [scanVerdict, setScanVerdict] = useState<ScanVerdict | null>(null)
+  const [, setScanResult] = useState<ScanResult | null>(null)
+  const [overrideReason, setOverrideReason] = useState<string | null>(null)
+  const [confirmed, setConfirmed] = useState(false) // user confirmed WARN
+
+  const handleScanVerdict = useCallback(
+    (verdict: ScanVerdict | null, result: ScanResult | null) => {
+      setScanVerdict(verdict)
+      setScanResult(result)
+      setConfirmed(false) // reset confirmation on new verdict
+    },
+    []
+  )
+
+  const handleOverride = useCallback((reason: string) => {
+    setOverrideReason(reason)
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -112,7 +139,19 @@ export default function UpdatePreviewModal({
     setApplying(true)
     setApplyError(null)
     try {
-      await api.post(`/plugins/${slug}/update`, { source_url: sourceUrl })
+      const body: Record<string, unknown> = { source_url: sourceUrl }
+      // Wave 2.5 — attach scan confirmation info
+      if (scanVerdict === 'WARN' && confirmed) {
+        body.confirmed_verdict = 'WARN'
+      }
+      if (scanVerdict === 'BLOCK' && overrideReason) {
+        body.override_reason = overrideReason
+      }
+      if (scanVerdict === null) {
+        // skip_scan was checked by admin
+        body.skip_scan = true
+      }
+      await api.post(`/plugins/${slug}/update`, body)
       onApplied()
       onClose()
     } catch (e: unknown) {
@@ -122,11 +161,19 @@ export default function UpdatePreviewModal({
     }
   }
 
+  // Wave 2.5 — canApply depends on scan verdict
+  const scanGatePassed =
+    scanVerdict === 'APPROVE' ||
+    scanVerdict === null /* skip */ ||
+    (scanVerdict === 'WARN' && confirmed) ||
+    (scanVerdict === 'BLOCK' && !!overrideReason)
+
   const canApply = !!(
     preview &&
     !preview.up_to_date &&
     !preview.sql_migrations_blocked &&
-    !applying
+    !applying &&
+    scanGatePassed
   )
 
   return (
@@ -169,6 +216,28 @@ export default function UpdatePreviewModal({
               <CheckCircle size={18} />
               {t('plugins.updatePreviewUpToDate')}
             </div>
+          )}
+
+          {/* Wave 2.5 — Security Scan (first section, always visible once preview loaded) */}
+          {!loading && !previewError && preview && !preview.up_to_date && (
+            <SecurityScanSection
+              sourceUrl={sourceUrl}
+              onVerdict={handleScanVerdict}
+              onOverride={handleOverride}
+            />
+          )}
+
+          {/* WARN confirmation checkbox */}
+          {!loading && !previewError && scanVerdict === 'WARN' && !confirmed && (
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-yellow-400">
+              <input
+                type="checkbox"
+                checked={confirmed}
+                onChange={(e) => setConfirmed(e.target.checked)}
+                className="rounded border-yellow-500/50 text-yellow-400 focus:ring-yellow-500/30"
+              />
+              I acknowledge the security warnings and want to proceed
+            </label>
           )}
 
           {/* Diff content */}
@@ -244,6 +313,40 @@ export default function UpdatePreviewModal({
                 accent="text-yellow-400"
               />
 
+              {/* Wave 2.3 — MCP server changes */}
+              {preview.mcp_diff && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl px-4 py-3">
+                  <p className="text-xs font-medium text-blue-300 mb-2 flex items-center gap-1.5">
+                    <Terminal size={12} />
+                    MCP Servers — reiniciar Claude Code CLI necessário
+                  </p>
+                  {preview.mcp_diff.added.length > 0 && (
+                    <div className="mb-1.5">
+                      <p className="text-[10px] text-blue-400/60 uppercase tracking-wider mb-0.5">Adicionados</p>
+                      {preview.mcp_diff.added.map((name) => (
+                        <p key={name} className="text-xs text-blue-300 font-mono">{name}</p>
+                      ))}
+                    </div>
+                  )}
+                  {preview.mcp_diff.removed.length > 0 && (
+                    <div className="mb-1.5">
+                      <p className="text-[10px] text-blue-400/60 uppercase tracking-wider mb-0.5">Removidos</p>
+                      {preview.mcp_diff.removed.map((name) => (
+                        <p key={name} className="text-xs text-red-400 font-mono">{name}</p>
+                      ))}
+                    </div>
+                  )}
+                  {preview.mcp_diff.modified.length > 0 && (
+                    <div>
+                      <p className="text-[10px] text-blue-400/60 uppercase tracking-wider mb-0.5">Modificados</p>
+                      {preview.mcp_diff.modified.map((name) => (
+                        <p key={name} className="text-xs text-yellow-400 font-mono">{name}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Empty state */}
               {totalCount(preview.added) === 0 &&
                 totalCount(preview.removed) === 0 &&
@@ -280,19 +383,27 @@ export default function UpdatePreviewModal({
               title={
                 preview.sql_migrations_blocked
                   ? t('plugins.updatePreviewSqlBlocked')
+                  : scanVerdict === 'BLOCK' && !overrideReason
+                  ? 'Installation blocked by security scan'
                   : undefined
               }
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#00FFA7] text-black rounded-lg hover:bg-[#00FFA7]/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${
+                scanVerdict === 'WARN'
+                  ? 'bg-yellow-500 text-black hover:bg-yellow-400'
+                  : 'bg-[#00FFA7] text-black hover:bg-[#00FFA7]/90'
+              }`}
             >
               {applying ? (
                 <Loader2 size={14} className="animate-spin" />
               ) : (
                 <Download size={14} />
               )}
-              {t('plugins.updatePreviewApply', {
-                from: preview.from_version,
-                to: preview.to_version,
-              })}
+              {scanVerdict === 'WARN' && confirmed
+                ? 'Install Anyway'
+                : t('plugins.updatePreviewApply', {
+                    from: preview.from_version,
+                    to: preview.to_version,
+                  })}
             </button>
           )}
 

@@ -1134,3 +1134,74 @@ def needs_setup() -> bool:
 def needs_onboarding(user) -> bool:
     """Check if the user needs to complete the onboarding wizard."""
     return user is not None and user.onboarding_state in (None, "pending")
+
+
+# ---------------------------------------------------------------------------
+# Wave 2.5 — Plugin security scan tables
+# ---------------------------------------------------------------------------
+
+
+class PluginScanCache(db.Model):
+    """Cache table for plugin security scan results.
+
+    Cache key: tarball_sha256 + scanner_version (7-day TTL).
+    Hit means we skip re-scanning identical plugin archives.
+    """
+
+    __tablename__ = "plugin_scan_cache"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tarball_sha256 = db.Column(db.String(64), nullable=False)
+    scanner_version = db.Column(db.String(20), nullable=False)
+    verdict = db.Column(db.String(10), nullable=False)  # APPROVE | WARN | BLOCK
+    findings_json = db.Column(db.Text, nullable=False, default="[]")
+    scanned_files = db.Column(db.Integer, nullable=False, default=0)
+    llm_augmented = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Composite unique key enforced at DB level (see inline migration)
+    __table_args__ = (
+        db.UniqueConstraint("tarball_sha256", "scanner_version", name="uq_scan_cache_sha_ver"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tarball_sha256": self.tarball_sha256,
+            "scanner_version": self.scanner_version,
+            "verdict": self.verdict,
+            "findings": json.loads(self.findings_json or "[]"),
+            "scanned_files": self.scanned_files,
+            "llm_augmented": self.llm_augmented,
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+        }
+
+
+class PluginAuditLog(db.Model):
+    """Audit log for plugin security decisions.
+
+    Events: scan_approved, scan_warn_accepted, scan_skipped, scan_blocked, scan_override
+    """
+
+    __tablename__ = "plugin_audit_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(200), nullable=False)
+    event = db.Column(db.String(50), nullable=False)
+    verdict = db.Column(db.String(10), nullable=True)   # APPROVE | WARN | BLOCK | None
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    actor_username = db.Column(db.String(80), nullable=True)
+    detail_json = db.Column(db.Text, nullable=False, default="{}")
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "event": self.event,
+            "verdict": self.verdict,
+            "actor_user_id": self.actor_user_id,
+            "actor_username": self.actor_username,
+            "detail": json.loads(self.detail_json or "{}"),
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+        }

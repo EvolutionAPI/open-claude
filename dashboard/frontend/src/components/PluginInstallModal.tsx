@@ -1,7 +1,8 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { X, Link2, Eye, Download, CheckCircle, AlertTriangle, Loader2, Lock, Upload, ChevronDown, ChevronUp } from 'lucide-react'
+import { X, Link2, Eye, Download, CheckCircle, AlertTriangle, Loader2, Lock, Upload, ChevronDown, ChevronUp, Terminal } from 'lucide-react'
 import { api } from '../lib/api'
+import SecurityScanSection, { type ScanVerdict, type ScanResult } from './SecurityScanSection'
 
 interface PreviewResult {
   manifest: Record<string, unknown>
@@ -32,9 +33,42 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   const [installError, setInstallError] = useState<string | null>(null)
   const [installedSlug, setInstalledSlug] = useState<string | null>(null)
 
+  // Wave 2.3 — MCP servers installed tracking
+  const [mcpServersInstalled, setMcpServersInstalled] = useState<Array<{ effective_name: string }>>([])
+
+  // Wave 2.5 — security scan gate state
+  const [scanVerdict, setScanVerdict] = useState<ScanVerdict | null>(null)
+  const [, setScanResult] = useState<ScanResult | null>(null)
+  const [overrideReason, setOverrideReason] = useState('')
+  const [warnConfirmed, setWarnConfirmed] = useState(false)
+
   // Effective source: uploaded staged path wins over URL input
   const effectiveSource = () => (uploadedPath ?? sourceUrl.trim())
   const canPreview = effectiveSource().length > 0 && !loadingPreview
+
+  const handleScanVerdict = useCallback(
+    (verdict: ScanVerdict | null, result: ScanResult | null) => {
+      setScanVerdict(verdict)
+      setScanResult(result)
+    },
+    []
+  )
+
+  const handleOverride = useCallback((reason: string) => {
+    setOverrideReason(reason)
+  }, [])
+
+  // Scan gate logic (mirrors UpdatePreviewModal):
+  // null = scan not yet completed (wait) | APPROVE = pass | WARN+confirmed = pass |
+  // BLOCK+overrideReason(≥20) = admin pass
+  const scanGatePassed =
+    scanVerdict === null
+      ? false // still scanning
+      : scanVerdict === 'APPROVE'
+        ? true
+        : scanVerdict === 'WARN'
+          ? warnConfirmed
+          : /* BLOCK */ overrideReason.trim().length >= 20
 
   async function handleFileSelect(file: File) {
     setPreviewError(null)
@@ -62,6 +96,11 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
     if (!src) return
     setLoadingPreview(true)
     setPreviewError(null)
+    // Reset scan state when re-previewing a different source
+    setScanVerdict(null)
+    setScanResult(null)
+    setOverrideReason('')
+    setWarnConfirmed(false)
     try {
       const body: Record<string, string> = { source_url: src }
       if (authToken.trim()) body.auth_token = authToken.trim()
@@ -81,10 +120,16 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
     setInstalling(true)
     setInstallError(null)
     try {
-      const body: Record<string, string> = { source_url: src }
+      const body: Record<string, unknown> = { source_url: src }
       if (authToken.trim()) body.auth_token = authToken.trim()
-      const result = await api.post('/plugins/install', body) as { slug: string }
+      // Wave 2.5 — propagate scan gate state to backend
+      if (scanVerdict === 'WARN' && warnConfirmed) body.confirmed_verdict = 'WARN'
+      if (scanVerdict === 'BLOCK' && overrideReason.trim().length >= 20) {
+        body.override_reason = overrideReason.trim()
+      }
+      const result = await api.post('/plugins/install', body) as { slug: string; mcp_servers_installed?: Array<{ effective_name: string }> }
       setInstalledSlug(result.slug)
+      setMcpServersInstalled(result.mcp_servers_installed ?? [])
       setStep(3)
     } catch (e: unknown) {
       setInstallError(e instanceof Error ? e.message : t('common.unexpectedError'))
@@ -96,6 +141,12 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   const manifest = preview?.manifest ?? {}
   const warnings = preview?.warnings ?? []
   const conflicts = preview?.conflicts ? Object.keys(preview.conflicts) : []
+
+  // Install button is amber for WARN, normal green otherwise
+  const installBtnClass =
+    scanVerdict === 'WARN' && warnConfirmed
+      ? 'flex items-center gap-2 px-4 py-2 text-sm font-medium bg-amber-400 text-black rounded-lg hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+      : 'flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#00FFA7] text-black rounded-lg hover:bg-[#00FFA7]/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -131,7 +182,7 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
         </div>
 
         {/* Body */}
-        <div className="px-6 py-5">
+        <div className="px-6 py-5 max-h-[70vh] overflow-y-auto">
           {/* Step 1: URL input */}
           {step === 1 && (
             <div className="space-y-4">
@@ -219,9 +270,33 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
             </div>
           )}
 
-          {/* Step 2: Preview */}
+          {/* Step 2: Security scan + manifest preview */}
           {step === 2 && preview && (
             <div className="space-y-4">
+              {/* Wave 2.5 — Security scan gate (runs automatically on mount) */}
+              <SecurityScanSection
+                sourceUrl={effectiveSource()}
+                authToken={authToken.trim() || undefined}
+                onVerdict={handleScanVerdict}
+                onOverride={handleOverride}
+              />
+
+              {/* WARN confirmation checkbox */}
+              {scanVerdict === 'WARN' && !warnConfirmed && (
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={warnConfirmed}
+                    onChange={(e) => setWarnConfirmed(e.target.checked)}
+                    className="mt-0.5 accent-amber-400"
+                  />
+                  <span className="text-xs text-amber-300">
+                    Entendo os riscos apontados acima e desejo prosseguir com a instalação.
+                  </span>
+                </label>
+              )}
+
+              {/* Manifest preview */}
               <div className="bg-[#0C111D] border border-[#21262d] rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Eye size={14} className="text-[#00FFA7]" />
@@ -277,14 +352,36 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
 
           {/* Step 3: Done */}
           {step === 3 && (
-            <div className="text-center py-4">
-              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-[#00FFA7]/10 border border-[#00FFA7]/20 mx-auto mb-4">
-                <CheckCircle size={28} className="text-[#00FFA7]" />
+            <div className="py-4 space-y-4">
+              <div className="text-center">
+                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-[#00FFA7]/10 border border-[#00FFA7]/20 mx-auto mb-4">
+                  <CheckCircle size={28} className="text-[#00FFA7]" />
+                </div>
+                <h3 className="text-base font-semibold text-[#e6edf3] mb-1">{t('plugins.installedSuccessTitle')}</h3>
+                <p className="text-sm text-[#667085]">
+                  {installedSlug && <code className="text-[#00FFA7]">{installedSlug}</code>} {t('plugins.installedDesc')}
+                </p>
               </div>
-              <h3 className="text-base font-semibold text-[#e6edf3] mb-1">{t('plugins.installedSuccessTitle')}</h3>
-              <p className="text-sm text-[#667085]">
-                {installedSlug && <code className="text-[#00FFA7]">{installedSlug}</code>} {t('plugins.installedDesc')}
-              </p>
+
+              {/* Wave 2.3 — MCP restart notice */}
+              {mcpServersInstalled.length > 0 && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4">
+                  <div className="flex items-start gap-3">
+                    <Terminal size={16} className="text-blue-400 mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-blue-300 mb-1">
+                        Restart Claude Code CLI para ativar os MCP servers
+                      </p>
+                      <p className="text-xs text-blue-400/80 mb-2">
+                        {mcpServersInstalled.length} MCP server{mcpServersInstalled.length > 1 ? 's' : ''} instalado{mcpServersInstalled.length > 1 ? 's' : ''}: {mcpServersInstalled.map(s => s.effective_name).join(', ')}
+                      </p>
+                      <p className="text-xs text-blue-400/60">
+                        Cmd+Q no Claude Code e reabra o aplicativo.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -321,8 +418,8 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
               </button>
               <button
                 onClick={handleInstall}
-                disabled={installing || conflicts.length > 0}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#00FFA7] text-black rounded-lg hover:bg-[#00FFA7]/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                disabled={installing || conflicts.length > 0 || !scanGatePassed}
+                className={installBtnClass}
               >
                 {installing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
                 {t('plugins.confirmInstall')}

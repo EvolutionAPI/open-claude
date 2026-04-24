@@ -195,6 +195,7 @@ const translations = {
       profile: 'Perfil',
       updateAvailable: 'Actualización disponible: v{{version}}',
       plugins: 'Plugins',
+      mcpServers: 'MCP Servers',
     },
 
     login: {

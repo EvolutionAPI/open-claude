@@ -199,6 +199,19 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
                 except OSError as exc:
                     log.append(f"WARN: could not delete {dest}: {exc}")
 
+    elif step_name == "install_mcp_servers":
+        # Rollback: remove injected MCP entries from ~/.claude.json
+        installed_records = step_data.get("installed_records", [])
+        if installed_records:
+            try:
+                from plugin_claude_config import remove_mcp_servers
+                audit = remove_mcp_servers(slug, installed_records)
+                log.append(f"Rolled back: install_mcp_servers — audit: {audit}")
+            except Exception as exc:
+                log.append(f"WARN: install_mcp_servers rollback failed: {exc}")
+        else:
+            log.append("Note: install_mcp_servers had no installed_records to roll back")
+
     elif step_name == "heartbeats_union":
         log.append("Note: heartbeats_union rollback is handled by plugin dir removal")
 
@@ -209,6 +222,83 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
 # ---------------------------------------------------------------------------
 # Crash recovery
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Wave 2.3 — MCP tracking helpers
+# ---------------------------------------------------------------------------
+
+def get_plugin_mcp_servers(slug: str, db_path: Path) -> list[dict]:
+    """Return the mcp_servers_installed list for an installed plugin.
+
+    Reads manifest_json["mcp_servers_installed"] from plugins_installed.
+    Returns [] if the plugin is not found or has no MCP servers.
+
+    Args:
+        slug:    Plugin slug.
+        db_path: Path to the SQLite database.
+
+    Returns:
+        List of installed server records: [{effective_name, command, args_hash, env_keys}]
+    """
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT manifest_json FROM plugins_installed WHERE slug = ?", (slug,)
+        ).fetchone()
+        conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.warning("get_plugin_mcp_servers: DB error for '%s': %s", slug, exc)
+        return []
+
+    if not row:
+        return []
+
+    try:
+        manifest = json.loads(row[0] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    return manifest.get("mcp_servers_installed", [])
+
+
+def all_plugin_mcp_names(db_path: Path) -> set[str]:
+    """Return the set of all effective MCP names across all active plugins.
+
+    Used for pre-install collision detection (ADR decision #1).
+
+    Args:
+        db_path: Path to the SQLite database.
+
+    Returns:
+        Set of effective_name strings (e.g. {"plugin-pm-essentials-sprint-board"}).
+    """
+    names: set[str] = set()
+    if not db_path.exists():
+        return names
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active'"
+        ).fetchall()
+        conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.warning("all_plugin_mcp_names: DB error: %s", exc)
+        return names
+
+    for (manifest_json,) in rows:
+        try:
+            manifest = json.loads(manifest_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for rec in manifest.get("mcp_servers_installed", []):
+            eff = rec.get("effective_name")
+            if eff:
+                names.add(eff)
+
+    return names
+
 
 def crash_recovery_on_boot(db_path: Path) -> list[str]:
     """Called on Flask app startup — detect and roll back orphaned installs.

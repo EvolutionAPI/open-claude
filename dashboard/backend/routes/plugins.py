@@ -381,6 +381,11 @@ def preview_plugin():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
+    # `staged_path` is a pathlib.Path used internally by the scan pipeline;
+    # coerce to string before returning so Flask's JSON encoder accepts it.
+    if "staged_path" in preview and preview["staged_path"] is not None:
+        preview["staged_path"] = str(preview["staged_path"])
+
     if preview.get("conflicts"):
         return jsonify(preview), 409
 
@@ -434,6 +439,187 @@ def upload_plugin_archive():
 
 
 # ---------------------------------------------------------------------------
+# Wave 2.5 — POST /api/plugins/scan — synchronous security scan (≤25s)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugins/scan", methods=["POST"])
+@login_required
+def scan_plugin():
+    """Run a hybrid regex+LLM security scan on a plugin source URL.
+
+    Request body: {source_url: str, auth_token?: str}
+
+    Returns ADR §5 verdict envelope:
+    {verdict, severity, scan_duration_ms, scanners_used, cache_hit,
+     tarball_sha256, findings, findings_truncated, llm_used, llm_reasoning,
+     scanner_version}
+
+    Timeout: 25s hard. If LLM exceeds 20s, degrades to regex-only (not failure).
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    source_url = data.get("source_url", "")
+    auth_token = data.get("auth_token") or None
+    if not source_url:
+        return jsonify({"error": "source_url required"}), 400
+
+    from plugin_loader import PluginInstaller
+
+    installer = PluginInstaller()
+
+    try:
+        preview = installer.preview(source_url, auth_token=auth_token)
+    except Exception as exc:
+        return jsonify({"error": f"preview failed: {exc}"}), 400
+
+    if preview.get("conflicts"):
+        return jsonify({"error": "conflict", "details": preview["conflicts"]}), 409
+
+    staged_path = preview.get("staged_path")
+    if staged_path is None:
+        return jsonify({"error": "staged_path not available after preview"}), 500
+    if not isinstance(staged_path, Path):
+        staged_path = Path(staged_path)
+
+    manifest = preview.get("manifest") or {}
+    tarball_sha256 = preview.get("tarball_sha256", "")
+
+    from plugin_scan_runner import run_scan
+
+    try:
+        result = run_scan(
+            staged_path=staged_path,
+            manifest=manifest,
+            tarball_sha256=tarball_sha256,
+            db_path=DB_PATH,
+        )
+    except Exception as exc:
+        logger.error("Scan failed for %s: %s", source_url, exc)
+        return jsonify({"error": f"scan_failed: {exc}"}), 500
+    finally:
+        # Always clean up staged directory after scan — it was created solely for
+        # inspection and must not accumulate between requests.
+        try:
+            from plugin_loader import STAGING_DIR as _STAGING_DIR
+            if staged_path.exists() and staged_path.resolve().is_relative_to(
+                _STAGING_DIR.resolve()
+            ):
+                shutil.rmtree(staged_path, ignore_errors=True)
+        except Exception:
+            pass  # cleanup failure must never mask scan result
+
+    # Log the scan event to audit log
+    _audit_scan_event(
+        slug=manifest.get("id", "unknown"),
+        event="scan_completed",
+        verdict=result.get("verdict"),
+        actor_user_id=getattr(current_user, "id", None),
+        actor_username=getattr(current_user, "username", None),
+        detail={"tarball_sha256": tarball_sha256, "scanners_used": result.get("scanners_used")},
+    )
+
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Wave 2.5 — GET /api/plugins/audit — audit log for plugin scan decisions
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugins/audit", methods=["GET"])
+@login_required
+def get_plugin_audit_log():
+    """Return plugin audit log entries.
+
+    Query params:
+      slug     — filter by plugin slug (optional)
+      limit    — max rows (default 100, max 500)
+
+    Admin: sees all rows.
+    Non-admin: sees only own rows (WHERE actor_username = current_user.username).
+    """
+    slug = request.args.get("slug")
+    try:
+        limit = min(int(request.args.get("limit", 100)), 500)
+    except (ValueError, TypeError):
+        limit = 100
+
+    conn = _get_db()
+    try:
+        is_admin = getattr(current_user, "role", "viewer") == "admin"
+        params: list = []
+        where_clauses: list[str] = []
+
+        if slug:
+            where_clauses.append("slug = ?")
+            params.append(slug)
+
+        if not is_admin:
+            where_clauses.append("actor_username = ?")
+            params.append(getattr(current_user, "username", ""))
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        params.append(limit)
+
+        rows = conn.execute(
+            f"""SELECT id, slug, event, verdict, actor_user_id, actor_username,
+                       detail_json, created_at
+                FROM plugin_audit_log
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+
+        return jsonify({
+            "entries": [
+                {
+                    "id": r["id"],
+                    "slug": r["slug"],
+                    "event": r["event"],
+                    "verdict": r["verdict"],
+                    "actor_user_id": r["actor_user_id"],
+                    "actor_username": r["actor_username"],
+                    "detail": json.loads(r["detail_json"] or "{}"),
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ],
+            "total": len(rows),
+        })
+    finally:
+        conn.close()
+
+
+def _audit_scan_event(
+    slug: str,
+    event: str,
+    verdict: str | None,
+    actor_user_id: int | None,
+    actor_username: str | None,
+    detail: dict | None = None,
+) -> None:
+    """Insert a row into plugin_audit_log. Silently swallows errors."""
+    try:
+        conn = _get_db()
+        conn.execute(
+            """INSERT INTO plugin_audit_log
+               (slug, event, verdict, actor_user_id, actor_username, detail_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                slug,
+                event,
+                verdict,
+                actor_user_id,
+                actor_username,
+                json.dumps(detail or {}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("Audit log insert failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # POST /api/plugins/install — full install with state machine
 # ---------------------------------------------------------------------------
 
@@ -475,6 +661,112 @@ def install_plugin():
     manifest = preview["manifest"]
     slug = manifest["id"]
 
+    # -----------------------------------------------------------------------
+    # Wave 2.5 — Security scan gate (inserted between preview and InstallLock)
+    # -----------------------------------------------------------------------
+    skip_scan = bool(data.get("skip_scan", False))
+    confirmed_verdict = data.get("confirmed_verdict")      # "WARN" when user confirmed
+    override_reason = data.get("override_reason", "") or "" # admin BLOCK override
+
+    staged_path = preview.get("staged_path")
+    tarball_sha256 = preview.get("tarball_sha256", "")
+
+    actor_uid = getattr(current_user, "id", None)
+    actor_uname = getattr(current_user, "username", None)
+    actor_role = getattr(current_user, "role", "viewer")
+
+    if skip_scan:
+        # Admin-only skip
+        if actor_role != "admin":
+            return jsonify({"error": "scan_skip_forbidden", "detail": "Only admin can skip security scan"}), 403
+        _audit_scan_event(
+            slug=slug, event="scan_skipped", verdict="SKIPPED",
+            actor_user_id=actor_uid, actor_username=actor_uname,
+            detail={"reason": data.get("skip_reason", ""), "source_url": source_url},
+        )
+    else:
+        if staged_path is not None:
+            from plugin_scan_runner import run_scan as _run_scan
+            try:
+                scan_result = _run_scan(
+                    staged_path=staged_path if isinstance(staged_path, Path) else Path(staged_path),
+                    manifest=manifest,
+                    tarball_sha256=tarball_sha256,
+                    db_path=DB_PATH,
+                )
+            except Exception as scan_exc:
+                logger.error("Security scan crashed for '%s': %s", slug, scan_exc)
+                return jsonify({"error": "scan_failed", "detail": str(scan_exc)}), 500
+
+            scan_verdict = scan_result.get("verdict", "APPROVE")
+
+            if scan_verdict == "BLOCK":
+                # Admin may override
+                if override_reason and len(override_reason.strip()) >= 20 and actor_role == "admin":
+                    _audit_scan_event(
+                        slug=slug, event="scan_override", verdict="BLOCK",
+                        actor_user_id=actor_uid, actor_username=actor_uname,
+                        detail={"override_reason": override_reason, "findings": len(scan_result.get("findings", []))},
+                    )
+                elif actor_role != "admin":
+                    _audit_scan_event(
+                        slug=slug, event="scan_blocked", verdict="BLOCK",
+                        actor_user_id=actor_uid, actor_username=actor_uname,
+                        detail={"findings": len(scan_result.get("findings", []))},
+                    )
+                    findings_summary = {
+                        s: sum(1 for f in scan_result.get("findings", []) if f.get("severity") == s)
+                        for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+                    }
+                    return jsonify({
+                        "error": "security_block",
+                        "verdict": "BLOCK",
+                        "findings_summary": findings_summary,
+                        "override_allowed": False,
+                        "message": "Plugin blocked by security scan. Contact an admin to override.",
+                    }), 422
+                else:
+                    # Admin, no override_reason or too short
+                    findings_summary = {
+                        s: sum(1 for f in scan_result.get("findings", []) if f.get("severity") == s)
+                        for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+                    }
+                    return jsonify({
+                        "error": "security_block",
+                        "verdict": "BLOCK",
+                        "findings_summary": findings_summary,
+                        "override_allowed": True,
+                        "message": "Plugin blocked by security scan. Provide override_reason (≥20 chars) to proceed as admin.",
+                    }), 422
+
+            elif scan_verdict == "WARN":
+                if confirmed_verdict != "WARN":
+                    return jsonify({
+                        "error": "confirmation_required",
+                        "verdict": "WARN",
+                        "message": "Security scan produced warnings. Re-submit with confirmed_verdict='WARN' to proceed.",
+                        "findings": scan_result.get("findings", []),
+                    }), 409
+                _audit_scan_event(
+                    slug=slug, event="scan_warn_accepted", verdict="WARN",
+                    actor_user_id=actor_uid, actor_username=actor_uname,
+                    detail={"findings": len(scan_result.get("findings", []))},
+                )
+
+            else:
+                # APPROVE
+                _audit_scan_event(
+                    slug=slug, event="scan_approved", verdict="APPROVE",
+                    actor_user_id=actor_uid, actor_username=actor_uname,
+                    detail={"cache_hit": scan_result.get("cache_hit", False)},
+                )
+        else:
+            # Local dir source — no staged path, skip scan gracefully
+            logger.info("No staged_path for '%s' — skipping security scan (local source)", slug)
+    # -----------------------------------------------------------------------
+    # End Wave 2.5 security scan gate
+    # -----------------------------------------------------------------------
+
     # ADR-5 + B2: per-slug lock
     try:
         lock = InstallLock(slug)
@@ -495,12 +787,32 @@ def install_plugin():
         # --- Step: copy plugin source to plugins/{slug}/ ---
         plugin_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy entire source into plugin dir (resolver handles github:/https:/local)
-        source_path = installer.resolve_source(source_url, auth_token=auth_token)
+        # Wave 2.5 — use staged_path from preview() (single-resolve invariant).
+        # preview() already downloaded + extracted the source; re-using staged_path
+        # avoids a second download.  staged_path is None for local-dir sources
+        # that were never staged, so fall back to resolve_source() in that case.
+        source_path = preview.get("staged_path")
+        if source_path is None:
+            source_path = installer.resolve_source(source_url, auth_token=auth_token)
+
+        if not isinstance(source_path, Path):
+            from pathlib import Path as _Path
+            source_path = _Path(source_path)
+
         if source_path.is_dir():
             shutil.copytree(source_path, plugin_dir, dirs_exist_ok=True)
         else:
             return jsonify({"error": f"resolved source is not a directory: {source_path}"}), 400
+
+        # Wave 2.5 — clean up staging dir after successful copy so disk space
+        # is not held.  Staging dir lives at PLUGINS_DIR/.staging/<slug>/.
+        # Only remove if it is inside STAGING_DIR (guard against local-dir sources).
+        try:
+            from plugin_loader import STAGING_DIR as _STAGING_DIR
+            if source_path.resolve().is_relative_to(_STAGING_DIR.resolve()):
+                shutil.rmtree(_STAGING_DIR / slug, ignore_errors=True)
+        except Exception as _cleanup_exc:
+            logger.debug("Staging cleanup skipped: %s", _cleanup_exc)
 
         state["completed_steps"].append({"step": "copy_source"})
         save_state(slug, state)
@@ -703,6 +1015,33 @@ def install_plugin():
         state["completed_steps"].append({"step": "register_assets", "asset_files": asset_records})
         save_state(slug, state)
 
+        # --- Step: Wave 2.3 — inject MCP servers into ~/.claude.json ---
+        mcp_installed_records: list[dict] = []
+        _declared_mcp_servers = manifest.get("mcp_servers") or []
+        if _declared_mcp_servers:
+            try:
+                from plugin_claude_config import add_mcp_servers
+                from plugin_install_state import all_plugin_mcp_names
+                # Pre-install collision check
+                _existing_mcp_names = all_plugin_mcp_names(DB_PATH)
+                for _srv in _declared_mcp_servers:
+                    _eff = f"plugin-{slug}-{_srv.get('name', '')}"
+                    if _eff in _existing_mcp_names:
+                        raise RuntimeError(
+                            f"MCP name collision: effective name '{_eff}' is already "
+                            "registered by another installed plugin."
+                        )
+                mcp_installed_records = add_mcp_servers(
+                    slug, _declared_mcp_servers, workspace=WORKSPACE
+                )
+            except Exception as exc:
+                raise RuntimeError(f"MCP server injection failed: {exc}") from exc
+        state["completed_steps"].append({
+            "step": "install_mcp_servers",
+            "installed_records": mcp_installed_records,
+        })
+        save_state(slug, state)
+
         # --- Step: post-install hook ---
         post_hook = plugin_dir / "hooks" / "post-install.sh"
         if post_hook.exists():
@@ -714,7 +1053,13 @@ def install_plugin():
         save_state(slug, state)
 
         # --- Step: DB register ---
-        manifest_sha = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+        # Wave 2.3: store mcp_servers_installed in manifest_json for uninstall/update
+        # Uses a separate key to avoid overwriting the declared mcp_servers field.
+        manifest_for_db = dict(manifest)
+        if mcp_installed_records:
+            manifest_for_db["mcp_servers_installed"] = mcp_installed_records
+
+        manifest_sha = hashlib.sha256(json.dumps(manifest_for_db, sort_keys=True).encode()).hexdigest()
 
         try:
             conn.execute(
@@ -725,7 +1070,7 @@ def install_plugin():
                    ON CONFLICT(slug) DO NOTHING""",
                 (slug, slug, manifest["name"], manifest["version"],
                  manifest.get("tier", "essential"), "local", source_url,
-                 _now_iso(), json.dumps(manifest), manifest_sha),
+                 _now_iso(), json.dumps(manifest_for_db), manifest_sha),
             )
             conn.commit()
         except sqlite3.OperationalError as exc:
@@ -737,7 +1082,7 @@ def install_plugin():
         # --- Finalize: write manifest + rename state file ---
         final_manifest = {
             "slug": slug,
-            "manifest": manifest,
+            "manifest": manifest_for_db,
             "installed_at": _now_iso(),
             "steps": state["completed_steps"],
             "agents": agent_files,
@@ -759,6 +1104,7 @@ def install_plugin():
             "status": "active",
             "routine_activation_pending": routine_error is not None,
             "warnings": preview.get("warnings", []),
+            "mcp_servers_installed": mcp_installed_records,
         })
 
     except _WidgetLimitError as exc:
@@ -780,6 +1126,17 @@ def install_plugin():
 
     finally:
         conn.close()
+        # Wave 2.5 — ensure staging dir is cleaned up in all paths (AC-W2.5-11).
+        # If copy succeeded, it was already cleaned above.  This covers failure paths.
+        try:
+            _stg = preview.get("staged_path") if "preview" in dir() else None
+            if _stg is not None:
+                _stg_path = _stg if isinstance(_stg, Path) else Path(_stg)
+                from plugin_loader import STAGING_DIR as _STAGING_DIR
+                if _stg_path.exists() and _stg_path.resolve().is_relative_to(_STAGING_DIR.resolve()):
+                    shutil.rmtree(_stg_path, ignore_errors=True)
+        except Exception:
+            pass  # staging cleanup is best-effort
 
 
 def _sha256(path: Path) -> str:
@@ -878,6 +1235,28 @@ def uninstall_plugin(slug: str):
             except Exception as exc:
                 logger.warning("SQL uninstall failed: %s", exc)
 
+        # Wave 2.2r: remove plugin env vars section from .env
+        _removed_env_keys: list[str] = []
+        try:
+            from routes.integrations import _remove_env_section  # type: ignore
+            _env_path = WORKSPACE / ".env"
+            _removed_env_keys = _remove_env_section(_env_path, f"plugin-{slug}")
+            if _removed_env_keys:
+                logger.info("Uninstall: removed env section 'plugin-%s', keys=%s", slug, _removed_env_keys)
+        except Exception as exc:
+            logger.warning("Uninstall: env section removal failed for '%s': %s", slug, exc)
+
+        # Wave 2.2r: clean integration health cache
+        _health_cache_removed = 0
+        try:
+            _health_rows = conn.execute(
+                "DELETE FROM integration_health_cache WHERE plugin_slug = ?", (slug,)
+            ).rowcount
+            conn.commit()
+            _health_cache_removed = _health_rows
+        except Exception as exc:
+            logger.warning("Uninstall: health cache cleanup failed for '%s': %s", slug, exc)
+
         # Post-uninstall hook
         post_hook = plugin_dir / "hooks" / "post-uninstall.sh"
         if post_hook.exists():
@@ -885,6 +1264,18 @@ def uninstall_plugin(slug: str):
                 run_lifecycle_hook(plugin_dir, "post-uninstall", timeout=60)
             except Exception as exc:
                 logger.warning("post-uninstall hook failed: %s", exc)
+
+        # Wave 2.3: remove MCP servers from ~/.claude.json before removing plugin dir
+        _mcp_audit: dict = {}
+        try:
+            from plugin_claude_config import remove_mcp_servers
+            from plugin_install_state import get_plugin_mcp_servers
+            _mcp_records = get_plugin_mcp_servers(slug, DB_PATH)
+            if _mcp_records:
+                _mcp_audit = remove_mcp_servers(slug, _mcp_records)
+                logger.info("Uninstall MCP audit for '%s': %s", slug, _mcp_audit)
+        except Exception as exc:
+            logger.warning("MCP removal failed during uninstall of '%s': %s", slug, exc)
 
         # Remove plugin directory
         shutil.rmtree(plugin_dir, ignore_errors=True)
@@ -902,9 +1293,18 @@ def uninstall_plugin(slug: str):
         # Reload scheduler
         _reload_scheduler()
 
-        _audit(conn, slug, "uninstall", success=True)
+        _audit(conn, slug, "uninstall", {
+            "removed_env_keys": _removed_env_keys,
+            "removed_health_cache_count": _health_cache_removed,
+            "mcp_audit": _mcp_audit,
+        }, success=True)
         invalidate_agent_meta_cache()
-        return jsonify({"slug": slug, "status": "uninstalled"})
+        return jsonify({
+            "slug": slug,
+            "status": "uninstalled",
+            "mcp_audit": _mcp_audit,
+            "removed_env_keys": _removed_env_keys,
+        })
 
     except Exception as exc:
         logger.error("Uninstall failed for '%s': %s", slug, exc)
@@ -1986,6 +2386,22 @@ def _compute_preview(slug: str, source_url: str) -> dict:
             json.dumps(new_manifest_dict, sort_keys=True).encode()
         ).hexdigest()[:7]
 
+    # Wave 2.3: MCP server diff for preview (informational, no write)
+    old_mcp_servers = installed_manifest_dict.get("mcp_servers") or []
+    new_mcp_servers = new_manifest_dict.get("mcp_servers") or []
+    old_mcp_names = {s["name"] for s in old_mcp_servers if isinstance(s, dict) and s.get("name")}
+    new_mcp_names = {s["name"] for s in new_mcp_servers if isinstance(s, dict) and s.get("name")}
+    mcp_diff = {
+        "added": sorted(new_mcp_names - old_mcp_names),
+        "removed": sorted(old_mcp_names - new_mcp_names),
+        "modified": sorted(
+            name for name in old_mcp_names & new_mcp_names
+            if next((s for s in old_mcp_servers if s.get("name") == name), {})
+            != next((s for s in new_mcp_servers if s.get("name") == name), {})
+        ),
+    }
+    has_mcp_changes = any(mcp_diff[k] for k in ("added", "removed", "modified"))
+
     return {
         "from_version": installed_version,
         "to_version": new_version,
@@ -1995,6 +2411,7 @@ def _compute_preview(slug: str, source_url: str) -> dict:
         "sql_migrations_blocked": sql_migrations_blocked,
         "breaking_changes": breaking_changes,
         "tarball_sha7": tarball_sha7,
+        "mcp_diff": mcp_diff if has_mcp_changes else None,
     }
 
 
@@ -2211,6 +2628,26 @@ def update_plugin(slug: str):
                     "url": f"/plugins/{slug}/ui/widgets/{w.name}",
                 })
 
+        # Wave 2.3: apply MCP delta (tudo-ou-nada) for updated mcp_servers
+        from plugin_install_state import get_plugin_mcp_servers as _get_plugin_mcp_servers
+        mcp_delta_result: dict = {}
+        try:
+            from plugin_claude_config import apply_mcp_delta
+            _old_mcp_servers = installed_manifest_dict.get("mcp_servers") or []
+            _new_mcp_servers = (new_manifest.model_dump().get("mcp_servers") or [])
+            _old_mcp_installed = _get_plugin_mcp_servers(slug, DB_PATH)
+            if _old_mcp_servers or _new_mcp_servers:
+                mcp_delta_result = apply_mcp_delta(
+                    slug,
+                    _old_mcp_servers,
+                    _new_mcp_servers,
+                    _old_mcp_installed,
+                    workspace=WORKSPACE,
+                )
+        except Exception as exc:
+            logger.warning("MCP delta failed during update of '%s': %s", slug, exc)
+            # Non-fatal: log warning but allow update to proceed
+
         # 9. Heartbeats/routines union — re-reads on next dispatch cycle; trigger reload
         _reload_scheduler()
 
@@ -2266,7 +2703,29 @@ def update_plugin(slug: str):
                     (json.dumps(pruned), slug),
                 )
 
-        # 12. Update DB
+        # 12. Update DB — include new mcp_servers_installed if MCP delta produced records
+        # Compute the new installed records: keep unchanged + add new/modified
+        _new_installed_records: list[dict] = []
+        if mcp_delta_result:
+            _new_installed_records.extend(mcp_delta_result.get("added", []))
+            _new_installed_records.extend(mcp_delta_result.get("modified", []))
+            # Carry over records that were not modified (i.e. unchanged names)
+            _new_mcp_names_touched = {
+                r["effective_name"] for r in _new_installed_records
+            }
+            for rec in _get_plugin_mcp_servers(slug, DB_PATH):
+                if rec.get("effective_name") not in _new_mcp_names_touched:
+                    # Only keep if not in removed set
+                    _removed_names = set(mcp_delta_result.get("removed", {}).keys())
+                    if rec.get("effective_name") not in _removed_names:
+                        _new_installed_records.append(rec)
+        else:
+            # No MCP delta — preserve existing installed records
+            _new_installed_records = _get_plugin_mcp_servers(slug, DB_PATH)
+
+        if _new_installed_records:
+            new_manifest_dict["mcp_servers_installed"] = _new_installed_records
+
         conn.execute(
             "UPDATE plugins_installed SET version = ?, manifest_json = ? WHERE slug = ?",
             (new_version, json.dumps(new_manifest_dict), slug)
@@ -2282,6 +2741,7 @@ def update_plugin(slug: str):
             "id": slug,
             "from_version": installed_version,
             "to_version": new_version,
+            "mcp_delta": mcp_delta_result,
         })
 
     except Exception as exc:

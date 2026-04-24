@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   ArrowLeft, Package, CheckCircle, XCircle, AlertTriangle,
   Loader2, RefreshCw, Trash2, ShieldCheck, Download, Layers,
-  ToggleRight, ToggleLeft,
+  ToggleRight, ToggleLeft, Terminal, X,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import type { Plugin } from '../components/PluginCard'
@@ -147,6 +147,16 @@ export default function PluginDetail() {
   // Wave 2.0 — Icon fallback state
   const [iconError, setIconError] = useState(false)
 
+  // Wave 2.3 — MCP restart banner dismiss (persisted via localStorage)
+  const mcpBannerKey = `mcp-restart-dismissed-${slug}`
+  const [mcpBannerDismissed, setMcpBannerDismissed] = useState<boolean>(
+    () => localStorage.getItem(mcpBannerKey) === '1'
+  )
+  function dismissMcpBanner() {
+    localStorage.setItem(mcpBannerKey, '1')
+    setMcpBannerDismissed(true)
+  }
+
   useEffect(() => {
     if (!slug) return
     setLoading(true)
@@ -267,6 +277,11 @@ export default function PluginDetail() {
 
   const capabilities = Array.isArray(manifest['capabilities']) ? manifest['capabilities'] as string[] : []
 
+  // Wave 2.3 — MCP servers installed (stored in manifest_json["mcp_servers_installed"])
+  const mcpServersInstalled = Array.isArray(manifest['mcp_servers_installed'])
+    ? manifest['mcp_servers_installed'] as Array<{ effective_name: string }>
+    : []
+
   // ---------------------------------------------------------------------------
   // Build capability items from manifest + capabilities_disabled
   // ---------------------------------------------------------------------------
@@ -373,6 +388,30 @@ export default function PluginDetail() {
     enabled: tr.enabled,
   }))
 
+  // Wave 2.3 — MCP servers declared in the manifest (display-only; plugin owns
+  // them, user toggle happens via plugin-level enable/disable for now).
+  const mcpServersDeclared = Array.isArray(manifest['mcp_servers'])
+    ? manifest['mcp_servers'] as Array<{ name: string; command?: string }>
+    : []
+  const mcpItems: CapabilityItem[] = mcpServersDeclared.map((mcp) => ({
+    id: `plugin-${slug}-${mcp.name}`,
+    label: `${mcp.name} (${mcp.command ?? '—'})`,
+    type: 'mcp_servers',
+    enabled: plugin.enabled === 1,
+  }))
+
+  // Wave 2.2r — Integrations declared in the manifest (display-only; the
+  // Custom tab at /integrations is the real configuration surface).
+  const integrationsDeclared = Array.isArray(manifest['integrations'])
+    ? manifest['integrations'] as Array<{ slug: string; label: string; category?: string }>
+    : []
+  const integrationItems: CapabilityItem[] = integrationsDeclared.map((it) => ({
+    id: `${slug}-${it.slug}`,
+    label: `${it.label}${it.category ? ` · ${it.category}` : ''}`,
+    type: 'integrations',
+    enabled: plugin.enabled === 1,
+  }))
+
   const hasAnyCapabilities =
     heartbeatItems.length > 0 ||
     triggerItems.length > 0 ||
@@ -382,7 +421,9 @@ export default function PluginDetail() {
     skillItems.length > 0 ||
     agentItems.length > 0 ||
     commandItems.length > 0 ||
-    ruleItems.length > 0
+    ruleItems.length > 0 ||
+    mcpItems.length > 0 ||
+    integrationItems.length > 0
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -454,6 +495,29 @@ export default function PluginDetail() {
         </div>
       )}
 
+      {/* Wave 2.3 — MCP restart banner (persistent until dismissed) */}
+      {mcpServersInstalled.length > 0 && !mcpBannerDismissed && (
+        <div className="mb-4 bg-blue-500/5 border border-blue-500/20 rounded-xl px-4 py-3 flex items-start gap-3">
+          <Terminal size={15} className="text-blue-400 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-blue-300 mb-0.5">
+              Restart Claude Code CLI para ativar os MCP servers
+            </p>
+            <p className="text-xs text-blue-400/70">
+              {mcpServersInstalled.length} MCP server{mcpServersInstalled.length > 1 ? 's' : ''} instalado{mcpServersInstalled.length > 1 ? 's' : ''}.
+              Cmd+Q no Claude Code e reabra o aplicativo.
+            </p>
+          </div>
+          <button
+            onClick={dismissMcpBanner}
+            className="text-blue-500/40 hover:text-blue-400 transition-colors shrink-0"
+            title="Dispensar"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       <div className="space-y-4">
         {/* Manifest details */}
         <section className="bg-[#161b22] border border-[#21262d] rounded-2xl p-5">
@@ -507,6 +571,8 @@ export default function PluginDetail() {
             </p>
             <CapabilityGroup title="Heartbeats" items={heartbeatItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
             <CapabilityGroup title="Triggers" items={triggerItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="MCP Servers" items={mcpItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
+            <CapabilityGroup title="Integrations" items={integrationItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
             <CapabilityGroup title="Widgets" items={widgetItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
             <CapabilityGroup title="Read-only Queries" items={rdItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
             <CapabilityGroup title="Claude Hooks" items={hookItems} onToggle={handleCapabilityToggle} loadingId={capLoadingId} />
