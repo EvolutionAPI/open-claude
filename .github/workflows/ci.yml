@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [develop, main]
     paths:
       - "dashboard/**"
       - "tests/**"
@@ -10,7 +10,7 @@ on:
       - "uv.lock"
       - ".github/workflows/ci.yml"
   push:
-    branches: [main]
+    branches: [develop, main]
     paths:
       - "dashboard/**"
       - "tests/**"

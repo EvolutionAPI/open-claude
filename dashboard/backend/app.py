@@ -508,7 +508,6 @@ PUBLIC_PATHS = {
     "/api/auth/needs-setup",
     "/api/auth/setup",
     "/api/health",
-    "/api/health/deep",
     "/api/config/workspace-status",
     "/api/version",
     "/api/version/check",
