@@ -214,28 +214,41 @@ def _initialize_remote_brain_repo(
 
 
 def _decrypt_token(config: BrainRepoConfig) -> str:
-    """Decrypt the stored GitHub PAT. Returns empty string if not available."""
+    """Decrypt the stored GitHub PAT.
+
+    Returns empty string when decryption is not possible — the caller is
+    expected to treat an empty token as a hard failure (every current caller
+    does ``if not token: abort(...)``).
+
+    SECURITY: previous versions fell back to ``blob.decode("utf-8")`` when
+    cryptography was unavailable, which returned the stored blob verbatim as
+    if it were the plaintext token. Combined with the matching encrypt-side
+    fallback, that meant a failed bootstrap silently downgraded the whole
+    feature to plaintext-at-rest without the user noticing. Now every failure
+    path logs at ERROR/CRITICAL and returns the empty string — so the next
+    sync/restore surfaces ``Could not decrypt stored token`` to the user.
+    """
     if not config or not config.github_token_encrypted:
         return ""
     master_key = _get_master_key()
     if master_key is None:
-        # No master key available — fall back to treating the stored blob as
-        # raw token bytes (matches the encrypt-side fallback below).
-        log.warning("BRAIN_REPO_MASTER_KEY missing; decrypting as raw bytes")
-        try:
-            return config.github_token_encrypted.decode("utf-8")
-        except Exception:
-            return ""
+        log.error(
+            "_decrypt_token: BRAIN_REPO_MASTER_KEY missing — cannot decrypt stored token "
+            "(caller will get empty string and should abort)",
+        )
+        return ""
     try:
         from brain_repo.github_oauth import decrypt_token
+    except ImportError as exc:
+        log.error("_decrypt_token: cryptography module unavailable (%s)", exc)
+        return ""
+    try:
         return decrypt_token(config.github_token_encrypted, master_key)
-    except ImportError:
-        # Fallback: attempt raw decode (for testing without full module)
-        try:
-            return config.github_token_encrypted.decode("utf-8")
-        except Exception:
-            return ""
-    except Exception:
+    except Exception as exc:
+        log.error(
+            "_decrypt_token: Fernet decryption failed (%s) — key mismatch or corrupted blob",
+            exc,
+        )
         return ""
 
 
@@ -386,21 +399,45 @@ def connect():
         repo_owner = repo_info.get("owner", {}).get("login", "")
         repo_name = repo_info.get("name", "")
 
-    # Encrypt and store token
+    # Encrypt and store token.
+    #
+    # SECURITY: fail loud if crypto isn't available. The previous version fell
+    # through to ``encrypted = token.encode("utf-8")`` with only a log.warning
+    # — which in production silently stored PATs as plaintext (exact vector
+    # flagged in the PR review). Nobody reads warning logs in prod, and the
+    # app.py bootstrap that auto-generates the master key can fail silently
+    # in several plausible scenarios (read-only filesystem, missing
+    # cryptography module, empty env var override, gunicorn worker race).
+    # The right answer is to refuse the write and surface the failure to the
+    # user, who will then escalate to the admin.
     master_key = _get_master_key()
     if master_key is None:
-        # No master key configured — fall back to storing raw bytes and warn.
-        # The decrypt side mirrors this behaviour.
-        log.warning("BRAIN_REPO_MASTER_KEY missing; storing token as raw bytes")
-        encrypted = token.encode("utf-8")
-    else:
-        try:
-            from brain_repo.github_oauth import PATAuthProvider
-            provider = PATAuthProvider(token, master_key)
-            encrypted = provider.encrypt_token()
-        except ImportError:
-            # Fallback: store token bytes directly (only for dev without module)
-            encrypted = token.encode("utf-8")
+        log.critical(
+            "connect: BRAIN_REPO_MASTER_KEY missing — refusing to store PAT without encryption",
+        )
+        return jsonify({
+            "error": (
+                "Token encryption unavailable: BRAIN_REPO_MASTER_KEY is not configured. "
+                "Check server .env and startup logs; do not retry until the admin restores the key."
+            ),
+            "code": "CRYPTO_UNAVAILABLE",
+        }), 500
+    try:
+        from brain_repo.github_oauth import PATAuthProvider
+    except ImportError as _exc:
+        log.critical("connect: cryptography module unavailable (%s) — refusing to store PAT", _exc)
+        return jsonify({
+            "error": "Token encryption module unavailable. Check server dependencies.",
+            "code": "CRYPTO_UNAVAILABLE",
+        }), 500
+    try:
+        encrypted = PATAuthProvider(token, master_key).encrypt_token()
+    except Exception as _exc:
+        log.critical("connect: token encryption failed (%s)", _exc)
+        return jsonify({
+            "error": f"Token encryption failed: {_exc}",
+            "code": "CRYPTO_UNAVAILABLE",
+        }), 500
 
     config = _get_config()
     if config is None:
