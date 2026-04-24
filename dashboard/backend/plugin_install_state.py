@@ -123,7 +123,7 @@ def rollback_from_state(slug: str, state: dict, db_path: Path) -> list[str]:
     Returns list of rollback log messages.
     """
     import shutil
-    from dashboard.backend.plugin_file_ops import remove_rules_index
+    from plugin_file_ops import remove_rules_index
 
     log: list[str] = []
     completed = state.get("completed_steps", [])
@@ -157,7 +157,7 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
 
     if step_name == "rules_index_marker":
         try:
-            from dashboard.backend.plugin_file_ops import remove_rules_index
+            from plugin_file_ops import remove_rules_index
             remove_rules_index(slug)
             log.append(f"Rolled back: rules_index_marker for '{slug}'")
         except Exception as exc:
@@ -168,7 +168,7 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
         if uninstall_sql_path.exists() and db_path.exists():
             try:
                 conn = sqlite3.connect(str(db_path))
-                from dashboard.backend.plugin_migrator import run_sql_transactional
+                from plugin_migrator import run_sql_transactional
                 run_sql_transactional(conn, uninstall_sql_path.read_text(encoding="utf-8"))
                 conn.close()
                 log.append("Rolled back: sql_migrations")

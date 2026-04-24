@@ -113,7 +113,7 @@ def preview_plugin():
     if not source_url:
         return jsonify({"error": "source_url required"}), 400
 
-    from dashboard.backend.plugin_loader import PluginInstaller
+    from plugin_loader import PluginInstaller
 
     installer = PluginInstaller()
     try:
@@ -139,17 +139,17 @@ def install_plugin():
     if not source_url:
         return jsonify({"error": "source_url required"}), 400
 
-    from dashboard.backend.plugin_loader import PluginInstaller, ConflictError, VersionError
-    from dashboard.backend.plugin_file_ops import (
+    from plugin_loader import PluginInstaller, ConflictError, VersionError
+    from plugin_file_ops import (
         copy_with_manifest, append_rules_index, write_manifest,
     )
-    from dashboard.backend.plugin_migrator import install_plugin_sql, MigrationError
-    from dashboard.backend.plugin_hook_runner import run_lifecycle_hook, LifecycleHookError
-    from dashboard.backend.plugin_install_state import (
+    from plugin_migrator import install_plugin_sql, MigrationError
+    from plugin_hook_runner import run_lifecycle_hook, LifecycleHookError
+    from plugin_install_state import (
         InstallLock, save_state, finalize_install, rollback_from_state
     )
-    from dashboard.backend.heartbeat_schema import load_heartbeats_yaml
-    from dashboard.backend.plugin_loader import _reload_scheduler
+    from heartbeat_schema import load_heartbeats_yaml
+    from plugin_loader import _reload_scheduler
 
     installer = PluginInstaller()
 
@@ -187,12 +187,12 @@ def install_plugin():
         # --- Step: copy plugin source to plugins/{slug}/ ---
         plugin_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy entire source into plugin dir
-        source_path = Path(source_url)
+        # Copy entire source into plugin dir (resolver handles github:/https:/local)
+        source_path = installer.resolve_source(source_url)
         if source_path.is_dir():
             shutil.copytree(source_path, plugin_dir, dirs_exist_ok=True)
         else:
-            return jsonify({"error": f"source_url must be a local directory: {source_url}"}), 400
+            return jsonify({"error": f"resolved source is not a directory: {source_path}"}), 400
 
         state["completed_steps"].append({"step": "copy_source"})
         save_state(slug, state)
@@ -433,10 +433,10 @@ def _sha256(path: Path) -> str:
 @bp.route("/api/plugins/<slug>", methods=["DELETE"])
 @login_required
 def uninstall_plugin(slug: str):
-    from dashboard.backend.plugin_file_ops import remove_rules_index, reverse_remove_from_manifest
-    from dashboard.backend.plugin_migrator import uninstall_plugin_sql
-    from dashboard.backend.plugin_hook_runner import run_lifecycle_hook
-    from dashboard.backend.plugin_loader import _reload_scheduler
+    from plugin_file_ops import remove_rules_index, reverse_remove_from_manifest
+    from plugin_migrator import uninstall_plugin_sql
+    from plugin_hook_runner import run_lifecycle_hook
+    from plugin_loader import _reload_scheduler
 
     plugin_dir = PLUGINS_DIR / slug
     if not plugin_dir.exists():
@@ -644,7 +644,7 @@ def regenerate_markers():
     Builds the full index content in memory, then writes it in a single
     os.replace() call — no unlink() + loop pattern that creates a TOCTOU window.
     """
-    from dashboard.backend.plugin_file_ops import _atomic_write, _build_block, RULES_INDEX_PATH
+    from plugin_file_ops import _atomic_write, _build_block, RULES_INDEX_PATH
 
     conn = _get_db()
     rebuilt: list[str] = []
@@ -821,11 +821,11 @@ def update_plugin(slug: str):
     AC10: If install.sql SHA differs between installed and candidate → 409.
     AC11: If install.sql SHA is identical → overwrite knowledge layer files and bump version.
     """
-    from dashboard.backend.plugin_schema import load_plugin_manifest
-    from dashboard.backend.plugin_file_ops import (
+    from plugin_schema import load_plugin_manifest
+    from plugin_file_ops import (
         copy_with_manifest, append_rules_index, write_manifest, _sha256_file,
     )
-    from dashboard.backend.plugin_loader import _parse_version, _reload_scheduler
+    from plugin_loader import _parse_version, _reload_scheduler
 
     conn = _get_db()
     try:
@@ -978,7 +978,7 @@ def update_plugin(slug: str):
 @login_required
 def marketplace():
     try:
-        from dashboard.backend.plugin_registry import fetch_registry
+        from plugin_registry import fetch_registry
         result = fetch_registry()
         return jsonify(result)
     except ImportError:

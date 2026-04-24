@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
-from dashboard.backend.plugin_schema import PluginManifest
+from plugin_schema import PluginManifest
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ class PluginInstaller:
             FileNotFoundError: No plugin.yaml.
             ValidationError: Invalid manifest.
         """
-        from dashboard.backend.plugin_schema import load_plugin_manifest
+        from plugin_schema import load_plugin_manifest
         return load_plugin_manifest(Path(plugin_dir))
 
     def check_conflicts(self, manifest: PluginManifest) -> None:
@@ -248,12 +248,50 @@ class PluginInstaller:
                 f"but installed version is {current}."
             )
 
+    @staticmethod
+    def resolve_source(source_url: str) -> Path:
+        """Resolve a source_url to a local directory containing plugin.yaml.
+
+        Supported forms:
+          - local path: `/abs/path` or `./rel/path`
+          - GitHub shorthand: `github:owner/repo` or `github:owner/repo@ref`
+          - HTTPS tarball: `https://.../archive.tar.gz`
+
+        Returns:
+            Path to a directory containing plugin.yaml.
+        """
+        s = str(source_url).strip()
+
+        if s.startswith("github:"):
+            spec = s[len("github:"):]
+            if "@" in spec:
+                repo_part, ref = spec.split("@", 1)
+            else:
+                repo_part, ref = spec, "main"
+            if "/" not in repo_part:
+                raise ValueError(f"Invalid github shorthand: {source_url}")
+            owner, repo = repo_part.split("/", 1)
+            tar_url = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{ref}"
+            staging_slug = f"{owner}-{repo}-{ref}".replace("/", "-")
+            try:
+                return PluginInstaller.fetch_from_tarball(tar_url, staging_slug)
+            except RuntimeError:
+                # fallback: try as tag ref
+                tar_url_tag = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/tags/{ref}"
+                return PluginInstaller.fetch_from_tarball(tar_url_tag, staging_slug)
+
+        if s.startswith("https://"):
+            # Use a safe staging slug derived from the URL
+            staging_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", s)[-80:]
+            return PluginInstaller.fetch_from_tarball(s, staging_slug)
+
+        return Path(s)
+
     def preview(self, plugin_dir: str | Path) -> Dict[str, Any]:
         """Validate and preview a plugin install without writing anything.
 
         Args:
-            plugin_dir: Path to a local directory containing plugin.yaml,
-                        or a string path.
+            plugin_dir: Local directory, `github:owner/repo[@ref]`, or HTTPS tarball.
 
         Returns:
             Dict with keys:
@@ -262,13 +300,21 @@ class PluginInstaller:
                 conflicts: list of conflict error strings (non-empty means blocked)
                 version_ok: bool
         """
-        plugin_dir = Path(plugin_dir)
         result: Dict[str, Any] = {
             "manifest": None,
             "warnings": [],
             "conflicts": [],
             "version_ok": True,
         }
+
+        try:
+            plugin_dir = self.resolve_source(str(plugin_dir) if not isinstance(plugin_dir, Path) else str(plugin_dir))
+        except ValueError as exc:
+            result["conflicts"].append(str(exc))
+            return result
+        except RuntimeError as exc:
+            result["conflicts"].append(f"Failed to fetch plugin source: {exc}")
+            return result
 
         # Validate manifest
         try:
@@ -350,6 +396,16 @@ class PluginInstaller:
                 tf.extractall(staging_dir, filter="data")  # type: ignore[call-arg]
 
             logger.info("Extracted plugin archive to %s", staging_dir)
+
+            # GitHub tarballs wrap content in a single root dir like `{owner}-{repo}-{sha}/`.
+            # If plugin.yaml is not at the top level but there's a single subdir containing it,
+            # descend into that subdir.
+            if not (staging_dir / "plugin.yaml").exists():
+                entries = [p for p in staging_dir.iterdir() if not p.name.startswith(".")]
+                if len(entries) == 1 and entries[0].is_dir() and (entries[0] / "plugin.yaml").exists():
+                    logger.info("Descending into single-root dir %s", entries[0].name)
+                    return entries[0]
+
             return staging_dir
 
         except Exception as exc:

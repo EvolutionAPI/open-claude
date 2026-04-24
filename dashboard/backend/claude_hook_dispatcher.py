@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Central dispatcher for Claude Code hooks.
 
-Invoked as: python3 -m dashboard.backend.claude_hook_dispatcher {event_name}
+Invoked as: python3 "$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py" {event_name}
 Reads JSON payload from stdin. Always exits 0 (never blocks Claude Code).
 
 Vault conditions implemented:

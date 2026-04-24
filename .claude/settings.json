@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m dashboard.backend.claude_hook_dispatcher PreToolUse",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" PreToolUse",
             "_evonexus_managed": true
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m dashboard.backend.claude_hook_dispatcher Stop",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" Stop",
             "_evonexus_managed": true
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m dashboard.backend.claude_hook_dispatcher PostToolUse",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" PostToolUse",
             "_evonexus_managed": true
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m dashboard.backend.claude_hook_dispatcher SubagentStop",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" SubagentStop",
             "_evonexus_managed": true
           }
         ]

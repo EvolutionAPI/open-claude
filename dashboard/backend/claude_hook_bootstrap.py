@@ -22,8 +22,14 @@ SETTINGS_PATH = WORKSPACE / ".claude" / "settings.json"
 # C3 (Vault F3): must stay in sync with claude_hook_dispatcher.V1A_EVENTS
 V1A_EVENTS: list[str] = ["PreToolUse", "PostToolUse", "Stop", "SubagentStop"]
 
-# Command template for the dispatcher (OQ-21: python3 -m works when run from project root)
-DISPATCHER_CMD_TEMPLATE = "python3 -m dashboard.backend.claude_hook_dispatcher {event}"
+# Command template for the dispatcher.
+# Uses $CLAUDE_PROJECT_DIR (exported by Claude Code) so the hook works regardless
+# of the cwd from which Claude was launched. The python3 -m form requires the
+# workspace root on sys.path, which is not guaranteed when a user runs Claude
+# from a subdirectory.
+DISPATCHER_CMD_TEMPLATE = (
+    'python3 "$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py" {event}'
+)
 
 # Number of settings.json backups to retain (F11 Vault R3)
 _BACKUP_COUNT = 5
