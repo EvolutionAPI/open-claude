@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 import type { Plugin } from '../components/PluginCard'
+import UpdatePreviewModal from '../components/UpdatePreviewModal'
 
 interface HealthResult {
   slug: string
@@ -134,9 +135,9 @@ export default function PluginDetail() {
   const [loading, setLoading] = useState(true)
   const [healthLoading, setHealthLoading] = useState(false)
   const [removing, setRemoving] = useState(false)
-  const [updating, setUpdating] = useState(false)
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   // Wave 1.1 — Capabilities section state
   const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([])
@@ -174,32 +175,6 @@ export default function PluginDetail() {
       setHealth(null)
     } finally {
       setHealthLoading(false)
-    }
-  }
-
-  async function handleUpdate() {
-    if (!slug) return
-    setUpdating(true)
-    setUpdateMsg(null)
-    try {
-      const result = await api.post(`/plugins/${slug}/update`, {}) as {
-        slug?: string; from?: string; to?: string; error?: string; message?: string
-      }
-      if (result.error) {
-        setUpdateMsg(`${result.error}: ${result.message ?? ''}`)
-      } else if (result.from && result.to) {
-        setUpdateMsg(`Updated from v${result.from} to v${result.to}`)
-        // refresh plugin data
-        const plugins = await api.get('/plugins') as Plugin[]
-        const found = plugins.find((p) => p.slug === slug)
-        if (found) setPlugin(found)
-      } else {
-        setUpdateMsg('Update complete')
-      }
-    } catch (e: unknown) {
-      setUpdateMsg(e instanceof Error ? e.message : 'update failed')
-    } finally {
-      setUpdating(false)
     }
   }
 
@@ -443,16 +418,16 @@ export default function PluginDetail() {
             {plugin.enabled === 1 ? t('common.enabled') : t('common.disabled')}
           </button>
           <button
-            onClick={handleUpdate}
-            disabled={updating || removing}
+            onClick={() => setPreviewOpen(true)}
+            disabled={removing}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#00FFA7] border border-[#00FFA7]/20 rounded-lg hover:bg-[#00FFA7]/10 disabled:opacity-50 transition-colors"
           >
-            {updating ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            <Download size={12} />
             Atualizar
           </button>
           <button
             onClick={handleUninstall}
-            disabled={removing || updating}
+            disabled={removing}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/10 disabled:opacity-50 transition-colors"
           >
             {removing ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
@@ -602,6 +577,29 @@ export default function PluginDetail() {
         )}
       </div>
 
+      {/* Update preview modal — AC1.2.1, AC1.2.2 */}
+      {previewOpen && plugin && (
+        <UpdatePreviewModal
+          slug={plugin.slug}
+          sourceUrl={plugin.source_url ?? ''}
+          onClose={() => setPreviewOpen(false)}
+          onApplied={async () => {
+            setUpdateMsg(t('plugins.updatePreviewApplied', {
+              from: plugin.version,
+              to: '…',
+            }))
+            const plugins = await api.get('/plugins') as Plugin[]
+            const found = plugins.find((p) => p.slug === slug)
+            if (found) {
+              setPlugin(found)
+              setUpdateMsg(t('plugins.updatePreviewApplied', {
+                from: plugin.version,
+                to: found.version,
+              }))
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

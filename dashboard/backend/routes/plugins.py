@@ -13,6 +13,8 @@ import logging
 import os
 import shutil
 import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1432,6 +1434,329 @@ def serve_widget(slug: str, subpath: str):
         "img-src 'self' data:"
     )
     return resp
+
+
+# ---------------------------------------------------------------------------
+# GET /api/plugins/<slug>/update/preview — read-only diff before applying update
+#
+# AC1.2.1: returns added/removed/modified breakdown
+# AC1.2.3: sql_migrations_blocked + breaking_changes when install.sql SHA differs
+# AC1.2.4: pure read-only — no DB writes, no file writes
+# ---------------------------------------------------------------------------
+
+# Module-level preview cache: key=(slug, source_url), value=(fetched_at_float, result_dict)
+_PREVIEW_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_PREVIEW_CACHE_LOCK = threading.Lock()
+_PREVIEW_CACHE_TTL = 300  # seconds
+
+
+def _diff_capabilities(
+    installed_manifest: dict,
+    new_manifest: dict,
+) -> tuple[dict, dict, dict]:
+    """Compute added / removed / modified capability IDs across all capability types.
+
+    File-backed types (agents, skills, commands, rules): detect 'modified' via
+    manifest.files[path].sha256 comparison.
+
+    Entry-backed types (widgets, readonly_data, claude_hooks, heartbeats,
+    triggers, routines): detect 'modified' via deep-equal on the manifest entry dict.
+
+    Returns three dicts keyed by capability type, each value is a list of IDs.
+    """
+    def _extract_ids_and_entries(manifest: dict) -> dict[str, dict[str, Any]]:
+        """Return {cap_type: {id: entry_or_sha}} for all known types."""
+        result: dict[str, dict[str, Any]] = {}
+
+        # File-backed: IDs are filenames (without path prefix) found under each folder.
+        # SHA is pulled from manifest["files"][path]["sha256"].
+        files = manifest.get("files") or {}
+        for cap_type, prefix in (
+            ("agents", ".claude/agents/"),
+            ("skills", ".claude/skills/"),
+            ("commands", ".claude/commands/"),
+            ("rules", ".claude/rules/"),
+        ):
+            bucket: dict[str, Any] = {}
+            for path, info in files.items():
+                if path.startswith(prefix):
+                    fname = path[len(prefix):]
+                    sha = (info or {}).get("sha256", "") if isinstance(info, dict) else ""
+                    bucket[fname] = sha
+            if bucket:
+                result[cap_type] = bucket
+
+        # Widget IDs from ui_entry_points.widgets
+        widgets_list = (manifest.get("ui_entry_points") or {}).get("widgets") or []
+        if widgets_list:
+            result["widgets"] = {(w.get("id") or ""): w for w in widgets_list if w.get("id")}
+
+        # readonly_data
+        rd_list = manifest.get("readonly_data") or []
+        if rd_list:
+            result["readonly_data"] = {(q.get("id") or ""): q for q in rd_list if q.get("id")}
+
+        # claude_hooks — use handler_path as ID
+        hooks_list = manifest.get("claude_hooks") or []
+        if hooks_list:
+            result["claude_hooks"] = {(h.get("handler_path") or ""): h for h in hooks_list if h.get("handler_path")}
+
+        # heartbeats — use id field
+        hb_list = manifest.get("heartbeats") or []
+        if hb_list:
+            result["heartbeats"] = {(h.get("id") or ""): h for h in hb_list if h.get("id")}
+
+        # triggers — use id or name field
+        tr_list = manifest.get("triggers") or []
+        if tr_list:
+            result["triggers"] = {(tr.get("id") or tr.get("name") or ""): tr for tr in tr_list if (tr.get("id") or tr.get("name"))}
+
+        # routines — use name field
+        rt_list = manifest.get("routines") or []
+        if rt_list:
+            result["routines"] = {(r.get("name") or ""): r for r in rt_list if r.get("name")}
+
+        return result
+
+    installed = _extract_ids_and_entries(installed_manifest)
+    candidate = _extract_ids_and_entries(new_manifest)
+
+    all_types = set(installed) | set(candidate)
+    added: dict[str, list] = {}
+    removed: dict[str, list] = {}
+    modified: dict[str, list] = {}
+
+    for cap_type in sorted(all_types):
+        inst_bucket = installed.get(cap_type, {})
+        cand_bucket = candidate.get(cap_type, {})
+
+        inst_ids = set(inst_bucket)
+        cand_ids = set(cand_bucket)
+
+        added_ids = sorted(cand_ids - inst_ids)
+        removed_ids = sorted(inst_ids - cand_ids)
+        common_ids = inst_ids & cand_ids
+        modified_ids = sorted(
+            id_ for id_ in common_ids
+            if inst_bucket[id_] != cand_bucket[id_]
+        )
+
+        if added_ids:
+            added[cap_type] = added_ids
+        if removed_ids:
+            removed[cap_type] = removed_ids
+        if modified_ids:
+            modified[cap_type] = modified_ids
+
+    return added, removed, modified
+
+
+def _compute_preview(slug: str, source_url: str) -> dict:
+    """Fetch candidate manifest and compute diff against installed manifest.
+
+    Pure read-only: no DB writes, no file writes to plugins/{slug}/.
+    Raises RuntimeError or ValueError (same error codes as update endpoint).
+
+    tarball_sha7 derivation: SHA256 of sorted manifest.files SHAs concatenated.
+    If manifest.files is empty, falls back to SHA256 of serialized manifest JSON.
+    First 7 chars of the hex digest are returned (deterministic, no re-download needed).
+    """
+    from plugin_schema import load_plugin_manifest
+    from plugin_loader import PluginInstaller, _parse_version
+
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT slug, source_url, version, manifest_json, capabilities_disabled "
+            "FROM plugins_installed WHERE slug = ?",
+            (slug,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Plugin '{slug}' is not installed")
+
+        installed_version = row["version"]
+        try:
+            installed_manifest_dict = json.loads(row["manifest_json"] or "{}")
+        except Exception:
+            installed_manifest_dict = {}
+
+        # Installed SQL SHA from stored manifest
+        installed_sql_sha: str | None = (
+            installed_manifest_dict.get("files", {}).get("migrations/install.sql", {}).get("sha256")
+            if isinstance(installed_manifest_dict.get("files"), dict)
+            else None
+        )
+        # Fallback: compute from disk
+        if installed_sql_sha is None:
+            installed_sql_path = PLUGINS_DIR / slug / "migrations" / "install.sql"
+            if installed_sql_path.exists():
+                from plugin_file_ops import _sha256_file
+                installed_sql_sha = _sha256_file(installed_sql_path)
+
+        # capabilities_disabled for breaking-change heuristic
+        try:
+            caps_disabled: dict = json.loads(row["capabilities_disabled"] or "{}")
+        except Exception:
+            caps_disabled = {}
+    finally:
+        conn.close()
+
+    # Resolve candidate source (may hit network / tmp — outside the lock)
+    try:
+        new_plugin_dir = PluginInstaller.resolve_source(source_url)
+    except ValueError as exc:
+        raise ValueError(f"invalid_source: {exc}") from exc
+    except RuntimeError as exc:
+        raise RuntimeError(f"fetch_failed: {exc}") from exc
+
+    if not new_plugin_dir.is_dir():
+        raise RuntimeError(f"fetch_failed: resolved source is not a directory: {new_plugin_dir}")
+
+    try:
+        new_manifest = load_plugin_manifest(new_plugin_dir)
+    except Exception as exc:
+        raise ValueError(f"schema_invalid: {exc}") from exc
+
+    new_version = new_manifest.version
+    new_manifest_dict = new_manifest.model_dump()
+
+    # not_newer — return sentinel dict (caller translates to 200 up_to_date)
+    if _parse_version(new_version) <= _parse_version(installed_version):
+        return {
+            "_not_newer": True,
+            "from_version": installed_version,
+            "to_version": new_version,
+        }
+
+    # New SQL SHA
+    new_sql_path = new_plugin_dir / "migrations" / "install.sql"
+    new_sql_sha: str | None = None
+    if new_sql_path.exists():
+        from plugin_file_ops import _sha256_file
+        new_sql_sha = _sha256_file(new_sql_path)
+
+    sql_migrations_blocked = bool(new_sql_sha != installed_sql_sha and (new_sql_sha or installed_sql_sha))
+
+    # Diff capabilities
+    added, removed, modified = _diff_capabilities(installed_manifest_dict, new_manifest_dict)
+
+    # Breaking changes list
+    breaking_changes: list[str] = []
+    if sql_migrations_blocked:
+        breaking_changes.append(
+            "install.sql SHA changed — uninstall and reinstall required (v1a limitation)"
+        )
+
+    # Capability-rename heuristic: ID in capabilities_disabled+removed set
+    # AND a new ID of same type appears in added → state-loss warning
+    all_removed_ids_by_type = {cap_type: set(ids) for cap_type, ids in removed.items()}
+    all_added_ids_by_type = {cap_type: set(ids) for cap_type, ids in added.items()}
+    for cap_type, disabled_ids in caps_disabled.items():
+        removed_in_type = all_removed_ids_by_type.get(cap_type, set())
+        added_in_type = all_added_ids_by_type.get(cap_type, set())
+        for old_id in disabled_ids:
+            if old_id in removed_in_type and added_in_type:
+                breaking_changes.append(
+                    f"capability '{old_id}' ({cap_type}) was disabled by you but is removed "
+                    "in the new version — disabled state will be lost"
+                )
+
+    # tarball_sha7: deterministic from manifest.files SHAs (sorted keys)
+    files_dict = new_manifest_dict.get("files") or {}
+    if files_dict:
+        sorted_shas = "".join(
+            (files_dict[k] or {}).get("sha256", "") if isinstance(files_dict[k], dict) else ""
+            for k in sorted(files_dict)
+        )
+        tarball_sha7 = hashlib.sha256(sorted_shas.encode()).hexdigest()[:7]
+    else:
+        tarball_sha7 = hashlib.sha256(
+            json.dumps(new_manifest_dict, sort_keys=True).encode()
+        ).hexdigest()[:7]
+
+    return {
+        "from_version": installed_version,
+        "to_version": new_version,
+        "added": added,
+        "removed": removed,
+        "modified": modified,
+        "sql_migrations_blocked": sql_migrations_blocked,
+        "breaking_changes": breaking_changes,
+        "tarball_sha7": tarball_sha7,
+    }
+
+
+@bp.route("/api/plugins/<slug>/update/preview", methods=["GET"])
+@login_required
+def preview_plugin_update(slug: str):
+    """Read-only diff preview before applying an update.
+
+    Query param: ?source=<url>  (defaults to installed source_url when omitted)
+    Returns 200 with diff JSON (or up_to_date: true).
+    Never writes to disk or DB.
+    """
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT source_url FROM plugins_installed WHERE slug = ?", (slug,)
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "not_found"}), 404
+        installed_source = row["source_url"] or ""
+    finally:
+        conn.close()
+
+    source_url = request.args.get("source", installed_source).strip()
+    if not source_url:
+        return jsonify({"error": "invalid_source", "message": "No source URL provided and none stored"}), 400
+
+    cache_key = (slug, source_url)
+
+    # Cache read — lock only around dict access, not network I/O
+    with _PREVIEW_CACHE_LOCK:
+        entry = _PREVIEW_CACHE.get(cache_key)
+        if entry is not None:
+            fetched_at, cached_result = entry
+            if time.monotonic() - fetched_at <= _PREVIEW_CACHE_TTL:
+                return jsonify(_build_preview_response(cached_result))
+
+    # Cache miss — compute outside lock
+    try:
+        result = _compute_preview(slug, source_url)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("invalid_source:"):
+            return jsonify({"error": "invalid_source", "message": msg[len("invalid_source: "):]}), 400
+        if msg.startswith("schema_invalid:"):
+            return jsonify({"error": "schema_invalid", "message": msg[len("schema_invalid: "):]}), 400
+        return jsonify({"error": "invalid_source", "message": msg}), 400
+    except RuntimeError as exc:
+        msg = str(exc)
+        return jsonify({"error": "fetch_failed", "message": msg}), 500
+    except Exception as exc:
+        logger.error("Preview failed for '%s': %s", slug, exc)
+        return jsonify({"error": "preview_failed", "message": str(exc)}), 500
+
+    # Write to cache — lock only around dict write
+    with _PREVIEW_CACHE_LOCK:
+        _PREVIEW_CACHE[cache_key] = (time.monotonic(), result)
+
+    return jsonify(_build_preview_response(result))
+
+
+def _build_preview_response(result: dict) -> dict:
+    """Convert internal _compute_preview result to HTTP response shape."""
+    if result.get("_not_newer"):
+        return {
+            "from_version": result["from_version"],
+            "to_version": result["to_version"],
+            "up_to_date": True,
+            "added": {},
+            "removed": {},
+            "modified": {},
+            "breaking_changes": [],
+        }
+    return {k: v for k, v in result.items() if not k.startswith("_")}
 
 
 # ---------------------------------------------------------------------------
