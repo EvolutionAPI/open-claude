@@ -42,18 +42,36 @@ const isPrivateHost =
 
 const isLocal = import.meta.env.DEV || isPrivateHost
 
-function deriveWsBase(httpBase: string): string {
-  return httpBase.replace(/^http/i, (m) => (m.toLowerCase() === 'https' ? 'wss' : 'ws'))
+// Resolve an override URL into the (httpBase, wsBase) pair the rest of the
+// component expects. Accepts either http(s):// or ws(s):// — both schemes
+// are mapped to their counterpart so users can paste whichever they have
+// on hand. Invalid input falls back to the heuristic.
+function resolveOverride(raw: string): { http: string; ws: string } | null {
+  try {
+    const u = new URL(raw)
+    const isSecure = u.protocol === 'https:' || u.protocol === 'wss:'
+    const httpProto = isSecure ? 'https:' : 'http:'
+    const wsProto = isSecure ? 'wss:' : 'ws:'
+    const path = u.pathname.replace(/\/+$/, '') + u.search
+    return {
+      http: `${httpProto}//${u.host}${path}`,
+      ws: `${wsProto}//${u.host}${path}`,
+    }
+  } catch {
+    return null
+  }
 }
 
-const CC_WEB_HTTP = terminalOverride
-  ? terminalOverride
+const override = terminalOverride ? resolveOverride(terminalOverride) : null
+
+const CC_WEB_HTTP = override
+  ? override.http
   : isLocal
     ? `http://${hostname}:32352`
     : `${window.location.origin}/terminal`
 
-const CC_WEB_WS = terminalOverride
-  ? deriveWsBase(terminalOverride)
+const CC_WEB_WS = override
+  ? override.ws
   : isLocal
     ? `ws://${hostname}:32352`
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/terminal`
