@@ -617,6 +617,8 @@ from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
+from routes.plugins import bp as plugins_bp
+
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
 app.register_blueprint(agents_bp)
@@ -647,6 +649,7 @@ app.register_blueprint(knowledge_public_bp)
 app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
+app.register_blueprint(plugins_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp
