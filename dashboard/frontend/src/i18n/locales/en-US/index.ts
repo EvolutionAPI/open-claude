@@ -665,6 +665,15 @@ const translations = {
         reconnect: 'Reconnect',
         cryptoBroken: 'encryption broken',
         cryptoBrokenDesc: 'Server cannot encrypt/decrypt tokens right now — stored credentials are unreachable. Contact the admin to restore BRAIN_REPO_MASTER_KEY, then reconnect.',
+        // Async-sync states (v0.32+) — the pipeline runs in a background thread so
+        // the UI shows intermediate states instead of blocking on the request.
+        syncQueued: 'Brain Repo sync queued ({{tag}})',
+        syncInProgress: 'Syncing…',
+        syncAlreadyRunning: 'A Brain Repo operation is already running. Please wait.',
+        cancel: 'Cancel',
+        cancelling: 'Cancelling…',
+        cancelRequested: 'Cancel requested — waiting for the current step to finish.',
+        cancelFailed: 'Could not request cancellation.',
       },
     },
 
@@ -847,7 +856,12 @@ const translations = {
         btn: 'Sync now',
         running: 'Syncing...',
         success: 'Sync triggered successfully',
+        queued: 'Sync queued — running in the background.',
         failed: 'Sync failed',
+        cancel: 'Cancel',
+        cancelling: 'Cancelling…',
+        cancelRequested: 'Cancel requested — waiting for the current step to finish.',
+        cancelFailed: 'Could not request cancellation.',
       },
       milestone: {
         title: 'Create milestone',
@@ -856,6 +870,7 @@ const translations = {
         btn: 'Tag',
         running: 'Tagging...',
         success: 'Milestone created: {{tag}}',
+        queued: 'Milestone queued: {{tag}}',
         failed: 'Failed to create milestone',
       },
       disconnect: {

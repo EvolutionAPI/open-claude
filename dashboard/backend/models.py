@@ -1085,6 +1085,15 @@ class BrainRepoConfig(db.Model):
     sync_enabled = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
     last_error = db.Column(db.Text, nullable=True)
     pending_count = db.Column(db.Integer, default=0, nullable=False, server_default='0')
+    # Async sync job state — set by routes/brain_repo when an operation is enqueued,
+    # cleared by brain_repo.job_runner when it finishes. sync_job_kind holds a short
+    # verb ("sync", "milestone", "bootstrap") so the UI can show which operation is
+    # running. cancel_requested is a cooperative flag the pipeline checks between
+    # steps (no signal-based kill — git operations aren't safe to interrupt arbitrarily).
+    sync_in_progress = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    sync_started_at = db.Column(db.DateTime, nullable=True)
+    sync_job_kind = db.Column(db.String(32), nullable=True)
+    cancel_requested = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -1097,10 +1106,15 @@ class BrainRepoConfig(db.Model):
             "repo_url": self.repo_url,
             "repo_owner": self.repo_owner,
             "repo_name": self.repo_name,
+            "local_path": self.local_path,
             "last_sync": self.last_sync.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.last_sync else None,
             "sync_enabled": self.sync_enabled,
             "last_error": self.last_error,
             "pending_count": self.pending_count,
+            "sync_in_progress": bool(self.sync_in_progress),
+            "sync_job_kind": self.sync_job_kind,
+            "sync_started_at": self.sync_started_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.sync_started_at else None,
+            "cancel_requested": bool(self.cancel_requested),
             "connected": self.github_token_encrypted is not None,
         }
 

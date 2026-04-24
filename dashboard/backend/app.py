@@ -461,6 +461,21 @@ with app.app_context():
             CREATE INDEX IF NOT EXISTS idx_brain_repo_user ON brain_repo_configs(user_id);
         """)
         _conn.commit()
+    # Async-sync job columns (v0.32+). Added after the table existed without them,
+    # so every column is an idempotent ALTER TABLE ADD.
+    _brain_cols = {row[1] for row in _cur.execute("PRAGMA table_info(brain_repo_configs)").fetchall()}
+    if "sync_in_progress" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN sync_in_progress INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "sync_started_at" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN sync_started_at TIMESTAMP")
+        _conn.commit()
+    if "sync_job_kind" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN sync_job_kind TEXT")
+        _conn.commit()
+    if "cancel_requested" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
     # --- End Brain Repo migration ---
 
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
