@@ -206,7 +206,13 @@ def start_brain_watcher(install_dir: Path, flask_app=None) -> "BrainRepoWatcher 
                 first (that's the step sync_force/tag_milestone also do).
                 Without it, the auto-sync commit finds nothing to commit
                 because the brain_repo_dir is frozen at bootstrap time.
+
+                Push result is persisted to BrainRepoConfig.last_error so
+                the UI (card in /backups + /settings/brain-repo) reflects
+                watcher failures without requiring the user to manually
+                trigger a sync.
                 """
+                from datetime import datetime as _dt, timezone as _tz
                 token = decrypt_token(_token_enc, _master_key)
                 # Lazy import to avoid circular: routes.brain_repo imports
                 # from here at module load.
@@ -216,7 +222,24 @@ def start_brain_watcher(install_dir: Path, flask_app=None) -> "BrainRepoWatcher 
                 except Exception as exc:
                     log.warning("watcher _sync_fn: workspace mirror failed: %s", exc)
                 git_ops.commit_all(brain_repo_dir, "auto: file watcher sync")
-                git_ops.push(brain_repo_dir, token, with_tags=True)
+                success, push_err = git_ops.push(brain_repo_dir, token, with_tags=True)
+
+                # Persist result so the UI surfaces watcher failures
+                try:
+                    from models import BrainRepoConfig, db  # type: ignore[import]
+                    with flask_app.app_context():
+                        cfg = BrainRepoConfig.query.filter_by(sync_enabled=True).first()
+                        if cfg is None:
+                            return
+                        if success:
+                            cfg.last_sync = _dt.now(_tz.utc)
+                            cfg.last_error = None
+                        else:
+                            log.error("watcher _sync_fn: git push failed: %s", push_err)
+                            cfg.last_error = f"auto-sync push failed: {push_err}"[:300]
+                        db.session.commit()
+                except Exception as exc:
+                    log.warning("watcher: could not persist sync result: %s", exc)
 
             watcher = BrainRepoWatcher(
                 install_dir=install_dir,
