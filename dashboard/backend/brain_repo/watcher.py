@@ -184,6 +184,17 @@ def start_brain_watcher(install_dir: Path, flask_app=None) -> "BrainRepoWatcher 
                 log.warning("start_brain_watcher: no encrypted token in config")
                 return None
 
+            # Crypto-readiness guard. Without a master key, decrypt_token will
+            # raise on every sync inside the debounce closure and the watcher
+            # will log the same error every 30s forever. Better to refuse to
+            # start and surface the configuration problem at boot.
+            if not master_key:
+                log.critical(
+                    "start_brain_watcher: BRAIN_REPO_MASTER_KEY missing — refusing "
+                    "to start watcher (stored tokens cannot be decrypted)",
+                )
+                return None
+
             # Capture config values for closure
             _token_enc = config.github_token_encrypted
             _master_key = master_key
