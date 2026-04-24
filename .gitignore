@@ -114,3 +114,7 @@ site/lib/
 mempalace.yaml
 entities.json
 .claude/worktrees/
+
+# ── Plugins (installed plugin directories are not committed) ──
+plugins/*/
+!plugins/.gitkeep
