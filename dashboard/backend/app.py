@@ -985,4 +985,8 @@ if __name__ == "__main__":
     task_thread = threading.Thread(target=_poll_scheduled_tasks, daemon=True, name="task-poller")
     task_thread.start()
 
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # Dev mode: EVONEXUS_DEV=1 enables Flask's auto-reloader so edits to
+    # dashboard/backend/*.py take effect without a manual restart. Disabled by
+    # default — production runs with a fixed process managed by systemd/docker.
+    dev_mode = os.getenv("EVONEXUS_DEV") == "1"
+    app.run(host="0.0.0.0", port=port, debug=dev_mode, use_reloader=dev_mode)
