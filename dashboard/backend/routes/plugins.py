@@ -535,11 +535,39 @@ def uninstall_plugin(slug: str):
 
         # Remove files from manifest (reverse order)
         manifest_path = plugin_dir / ".install-manifest.json"
+        manifest_applied = False
         if manifest_path.exists():
             try:
                 reverse_remove_from_manifest(manifest_path)
+                manifest_applied = True
             except Exception as exc:
                 logger.warning("manifest file removal failed: %s", exc)
+
+        # Safety-net sweep — walks the four namespaced .claude/ subdirs and
+        # removes any `plugin-{slug}-*` leftover. Runs unconditionally: even
+        # when the manifest did apply, an older install without the rewritten
+        # name-in-frontmatter may have left stragglers the manifest doesn't
+        # know about. Cheap and idempotent.
+        plugin_prefix = f"plugin-{slug}-"
+        for category, target_dir in (
+            ("agents", WORKSPACE / ".claude" / "agents"),
+            ("skills", WORKSPACE / ".claude" / "skills"),
+            ("rules", WORKSPACE / ".claude" / "rules"),
+            ("commands", WORKSPACE / ".claude" / "commands"),
+        ):
+            if not target_dir.is_dir():
+                continue
+            for entry in target_dir.iterdir():
+                if not entry.name.startswith(plugin_prefix):
+                    continue
+                try:
+                    if entry.is_dir():
+                        shutil.rmtree(entry, ignore_errors=True)
+                    else:
+                        entry.unlink(missing_ok=True)
+                    logger.info("Sweep removed %s", entry)
+                except Exception as exc:
+                    logger.warning("Sweep failed on %s: %s", entry, exc)
 
         # Remove rules index marker
         try:
