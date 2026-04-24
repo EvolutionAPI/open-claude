@@ -33,6 +33,10 @@ interface BackupConfig {
   backups_dir: string
   brain_repo_configured: boolean
   brain_repo: BrainRepoStatus | null
+  /** Whether the server has BRAIN_REPO_MASTER_KEY + cryptography available
+   *  right now. False means stored tokens cannot be decrypted — UI should
+   *  show a danger banner instead of normal "connected" state. */
+  brain_crypto_ready: boolean
 }
 
 interface BrainRepoStatus {
@@ -276,6 +280,10 @@ function DestinationsPanel({
   const { t } = useTranslation()
   const brain = config.brain_repo
   const brainConfigured = config.brain_repo_configured && brain
+  // cryptoBroken: config exists but server can't decrypt tokens right now.
+  // Treat as more urgent than last_error because it means EVERY sync will
+  // fail for the same reason until the admin restores the master key.
+  const cryptoBroken = brainConfigured && !config.brain_crypto_ready
   const s3Connected = config.s3_configured && config.boto3_available
   const formatLastSync = (iso?: string | null) => {
     if (!iso) return t('backups.destinations.never')
@@ -364,24 +372,25 @@ function DestinationsPanel({
       </div>
 
       {/* Brain Repo */}
-      {/* When last_error is present the card uses a danger border so the user
-          can't miss that auto-sync is broken — plus a Reconnect action that
-          clears the error and re-runs the onboarding flow. */}
+      {/* When crypto is broken (server can't decrypt tokens) or last_error is
+          set, the card uses a danger border so the user can't miss that sync
+          is broken — plus a Reconnect action that re-runs the onboarding. */}
       <div className={`${cardBase} ${
-        brainConfigured && brain?.last_error
+        cryptoBroken || (brainConfigured && brain?.last_error)
           ? 'border-[#3a1515] hover:border-[#5a2020]'
           : brainConfigured ? cardConnected : cardOff
       }`}>
         <div className="flex items-start justify-between gap-2 mb-3">
           <div className="flex items-center gap-3">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${
-              brainConfigured && !brain?.last_error ? 'bg-[#00FFA7]/10 border-[#00FFA7]/20'
-                : brainConfigured && brain?.last_error ? 'bg-[#3a1515]/40 border-[#5a2020]'
+              cryptoBroken || (brainConfigured && brain?.last_error)
+                ? 'bg-[#3a1515]/40 border-[#5a2020]'
+                : brainConfigured ? 'bg-[#00FFA7]/10 border-[#00FFA7]/20'
                 : 'bg-[#152030] border-[#1e2a3a]'
             }`}>
               <GitBranch size={16} className={
-                brainConfigured && !brain?.last_error ? 'text-[#00FFA7]'
-                : brainConfigured && brain?.last_error ? 'text-[#f87171]'
+                cryptoBroken || (brainConfigured && brain?.last_error) ? 'text-[#f87171]'
+                : brainConfigured ? 'text-[#00FFA7]'
                 : 'text-[#5a6b7f]'
               } />
             </div>
@@ -390,7 +399,12 @@ function DestinationsPanel({
               <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.destinations.brainRepoDesc')}</div>
             </div>
           </div>
-          {brainConfigured && brain?.last_error ? (
+          {cryptoBroken ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-500/10 text-[#f87171] border border-red-500/20 uppercase tracking-wider">
+              <AlertTriangle size={9} />
+              {t('backups.destinations.cryptoBroken')}
+            </span>
+          ) : brainConfigured && brain?.last_error ? (
             <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-500/10 text-[#f87171] border border-red-500/20 uppercase tracking-wider">
               <AlertCircle size={9} />
               {t('backups.destinations.syncError')}
@@ -421,7 +435,15 @@ function DestinationsPanel({
                 <span className="ml-2 text-[#F59E0B]">• {brain!.pending_count} {t('backups.destinations.pending')}</span>
               )}
             </div>
-            {brain?.last_error && (
+            {cryptoBroken && (
+              <div className="mt-2 flex items-start gap-1.5 p-2 rounded-lg bg-[#1a0a0a] border border-[#3a1515]">
+                <AlertTriangle size={11} className="text-[#f87171] flex-shrink-0 mt-0.5" />
+                <p className="text-[10px] text-[#f87171] leading-tight break-words">
+                  {t('backups.destinations.cryptoBrokenDesc')}
+                </p>
+              </div>
+            )}
+            {!cryptoBroken && brain?.last_error && (
               <div className="mt-2 flex items-start gap-1.5 p-2 rounded-lg bg-[#1a0a0a] border border-[#3a1515]">
                 <AlertTriangle size={11} className="text-[#f87171] flex-shrink-0 mt-0.5" />
                 <p className="text-[10px] text-[#f87171] leading-tight break-words">
@@ -444,7 +466,7 @@ function DestinationsPanel({
               >
                 {t('backups.destinations.manage')}
               </Link>
-              {brain?.last_error && (
+              {(cryptoBroken || brain?.last_error) && (
                 <Link
                   to="/onboarding"
                   className={`${pillBtn} bg-[#f87171]/10 text-[#f87171] border border-[#3a1515] hover:bg-[#f87171]/20`}

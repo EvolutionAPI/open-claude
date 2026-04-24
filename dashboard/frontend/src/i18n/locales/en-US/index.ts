@@ -662,6 +662,8 @@ const translations = {
         milestoneFailed: 'Failed to create Brain Repo milestone',
         syncError: 'sync error',
         reconnect: 'Reconnect',
+        cryptoBroken: 'encryption broken',
+        cryptoBrokenDesc: 'Server cannot encrypt/decrypt tokens right now — stored credentials are unreachable. Contact the admin to restore BRAIN_REPO_MASTER_KEY, then reconnect.',
       },
     },
 
@@ -831,6 +833,10 @@ const translations = {
         title: 'No brain repo connected',
         desc: 'Configure a brain repo to enable workspace versioning and snapshots',
         btn: 'Set up brain repo',
+      },
+      cryptoBroken: {
+        title: 'Token encryption unavailable',
+        desc: 'The server is missing BRAIN_REPO_MASTER_KEY or the cryptography module. Every Sync and Create Milestone action will fail until an admin restores the key and restarts the server. Stored credentials cannot be decrypted in this state — do NOT retry until resolved.',
       },
     },
 

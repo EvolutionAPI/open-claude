@@ -654,6 +654,8 @@ const translations = {
         milestoneFailed: 'Falha ao criar marco do Brain Repo',
         syncError: 'erro de sync',
         reconnect: 'Reconectar',
+        cryptoBroken: 'criptografia quebrada',
+        cryptoBrokenDesc: 'O servidor não consegue criptografar/descriptografar tokens agora — as credenciais armazenadas estão inacessíveis. Contate o admin para restaurar BRAIN_REPO_MASTER_KEY e reconecte.',
       },
     },
 
@@ -823,6 +825,10 @@ const translations = {
         title: 'Nenhum brain repo conectado',
         desc: 'Configure um brain repo para ativar versionamento e snapshots do workspace',
         btn: 'Configurar brain repo',
+      },
+      cryptoBroken: {
+        title: 'Criptografia de tokens indisponível',
+        desc: 'O servidor está sem BRAIN_REPO_MASTER_KEY ou o módulo cryptography. Toda ação de Sincronizar e Criar Marco vai falhar até um admin restaurar a chave e reiniciar o servidor. As credenciais armazenadas não podem ser descriptografadas neste estado — NÃO tente novamente até o problema ser resolvido.',
       },
     },
 

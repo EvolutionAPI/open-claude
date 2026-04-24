@@ -647,6 +647,8 @@ const translations = {
         milestoneFailed: 'Error al crear hito del Brain Repo',
         syncError: 'error de sync',
         reconnect: 'Reconectar',
+        cryptoBroken: 'cifrado roto',
+        cryptoBrokenDesc: 'El servidor no puede cifrar/descifrar tokens ahora — las credenciales almacenadas son inaccesibles. Contacta al admin para restaurar BRAIN_REPO_MASTER_KEY y reconecta.',
       },
     },
 
@@ -816,6 +818,10 @@ const translations = {
         title: 'Ningún brain repo conectado',
         desc: 'Configura un brain repo para activar el versionado y los snapshots del workspace',
         btn: 'Configurar brain repo',
+      },
+      cryptoBroken: {
+        title: 'Cifrado de tokens no disponible',
+        desc: 'Al servidor le falta BRAIN_REPO_MASTER_KEY o el módulo cryptography. Todas las acciones de Sincronizar y Crear Hito fallarán hasta que un admin restaure la llave y reinicie el servidor. Las credenciales almacenadas no se pueden descifrar en este estado — NO reintentes hasta resolverlo.',
       },
     },
 
