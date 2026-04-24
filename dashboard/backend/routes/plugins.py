@@ -83,9 +83,63 @@ def _seed_plugin_host_rows(conn: sqlite3.Connection, slug: str, plugin_dir: Path
             logger.warning("Plugin %s: failed to parse %s: %s", slug, name, exc)
             return {}
 
-    # ---- goals/goals.yaml: projects + goals ----
+    # ---- goals/goals.yaml: mission + projects + goals ----
     goals_spec = _load_yaml("goals")
     now = _now_iso()
+
+    # Anchor mission — one per plugin that ships seed goals. The /goals
+    # frontend only walks mission → project → goal, so orphan projects
+    # (mission_id IS NULL) stay invisible. We auto-create a mission named
+    # after the plugin unless the YAML explicitly declares missions.
+    mission_id: int | None = None
+    declared_missions = goals_spec.get("missions") or []
+    if goals_spec.get("projects") or goals_spec.get("goals"):
+        if declared_missions:
+            # Use the first declared mission as the anchor for orphan projects
+            m = declared_missions[0]
+            mslug = m.get("slug") or f"{slug}-root"
+            namespaced_m = f"plugin-{slug}-{mslug}" if not mslug.startswith(f"plugin-{slug}-") else mslug
+            conn.execute(
+                "INSERT OR IGNORE INTO missions "
+                "(slug, title, description, target_metric, target_value, current_value, "
+                " due_date, status, created_at, updated_at, source_plugin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    namespaced_m,
+                    m.get("title") or m.get("name"),
+                    m.get("description"),
+                    m.get("target_metric"),
+                    float(m.get("target_value") or 0),
+                    float(m.get("current_value") or 0),
+                    m.get("due_date"),
+                    m.get("status") or "active",
+                    now, now, slug,
+                ),
+            )
+            row = conn.execute("SELECT id FROM missions WHERE slug = ?", (namespaced_m,)).fetchone()
+            if row:
+                mission_id = row["id"]
+        else:
+            # No mission declared — synthesize one so goals render in the UI
+            anchor_slug = f"plugin-{slug}-root"
+            conn.execute(
+                "INSERT OR IGNORE INTO missions "
+                "(slug, title, description, target_metric, target_value, current_value, "
+                " status, created_at, updated_at, source_plugin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    anchor_slug,
+                    f"{slug} — plugin goals",
+                    f"Auto-created by the {slug} plugin to group its seed projects. "
+                    f"Deletes on uninstall.",
+                    None, 0, 0, "active",
+                    now, now, slug,
+                ),
+            )
+            row = conn.execute("SELECT id FROM missions WHERE slug = ?", (anchor_slug,)).fetchone()
+            if row:
+                mission_id = row["id"]
+        conn.commit()
 
     project_slug_to_id: dict[str, int] = {}
     for proj in goals_spec.get("projects", []) or []:
@@ -94,13 +148,15 @@ def _seed_plugin_host_rows(conn: sqlite3.Connection, slug: str, plugin_dir: Path
         if not pslug or not title:
             continue
         namespaced = f"plugin-{slug}-{pslug}" if not pslug.startswith(f"plugin-{slug}-") else pslug
-        cur = conn.execute(
+        # Prefer YAML-declared mission_id; fall back to the auto mission anchor
+        proj_mission_id = proj.get("mission_id") if proj.get("mission_id") is not None else mission_id
+        conn.execute(
             "INSERT OR IGNORE INTO projects "
             "(slug, mission_id, title, description, status, created_at, updated_at, source_plugin) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 namespaced,
-                proj.get("mission_id"),
+                proj_mission_id,
                 title,
                 proj.get("description"),
                 proj.get("status") or "active",
@@ -745,8 +801,8 @@ def uninstall_plugin(slug: str):
 
         # Delete host rows this plugin seeded (goals/tasks/triggers capabilities).
         # DELETE WHERE source_plugin = ? leaves user-created rows untouched.
-        # Deletion order matters because of FKs: tickets → goals → projects.
-        for _tbl in ("triggers", "tickets", "goal_tasks", "goals", "projects"):
+        # Order matters because of FKs: children → parents.
+        for _tbl in ("triggers", "tickets", "goal_tasks", "goals", "projects", "missions"):
             try:
                 conn.execute(f"DELETE FROM {_tbl} WHERE source_plugin = ?", (slug,))
                 conn.commit()
