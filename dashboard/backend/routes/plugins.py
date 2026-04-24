@@ -208,7 +208,16 @@ def install_plugin():
         save_state(slug, state)
 
         # --- Step: SQL migrations ---
-        install_sql_path = plugin_dir / "migrations" / "install.sql"
+        # Prefer `migrations/install.sql` (canonical). Fall back to the
+        # lexically-first `migrations/*.sql` file so plugin authors using the
+        # common `NNN_description.sql` convention (e.g. `001_create_tables.sql`)
+        # don't have to rename — keeps friction low for community plugins.
+        migrations_dir = plugin_dir / "migrations"
+        install_sql_path = migrations_dir / "install.sql"
+        if not install_sql_path.exists() and migrations_dir.is_dir():
+            candidates = sorted(migrations_dir.glob("*.sql"))
+            if candidates:
+                install_sql_path = candidates[0]
         if install_sql_path.exists():
             try:
                 conn2 = sqlite3.connect(str(DB_PATH))
@@ -616,18 +625,30 @@ def list_widgets():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for w in manifest.get("widgets", []):
-            widget_manifest = manifest.get("manifest", {})
-            for wspec in widget_manifest.get("widgets", []):
-                if mount and wspec.get("mount_point") != mount:
-                    continue
-                widgets.append({
-                    "slug": slug,
-                    "widget_id": wspec.get("id"),
-                    "custom_element_name": wspec.get("custom_element_name"),
-                    "bundle_url": f"/plugins/{slug}/ui/widgets/{w.get('filename')}",
-                    "mount_point": wspec.get("mount_point"),
-                })
+        # Widget specs live in `manifest.manifest.ui_entry_points.widgets`.
+        # Installed widget files live in `manifest.widgets` (list of copied files).
+        plugin_manifest = manifest.get("manifest", {}) or {}
+        installed_files = manifest.get("widgets", []) or []
+        widget_specs = ((plugin_manifest.get("ui_entry_points") or {}).get("widgets")) or []
+        for wspec in widget_specs:
+            if mount and wspec.get("mount_point") != mount:
+                continue
+            # Derive filename: explicit field wins; otherwise basename of `route`.
+            filename = wspec.get("filename")
+            if not filename and wspec.get("route"):
+                filename = wspec["route"].rsplit("/", 1)[-1]
+            if not filename and installed_files:
+                filename = installed_files[0].get("name") if isinstance(installed_files[0], dict) else None
+            if not filename:
+                continue
+            widgets.append({
+                "slug": slug,
+                "widget_id": wspec.get("id"),
+                "custom_element_name": wspec.get("custom_element_name") or wspec.get("id"),
+                "bundle_url": f"/plugins/{slug}/ui/widgets/{filename}",
+                "mount_point": wspec.get("mount_point"),
+                "label": wspec.get("label"),
+            })
 
     return jsonify(widgets)
 

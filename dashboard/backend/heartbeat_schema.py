@@ -166,6 +166,16 @@ def _merge_plugin_heartbeats(core: "HeartbeatsFile", logger: "logging.Logger") -
         try:
             with open(plugin_yaml, encoding="utf-8") as f:
                 raw_plugin = yaml.safe_load(f) or {}
+
+            # Rewrite `agent: bare-name` -> `agent: plugin-{slug}-{bare-name}`
+            # to match the file_ops prefix applied on install. Plugin authors
+            # write the bare agent name in their yaml; the installer renames
+            # the file and the validator must look up the prefixed name.
+            for hb in raw_plugin.get("heartbeats", []) or []:
+                agent = hb.get("agent")
+                if isinstance(agent, str) and agent and not agent.startswith(f"plugin-{plugin_slug}-") and agent != "system":
+                    hb["agent"] = f"plugin-{plugin_slug}-{agent}"
+
             plugin_hb_file = HeartbeatsFile.model_validate(raw_plugin)
         except Exception as exc:
             logger.error(
