@@ -131,3 +131,6 @@ plugins/*/
 
 # ── Claude hook bootstrap artifacts ──
 .claude/.settings.json.backup-*
+
+# ── Brain Repo raw transcripts (not backed up to brain repo) ──
+memory/raw-transcripts/
