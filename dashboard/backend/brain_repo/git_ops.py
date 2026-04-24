@@ -71,18 +71,24 @@ def commit_all(repo_dir: Path, message: str) -> bool:
     raise RuntimeError(f"git commit failed: {commit_result.stderr[:500]}")
 
 
-def push(repo_dir: Path, token: str) -> bool:
-    """Push the current branch to origin.
+def push(repo_dir: Path, token: str, with_tags: bool = True) -> tuple[bool, str]:
+    """Push the current branch (and tags) to origin.
 
     Injects the token into the remote URL for authentication.
-    Returns False on failure (never raises).
+    When with_tags=True, also pushes annotated tags reachable from the HEAD
+    via ``--follow-tags`` (so milestone tags created by ``create_tag`` actually
+    reach GitHub).
+
+    Returns (ok, error_message). On success error_message is empty.
+    Never raises.
     """
     try:
         # Retrieve current remote URL to build authenticated version
         remote_result = _run(["git", "remote", "get-url", "origin"], cwd=repo_dir)
         if remote_result.returncode != 0:
-            log.warning("push: could not get remote URL: %s", remote_result.stderr[:200])
-            return False
+            err = remote_result.stderr[:200] or "no remote 'origin' configured"
+            log.warning("push: could not get remote URL: %s", err)
+            return False, err
 
         remote_url = remote_result.stdout.strip()
         if token and "://" in remote_url:
@@ -94,14 +100,20 @@ def push(repo_dir: Path, token: str) -> bool:
         else:
             auth_url = remote_url
 
-        result = _run(["git", "push", auth_url, "--porcelain"], cwd=repo_dir)
+        cmd = ["git", "push", auth_url, "--porcelain"]
+        if with_tags:
+            cmd.append("--follow-tags")
+
+        result = _run(cmd, cwd=repo_dir)
         if result.returncode != 0:
-            log.warning("git push failed (exit %d)", result.returncode)
-            return False
-        return True
+            # Mask token in any captured output before logging/returning
+            err = (result.stderr or result.stdout)[:300].replace(token, "***") if token else (result.stderr or result.stdout)[:300]
+            log.warning("git push failed (exit %d): %s", result.returncode, err)
+            return False, err
+        return True, ""
     except Exception as exc:
         log.warning("git push raised exception: %s", exc)
-        return False
+        return False, str(exc)[:300]
 
 
 def pull_rebase(repo_dir: Path, token: str) -> bool:
@@ -134,13 +146,19 @@ def pull_rebase(repo_dir: Path, token: str) -> bool:
         return False
 
 
-def create_tag(repo_dir: Path, tag: str, message: str) -> bool:
+def create_tag(repo_dir: Path, tag: str, message: str, force: bool = False) -> bool:
     """Create an annotated tag.
+
+    When force=True, replaces any existing local tag with the same name (so a
+    second sync within the same minute doesn't fail with "tag already exists").
 
     Returns False on failure (never raises).
     """
     try:
-        result = _run(["git", "tag", "-a", tag, "-m", message], cwd=repo_dir)
+        cmd = ["git", "tag", "-a", tag, "-m", message]
+        if force:
+            cmd.insert(2, "-f")
+        result = _run(cmd, cwd=repo_dir)
         if result.returncode != 0:
             log.warning("git tag %s failed: %s", tag, result.stderr[:200])
             return False

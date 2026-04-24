@@ -126,13 +126,13 @@ class SyncWorker:
 
             token = self._token_fn()
             git_ops.commit_all(self._brain_repo_dir, "auto: sync worker retry")
-            success = git_ops.push(self._brain_repo_dir, token)
+            success, push_err = git_ops.push(self._brain_repo_dir, token, with_tags=True)
             if success:
                 job_path.unlink(missing_ok=True)
                 log.info("sync_worker: job %s succeeded", job.get("id"))
                 return True
             else:
-                job["last_error"] = "push returned False"
+                job["last_error"] = push_err or "push returned False"
                 job_path.write_text(json.dumps(job, indent=2), encoding="utf-8")
                 return False
         except Exception as exc:
