@@ -1,6 +1,10 @@
-import { Suspense, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { hydrateAgentMeta } from './lib/agent-meta'
+import { hydratePluginUiRegistry } from './lib/plugin-ui-registry'
+import { initEvoNexusSdk } from './lib/evonexus-sdk'
+import PluginPageHost from './pages/PluginPageHost'
 import { NotificationProvider } from './context/NotificationContext'
 import Sidebar from './components/Sidebar'
 import { FullPageLoader, SectionBoundary, SectionLoader } from './components/PageStates'
@@ -37,6 +41,9 @@ const HeartbeatsList = lazyDefault(() => import('./pages/Heartbeats'))
 const HeartbeatDetail = lazyNamed(() => import('./pages/Heartbeats'), 'HeartbeatDetail')
 const Activity = lazyDefault(() => import('./pages/Activity'))
 const Goals = lazyDefault(() => import('./pages/Goals'))
+const Plugins = lazyDefault(() => import('./pages/Plugins'))
+const PluginDetail = lazyDefault(() => import('./pages/PluginDetail'))
+const McpServers = lazyDefault(() => import('./pages/McpServers'))
 const Topics = lazyDefault(() => import('./pages/Topics'))
 const TicketDetail = lazyDefault(() => import('./pages/TicketDetail'))
 const KnowledgeLayout = lazyDefault(() => import('./pages/Knowledge/KnowledgeLayout'))
@@ -87,15 +94,37 @@ function DashboardRouteFrame({
   )
 }
 
+// Lazy-loaded onboarding + settings pages
+const OnboardingRouter = lazy(() => import('./pages/onboarding/OnboardingRouter'))
+const BrainRepo = lazy(() => import('./pages/settings/BrainRepo'))
+
+// Extended user type with onboarding fields (backend may include these)
+interface OnboardingUser {
+  onboarding_state?: string | null
+  onboarding_completed_agents_visit?: boolean
+}
+
 function AppContent() {
   const location = useLocation()
   const routeKey = location.key || location.pathname
   const isDocs = location.pathname === '/docs' || location.pathname.startsWith('/docs/')
   const isShare = location.pathname.startsWith('/share/')
+  const isOnboarding = location.pathname.startsWith('/onboarding')
   const isAgentDetail = /^\/agents\/[^/]+$/.test(location.pathname)
   const isTicketDetail = /^\/tickets\/[^/]+$/.test(location.pathname)
   const isWorkspace = location.pathname === '/workspace' || location.pathname.startsWith('/workspace/')
   const { user, loading, needsSetup, hasPermission } = useAuth()
+  const extUser = user as (typeof user & OnboardingUser) | null
+
+  // Wave 2.0/2.1: hydrate registries once per authenticated session.
+  // Must be declared before any early return (Rules of Hooks).
+  useEffect(() => {
+    if (user) {
+      hydrateAgentMeta()
+      hydratePluginUiRegistry()
+      initEvoNexusSdk()
+    }
+  }, [user])
 
   // Share links are public - render without auth or sidebar
   if (isShare) {
@@ -147,6 +176,28 @@ function AppContent() {
     )
   }
 
+  // Onboarding guard — redirect to /onboarding if user hasn't completed/skipped it.
+  // For brand-new users onboarding_state is null (column nullable), which counts as "needs onboarding".
+  if (
+    !isOnboarding &&
+    extUser &&
+    extUser.onboarding_state !== 'completed' &&
+    extUser.onboarding_state !== 'skipped'
+  ) {
+    return <Navigate to="/onboarding" replace />
+  }
+
+  // Allow direct access to /onboarding regardless
+  if (isOnboarding) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-[#080c14] flex items-center justify-center"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+        <Routes>
+          <Route path="/onboarding/*" element={<OnboardingRouter />} />
+        </Routes>
+      </Suspense>
+    )
+  }
+
   return (
     <NotificationProvider>
       <div className="flex min-h-screen bg-[#0C111D]">
@@ -162,6 +213,19 @@ function AppContent() {
         >
           <DashboardRouteFrame locationKey={routeKey}>
             <Routes>
+              {/* Onboarding & Settings routes (lazy — keep their own suspense so they
+                  can render even before Sidebar-scoped permissions load) */}
+              <Route path="/onboarding/*" element={
+                <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+                  <OnboardingRouter />
+                </Suspense>
+              } />
+              <Route path="/settings/brain-repo" element={
+                <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+                  <BrainRepo />
+                </Suspense>
+              } />
+
               <Route path="/" element={<Overview />} />
               <Route path="/workspace/*" element={<Workspace />} />
               <Route path="/agents" element={<Agents />} />
@@ -190,6 +254,11 @@ function AppContent() {
               {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
               {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
               <Route path="/goals" element={<Goals />} />
+              <Route path="/plugins" element={<Plugins />} />
+              <Route path="/plugins/:slug" element={<PluginDetail />} />
+              <Route path="/mcp-servers" element={<McpServers />} />
+              {/* Wave 2.1: full-screen plugin UI pages (catch-all, must come after /plugins/:slug) */}
+              <Route path="/plugins-ui/:slug/*" element={<PluginPageHost />} />
               {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
               {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
               {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}

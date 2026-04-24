@@ -32,6 +32,9 @@ class User(UserMixin, db.Model):
     def check_password(self, password: str) -> bool:
         return bcrypt.checkpw(password.encode(), self.password_hash.encode())
 
+    onboarding_state = db.Column(db.String(20), nullable=True)
+    onboarding_completed_agents_visit = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -43,6 +46,8 @@ class User(UserMixin, db.Model):
             "is_active": self.is_active,
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
             "last_login": self.last_login.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.last_login else None,
+            "onboarding_state": self.onboarding_state,
+            "onboarding_completed_agents_visit": self.onboarding_completed_agents_visit,
         }
 
 
@@ -272,6 +277,7 @@ class Trigger(db.Model):
     enabled = db.Column(db.Boolean, default=True)
     from_yaml = db.Column(db.Boolean, default=False)
     remote_trigger_id = db.Column(db.String(100), nullable=True)
+    source_plugin = db.Column(db.Text, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -310,6 +316,7 @@ class Trigger(db.Model):
             "enabled": self.enabled,
             "from_yaml": self.from_yaml,
             "remote_trigger_id": self.remote_trigger_id,
+            "source_plugin": self.source_plugin,
             "created_by": self.created_by,
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
             "updated_at": self.updated_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.updated_at else None,
@@ -491,6 +498,7 @@ class Heartbeat(db.Model):
     goal_id = db.Column(db.String(100), nullable=True)  # FK stub for Feature 1.2
     required_secrets = db.Column(db.Text, nullable=True, default="[]")  # JSON array
     decision_prompt = db.Column(db.Text, nullable=False)
+    source_plugin = db.Column(db.Text, nullable=True)  # Wave 1.1: plugin slug if contributed by a plugin
     created_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
     updated_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"), onupdate=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
 
@@ -537,6 +545,7 @@ class Heartbeat(db.Model):
             "updated_at": self.updated_at,
             "last_run": last_run.to_dict() if last_run else None,
             "run_count": self.runs.count(),
+            "source_plugin": self.source_plugin,
         }
 
 
@@ -1083,9 +1092,133 @@ def audit(user, action: str, resource: str = None, detail: str = None):
     db.session.commit()
 
 
+class BrainRepoConfig(db.Model):
+    __tablename__ = "brain_repo_configs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    github_token_encrypted = db.Column(db.LargeBinary, nullable=True)
+    repo_url = db.Column(db.String(500), nullable=True)
+    repo_owner = db.Column(db.String(200), nullable=True)
+    repo_name = db.Column(db.String(200), nullable=True)
+    local_path = db.Column(db.String(500), nullable=True)
+    last_sync = db.Column(db.DateTime, nullable=True)
+    sync_enabled = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    last_error = db.Column(db.Text, nullable=True)
+    pending_count = db.Column(db.Integer, default=0, nullable=False, server_default='0')
+    # Async sync job state — set by routes/brain_repo when an operation is enqueued,
+    # cleared by brain_repo.job_runner when it finishes. sync_job_kind holds a short
+    # verb ("sync", "milestone", "bootstrap") so the UI can show which operation is
+    # running. cancel_requested is a cooperative flag the pipeline checks between
+    # steps (no signal-based kill — git operations aren't safe to interrupt arbitrarily).
+    sync_in_progress = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    sync_started_at = db.Column(db.DateTime, nullable=True)
+    sync_job_kind = db.Column(db.String(32), nullable=True)
+    cancel_requested = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user = db.relationship("User", backref=db.backref("brain_repo_config", uselist=False))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "repo_url": self.repo_url,
+            "repo_owner": self.repo_owner,
+            "repo_name": self.repo_name,
+            "local_path": self.local_path,
+            "last_sync": self.last_sync.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.last_sync else None,
+            "sync_enabled": self.sync_enabled,
+            "last_error": self.last_error,
+            "pending_count": self.pending_count,
+            "sync_in_progress": bool(self.sync_in_progress),
+            "sync_job_kind": self.sync_job_kind,
+            "sync_started_at": self.sync_started_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.sync_started_at else None,
+            "cancel_requested": bool(self.cancel_requested),
+            "connected": self.github_token_encrypted is not None,
+        }
+
+
 def needs_setup() -> bool:
     """Check if the system needs initial setup (no users exist)."""
     try:
         return User.query.count() == 0
     except Exception:
         return True
+
+
+def needs_onboarding(user) -> bool:
+    """Check if the user needs to complete the onboarding wizard."""
+    return user is not None and user.onboarding_state in (None, "pending")
+
+
+# ---------------------------------------------------------------------------
+# Wave 2.5 — Plugin security scan tables
+# ---------------------------------------------------------------------------
+
+
+class PluginScanCache(db.Model):
+    """Cache table for plugin security scan results.
+
+    Cache key: tarball_sha256 + scanner_version (7-day TTL).
+    Hit means we skip re-scanning identical plugin archives.
+    """
+
+    __tablename__ = "plugin_scan_cache"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tarball_sha256 = db.Column(db.String(64), nullable=False)
+    scanner_version = db.Column(db.String(20), nullable=False)
+    verdict = db.Column(db.String(10), nullable=False)  # APPROVE | WARN | BLOCK
+    findings_json = db.Column(db.Text, nullable=False, default="[]")
+    scanned_files = db.Column(db.Integer, nullable=False, default=0)
+    llm_augmented = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Composite unique key enforced at DB level (see inline migration)
+    __table_args__ = (
+        db.UniqueConstraint("tarball_sha256", "scanner_version", name="uq_scan_cache_sha_ver"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tarball_sha256": self.tarball_sha256,
+            "scanner_version": self.scanner_version,
+            "verdict": self.verdict,
+            "findings": json.loads(self.findings_json or "[]"),
+            "scanned_files": self.scanned_files,
+            "llm_augmented": self.llm_augmented,
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+        }
+
+
+class PluginAuditLog(db.Model):
+    """Audit log for plugin security decisions.
+
+    Events: scan_approved, scan_warn_accepted, scan_skipped, scan_blocked, scan_override
+    """
+
+    __tablename__ = "plugin_audit_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(200), nullable=False)
+    event = db.Column(db.String(50), nullable=False)
+    verdict = db.Column(db.String(10), nullable=True)   # APPROVE | WARN | BLOCK | None
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    actor_username = db.Column(db.String(80), nullable=True)
+    detail_json = db.Column(db.Text, nullable=False, default="{}")
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "event": self.event,
+            "verdict": self.verdict,
+            "actor_user_id": self.actor_user_id,
+            "actor_username": self.actor_username,
+            "detail": json.loads(self.detail_json or "{}"),
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+        }
