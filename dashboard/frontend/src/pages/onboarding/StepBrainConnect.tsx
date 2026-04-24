@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Eye, EyeOff, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../../lib/api'
+import OnboardingHeader from './OnboardingHeader'
 
 const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
 
@@ -47,15 +48,7 @@ export default function StepBrainConnect({ onNext, onBack }: StepBrainConnectPro
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif]">
       <div className="w-full max-w-[480px] relative z-10">
-        {/* Step indicator */}
-        <div className="flex items-center justify-center gap-2 mb-6">
-          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">{t('onboarding.stepIndicator.step2aOf3')}</span>
-          <div className="flex gap-1.5">
-            <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
-            <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
-            <span className="h-1.5 w-8 rounded-full bg-[#152030]" />
-          </div>
-        </div>
+        <OnboardingHeader step="step2aOf3" filled={2} />
 
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">

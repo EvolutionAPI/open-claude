@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff, RefreshCw, Terminal, CheckCircle2, AlertCircle, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../../lib/api'
+import OnboardingHeader from './OnboardingHeader'
 
 type ProviderId = 'anthropic' | 'openai' | 'openrouter' | 'codex'
 
@@ -32,7 +33,6 @@ interface StepProviderProps {
 type Phase = 'select' | ProviderId
 
 export default function StepProvider({ onNext, onBack }: StepProviderProps) {
-  const { t } = useTranslation()
   const [phase, setPhase] = useState<Phase>('select')
 
   const cardShell = "rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]"
@@ -40,15 +40,7 @@ export default function StepProvider({ onNext, onBack }: StepProviderProps) {
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif]">
       <div className="w-full max-w-[480px] relative z-10">
-        {/* Step indicator */}
-        <div className="flex items-center justify-center gap-2 mb-6">
-          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">{t('onboarding.stepIndicator.step1of3')}</span>
-          <div className="flex gap-1.5">
-            <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
-            <span className="h-1.5 w-8 rounded-full bg-[#152030]" />
-            <span className="h-1.5 w-8 rounded-full bg-[#152030]" />
-          </div>
-        </div>
+        <OnboardingHeader step="step1of3" filled={1} />
 
         {phase === 'select' && (
           <ProviderSelect

@@ -1,5 +1,6 @@
 import { GitBranch, History, RefreshCw, Shield } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import OnboardingHeader from './OnboardingHeader'
 
 interface StepBrainRepoProps {
   onYes: () => void
@@ -17,15 +18,7 @@ export default function StepBrainRepo({ onYes, onNo, onBack }: StepBrainRepoProp
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif]">
       <div className="w-full max-w-[480px] relative z-10">
-        {/* Step indicator */}
-        <div className="flex items-center justify-center gap-2 mb-6">
-          <span className="text-[11px] text-[#5a6b7f] uppercase tracking-[0.08em]">{t('onboarding.stepIndicator.step2of3')}</span>
-          <div className="flex gap-1.5">
-            <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
-            <span className="h-1.5 w-8 rounded-full bg-[#00FFA7]" />
-            <span className="h-1.5 w-8 rounded-full bg-[#152030]" />
-          </div>
-        </div>
+        <OnboardingHeader step="step2of3" filled={2} />
 
         <div className="rounded-xl border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
