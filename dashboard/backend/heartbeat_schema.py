@@ -30,6 +30,7 @@ class HeartbeatConfig(BaseModel):
     goal_id: Optional[str] = None
     required_secrets: List[str] = Field(default_factory=list)
     decision_prompt: Annotated[str, Field(min_length=20)]
+    source_plugin: Optional[str] = None  # AC4: set to plugin slug for plugin-contributed heartbeats
 
     @field_validator("agent")
     @classmethod
@@ -81,9 +82,34 @@ class HeartbeatsFile(BaseModel):
         return self
 
 
-def load_heartbeats_yaml(path: Path | None = None) -> HeartbeatsFile:
-    """Load and validate config/heartbeats.yaml. Raises ValidationError on failure."""
+def load_heartbeats_yaml(
+    path: Path | None = None,
+    include_plugins: bool = True,
+) -> HeartbeatsFile:
+    """Load and validate config/heartbeats.yaml, optionally merging plugin heartbeats.
+
+    When include_plugins=True (default), globs plugins/*/heartbeats.yaml in
+    alphabetical order and merges their heartbeats into the result. Each plugin
+    file is parsed independently — a broken plugin YAML does NOT prevent core
+    heartbeats from loading (fail-isolated, logged as ERROR).
+
+    Duplicate heartbeat ids across files raise ValueError (second file with the
+    same id is rejected; the first-seen wins).
+
+    Args:
+        path: Path to the core heartbeats.yaml. Defaults to config/heartbeats.yaml.
+        include_plugins: Whether to merge plugins/*/heartbeats.yaml files.
+
+    Returns:
+        Merged HeartbeatsFile with all valid heartbeats.
+
+    Raises:
+        ValidationError: If core heartbeats.yaml is invalid.
+    """
+    import logging
     import yaml
+
+    logger = logging.getLogger(__name__)
 
     if path is None:
         path = WORKSPACE / "config" / "heartbeats.yaml"
@@ -95,12 +121,76 @@ def load_heartbeats_yaml(path: Path | None = None) -> HeartbeatsFile:
             import shutil
             shutil.copy2(example, path)
         else:
-            return HeartbeatsFile(heartbeats=[])
+            # No config and no example — return empty core
+            core = HeartbeatsFile(heartbeats=[])
+            if not include_plugins:
+                return core
+            # Fall through to plugin union below with empty core
+            return _merge_plugin_heartbeats(core, logger)
 
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
+    core = HeartbeatsFile.model_validate(raw)
 
-    return HeartbeatsFile.model_validate(raw)
+    if not include_plugins:
+        return core
+
+    return _merge_plugin_heartbeats(core, logger)
+
+
+def _merge_plugin_heartbeats(core: "HeartbeatsFile", logger: "logging.Logger") -> "HeartbeatsFile":
+    """Merge plugins/*/heartbeats.yaml files into core heartbeats.
+
+    Each plugin file is parsed independently (fail-isolated).
+    Duplicate ids log an ERROR and are skipped (first-seen wins).
+
+    Args:
+        core: The core HeartbeatsFile to extend.
+        logger: Logger instance.
+
+    Returns:
+        New HeartbeatsFile with core + plugin heartbeats merged.
+    """
+    import yaml
+
+    plugins_dir = WORKSPACE / "plugins"
+    if not plugins_dir.exists():
+        return core
+
+    merged = list(core.heartbeats)
+    seen_ids: dict[str, str] = {h.id: "config/heartbeats.yaml" for h in merged}
+
+    plugin_yaml_files = sorted(plugins_dir.glob("*/heartbeats.yaml"))
+    for plugin_yaml in plugin_yaml_files:
+        plugin_slug = plugin_yaml.parent.name
+        try:
+            with open(plugin_yaml, encoding="utf-8") as f:
+                raw_plugin = yaml.safe_load(f) or {}
+            plugin_hb_file = HeartbeatsFile.model_validate(raw_plugin)
+        except Exception as exc:
+            logger.error(
+                "Plugin '%s' heartbeats.yaml is invalid — skipping (plugin marked broken): %s",
+                plugin_slug,
+                exc,
+            )
+            continue
+
+        for hb in plugin_hb_file.heartbeats:
+            if hb.id in seen_ids:
+                logger.error(
+                    "Duplicate heartbeat id '%s' in plugin '%s' "
+                    "(already defined in '%s') — skipping plugin heartbeat",
+                    hb.id,
+                    plugin_slug,
+                    seen_ids[hb.id],
+                )
+                continue
+            seen_ids[hb.id] = str(plugin_yaml)
+            # AC4: tag heartbeat with its originating plugin slug
+            hb = hb.model_copy(update={"source_plugin": plugin_slug})
+            merged.append(hb)
+
+    return HeartbeatsFile(heartbeats=merged)
 
 
 def save_heartbeats_yaml(data: HeartbeatsFile, path: Path | None = None) -> None:

@@ -288,6 +288,32 @@ def start_dispatcher_thread():
     print("[dispatcher] dispatcher thread started", flush=True)
 
 
+# ── Config reload (called by plugin_loader after install/uninstall) ──────────
+
+def reload_config() -> dict:
+    """Re-sync heartbeats from config + plugins and re-register interval jobs.
+
+    Called by plugin_loader.PluginInstaller after copying heartbeats to
+    plugins/{slug}/heartbeats.yaml (install) or after removing it (uninstall).
+    Safe to call while the dispatcher is running — uses _schedule_lock.
+
+    Returns:
+        Dict with keys: heartbeats_loaded (int), jobs_registered (int).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info("[reload_config] Re-syncing heartbeats (core + plugins)")
+    _sync_heartbeats_to_db()
+
+    with _schedule_lock:
+        schedule.clear()
+
+    count = register_interval_jobs()
+    logger.info("[reload_config] Done: %d heartbeats, %d interval jobs", count, count)
+    return {"heartbeats_loaded": count, "jobs_registered": count}
+
+
 # ── Stub hooks for future triggers ───────────────────────────────────────────
 
 def on_new_task(heartbeat_id: str, task_id: str):

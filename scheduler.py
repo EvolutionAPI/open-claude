@@ -9,6 +9,7 @@ import subprocess
 import os
 import sys
 import signal
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,14 @@ WORKSPACE = Path(__file__).parent
 PYTHON = "uv run python" if os.system("command -v uv > /dev/null 2>&1") == 0 else "python3"
 ROUTINES_DIR = WORKSPACE / "ADWs" / "routines"
 PID_FILE = WORKSPACE / "ADWs" / "logs" / "scheduler.pid"
+
+# SIGHUP reload flag — set by handler, cleared by main loop (ADR-2)
+_reload_flag = threading.Event()
+
+
+def _handle_sighup(signum, frame):
+    """POSIX: only async-signal-safe ops here. Event.set() qualifies."""
+    _reload_flag.set()
 
 
 def acquire_lock() -> bool:
@@ -107,18 +116,24 @@ def setup_schedule():
     _load_custom_routines(schedule)
 
 
-def _load_custom_routines(schedule):
-    """Load custom routines from config/routines.yaml."""
-    config_path = WORKSPACE / "config" / "routines.yaml"
+def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = False):
+    """Load routines from a single YAML file into the schedule.
+
+    For plugin files, errors are swallowed (broken plugin doesn't kill core).
+    For the core config, errors are re-raised.
+    """
+    import yaml
+
     if not config_path.exists():
         return
 
     try:
-        import yaml
         with open(config_path) as f:
             config = yaml.safe_load(f)
         if not config:
             return
+
+        source_label = f"plugin:{config_path.parent.name}" if is_plugin else "core"
 
         for r in config.get("daily", []) or []:
             if not r.get("enabled", True):
@@ -146,10 +161,36 @@ def _load_custom_routines(schedule):
                 )
 
         global _monthly_routines
-        _monthly_routines = config.get("monthly", []) or []
+        monthly = config.get("monthly", []) or []
+        # Plugin monthly routines are appended; core replaces the list
+        if is_plugin:
+            _monthly_routines.extend(monthly)
+        else:
+            _monthly_routines = monthly
 
     except Exception as e:
-        print(f"  Warning: Failed to load custom routines: {e}")
+        if is_plugin:
+            print(f"  Warning: Failed to load plugin routines from {config_path}: {e}")
+        else:
+            raise
+
+
+def _load_custom_routines(schedule):
+    """Load custom routines from config/routines.yaml + plugins/*/routines.yaml (ADR-2)."""
+    # 1. Core config
+    _load_routines_from_yaml(schedule, WORKSPACE / "config" / "routines.yaml", is_plugin=False)
+
+    # 2. Plugin routines — sorted for deterministic ordering (ADR-2)
+    #    Supports both layouts:
+    #      plugins/{slug}/routines.yaml          (flat file)
+    #      plugins/{slug}/routines/*.yaml        (directory, GAP-7)
+    plugins_dir = WORKSPACE / "plugins"
+    if plugins_dir.exists():
+        plugin_routine_files: list[Path] = []
+        plugin_routine_files.extend(plugins_dir.glob("*/routines.yaml"))
+        plugin_routine_files.extend(plugins_dir.glob("*/routines/*.yaml"))
+        for plugin_routines in sorted(plugin_routine_files):
+            _load_routines_from_yaml(schedule, plugin_routines, is_plugin=True)
 
 
 _monthly_routines = []
@@ -175,9 +216,20 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGHUP, _handle_sighup)  # ADR-2: hot-reload on SIGHUP
 
     monthly_ran = False
     while True:
+        # Hot-reload: check flag before running pending jobs (ADR-2)
+        if _reload_flag.is_set():
+            _reload_flag.clear()
+            ts = datetime.now().strftime("%H:%M:%S")
+            print(f"  {ts} [reload] SIGHUP received — clearing schedule and re-reading routines")
+            schedule.clear()
+            setup_schedule()
+            total = len(schedule.get_jobs())
+            print(f"  {ts} [reload] {total} routines scheduled")
+
         schedule.run_pending()
         now = datetime.now()
         if now.day == 1 and now.hour == 8 and not monthly_ran:
