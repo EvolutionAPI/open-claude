@@ -102,6 +102,30 @@ def get_plugin(slug: str):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/plugins/<slug>/audit — recent audit entries for a plugin
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/plugins/<slug>/audit", methods=["GET"])
+@login_required
+def get_plugin_audit(slug: str):
+    conn = _get_db()
+    try:
+        # Table may not exist on fresh install; treat absence as empty list.
+        try:
+            rows = conn.execute(
+                "SELECT id, action, success, created_at, payload "
+                "FROM plugins_audit WHERE plugin_id = ? "
+                "ORDER BY created_at DESC LIMIT 100",
+                (slug,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return jsonify([])
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # POST /api/plugins/preview — validate without installing
 # ---------------------------------------------------------------------------
 

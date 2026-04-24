@@ -77,6 +77,51 @@ def _enforce_namespace(filename: str, slug: str, category: str) -> str:
     return prefix + filename
 
 
+# Regex to replace the `name:` value inside a YAML frontmatter block.
+# Match anchored to the start of a line within the frontmatter. Supports
+# quoted ("pm-nova") or bare (pm-nova) values.
+_FRONTMATTER_NAME_RE = re.compile(
+    r'(?m)^(name\s*:\s*)(?:"[^"]*"|\'[^\']*\'|[^\r\n]+)\s*$'
+)
+
+
+def _rewrite_frontmatter_name(md_path: Path, new_name: str) -> None:
+    """Rewrite `name: <value>` inside the YAML frontmatter of a .md file.
+
+    Keeps the Claude Code contract that `name` in frontmatter equals the
+    filename (or skill directory name) without the `.md` suffix. Plugins
+    ship bare names; the installer prefixes the filename with
+    `plugin-{slug}-`, so the frontmatter must follow.
+
+    No-op if the file doesn't have frontmatter or `name:` is missing.
+    """
+    try:
+        raw = md_path.read_text(encoding="utf-8")
+    except Exception:
+        return
+
+    # Only touch the first 60 lines — frontmatter lives at the top.
+    # Split the file at `---` markers to avoid rewriting `name:` in prose.
+    lines = raw.split("\n", 1)
+    if not lines or not lines[0].strip().startswith("---"):
+        return
+    rest = lines[1] if len(lines) > 1 else ""
+    # Find the closing `---`
+    end_match = re.search(r"\n---\s*\n", rest)
+    if not end_match:
+        return
+
+    frontmatter = rest[: end_match.start() + 1]  # include the trailing newline
+    after = rest[end_match.start():]  # starts with \n---\n
+    new_frontmatter, count = _FRONTMATTER_NAME_RE.subn(
+        rf'\1"{new_name}"', frontmatter, count=1
+    )
+    if count == 0:
+        return
+    new_raw = lines[0] + "\n" + new_frontmatter + after
+    md_path.write_text(new_raw, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # copy_with_manifest
 # ---------------------------------------------------------------------------
@@ -119,6 +164,45 @@ def copy_with_manifest(
     dest_root = str(dest_dir.resolve()) + "/"
 
     added: List[Dict[str, Any]] = []
+
+    # Skills are directories (`foo/SKILL.md`); everything else is a flat .md file.
+    # Copy whole subdirs for skills, per-file for the rest. Keeps the Claude
+    # Code contract that `name` in frontmatter == filename/dirname.
+    if category == "skills":
+        for src_entry in sorted(source_dir.iterdir()):
+            if not src_entry.is_dir() or src_entry.name.startswith("."):
+                continue
+            dest_name = _enforce_namespace(src_entry.name, slug, category)
+            dest_skill_dir = dest_dir / dest_name
+            real_dest = str(dest_skill_dir.resolve())
+            if not real_dest.startswith(dest_root):
+                raise ValueError(
+                    f"Path traversal detected: '{dest_name}' resolves outside dest_dir."
+                )
+            if dest_skill_dir.exists():
+                shutil.rmtree(dest_skill_dir)
+            shutil.copytree(src_entry, dest_skill_dir)
+
+            # Rewrite `name:` inside SKILL.md so it matches the new dirname.
+            skill_md = dest_skill_dir / "SKILL.md"
+            if skill_md.is_file():
+                _rewrite_frontmatter_name(skill_md, dest_name)
+                sha256 = _sha256_file(skill_md)
+            else:
+                sha256 = ""
+
+            record = {
+                "src": str(src_entry),
+                "dest": str(dest_skill_dir),
+                "sha256": sha256,
+                "category": category,
+            }
+            manifest_list.append(record)
+            added.append(record)
+            logger.debug("Copied skill dir %s → %s", src_entry.name, dest_name)
+        return added
+
+    # agents / commands / rules — flat .md files
     for src_file in sorted(source_dir.glob(glob_pattern)):
         if not src_file.is_file():
             continue
@@ -126,17 +210,22 @@ def copy_with_manifest(
         dest_name = _enforce_namespace(src_file.name, slug, category)
         dest_file = dest_dir / dest_name
 
-        # Path traversal guard: realpath must stay inside dest_dir
         real_dest = str(dest_file.resolve())
         if not real_dest.startswith(dest_root):
             raise ValueError(
-                f"Path traversal detected: '{dest_name}' resolves outside dest_dir. "
-                f"dest={real_dest}, root={dest_root}"
+                f"Path traversal detected: '{dest_name}' resolves outside dest_dir."
             )
 
-        sha256 = _sha256_file(src_file)
         shutil.copy2(src_file, dest_file)
 
+        # Rewrite `name:` inside the YAML frontmatter so it matches the
+        # new filename (without the `.md` suffix). Skipped for rules/commands
+        # that don't declare `name:` — helper is a no-op in that case.
+        if category in {"agents", "commands", "skills"}:
+            stem = dest_name[:-3] if dest_name.endswith(".md") else dest_name
+            _rewrite_frontmatter_name(dest_file, stem)
+
+        sha256 = _sha256_file(dest_file)
         record = {
             "src": str(src_file),
             "dest": str(dest_file),
@@ -307,7 +396,11 @@ def reverse_remove_from_manifest(manifest_path: Path) -> None:
     files = data.get("files", [])
     for record in reversed(files):
         dest = Path(record["dest"])
-        if dest.exists():
+        if dest.is_dir():
+            # Skills are directories
+            shutil.rmtree(dest, ignore_errors=True)
+            logger.debug("Removed dir %s", dest)
+        elif dest.exists():
             dest.unlink()
             logger.debug("Removed %s", dest)
         else:
