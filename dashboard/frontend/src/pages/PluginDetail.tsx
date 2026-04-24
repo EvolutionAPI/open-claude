@@ -144,6 +144,9 @@ export default function PluginDetail() {
   const [triggers, setTriggers] = useState<Trigger[]>([])
   const [capLoadingId, setCapLoadingId] = useState<string | null>(null)
 
+  // Wave 2.0 — Icon fallback state
+  const [iconError, setIconError] = useState(false)
+
   useEffect(() => {
     if (!slug) return
     setLoading(true)
@@ -396,7 +399,16 @@ export default function PluginDetail() {
       <div className="flex items-start justify-between mb-6">
         <div className="flex items-center gap-4">
           <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-[#00FFA7]/8 border border-[#00FFA7]/15">
-            <Package size={24} className="text-[#00FFA7]" />
+            {!iconError && plugin.icon_url ? (
+              <img
+                src={plugin.icon_url}
+                alt={plugin.name}
+                className="w-6 h-6 object-contain"
+                onError={() => setIconError(true)}
+              />
+            ) : (
+              <Package size={24} className="text-[#00FFA7]" />
+            )}
           </div>
           <div>
             <h1 className="text-xl font-bold text-[#e6edf3]">{plugin.name}</h1>

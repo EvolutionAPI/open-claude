@@ -274,6 +274,120 @@ def read_manifest(plugin_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Wave 2.0: In-place asset registration (icon + avatar)
+# ---------------------------------------------------------------------------
+
+# Maximum allowed size for any declared plugin asset (icon / avatar).
+_ASSET_MAX_BYTES = 512 * 1024  # 512 KB
+
+# Magic byte signatures for allowed image formats.
+# References: PNG (RFC 2083), JPEG (JFIF/Exif), WEBP (RIFF container).
+_MAGIC_PNG = b"\x89PNG\r\n\x1a\n"
+_MAGIC_JPEG = b"\xff\xd8\xff"
+_MAGIC_WEBP_RIFF = b"RIFF"
+_MAGIC_WEBP_TAG = b"WEBP"
+
+
+def _sniff_image_mime(header: bytes) -> Optional[str]:
+    """Return MIME type from magic bytes, or None if not a supported image.
+
+    Supports PNG, JPEG/JPG, and WEBP.  SVG is not supported and returns None.
+    """
+    if header[:8] == _MAGIC_PNG:
+        return "image/png"
+    if header[:3] == _MAGIC_JPEG:
+        return "image/jpeg"
+    # WEBP: "RIFF????WEBP" where ???? is 4-byte file size (little-endian)
+    if header[:4] == _MAGIC_WEBP_RIFF and len(header) >= 12 and header[8:12] == _MAGIC_WEBP_TAG:
+        return "image/webp"
+    return None
+
+
+def register_in_place_asset(
+    plugin_dir: Path,
+    rel_path: str,
+    slug: str,
+    expected_sha256: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Validate and register a plugin asset that lives in-place (not copied).
+
+    Assets (icon, avatar) remain inside ``plugins/{slug}/ui/assets/`` and are
+    served by the existing ``/plugins/<slug>/ui/<path>`` endpoint.  This
+    function validates size, magic bytes (MIME sniff), and optional SHA256,
+    then returns a record suitable for appending to the install manifest with
+    ``category: "asset"``.
+
+    Args:
+        plugin_dir: Absolute path to the installed plugin directory.
+        rel_path: Path to the asset relative to plugin_dir (e.g. ``ui/assets/icon.png``).
+        slug: Plugin slug (for error messages).
+        expected_sha256: If the manifest declares a SHA256, validate against it.
+
+    Returns:
+        Dict with keys ``rel_path``, ``sha256``, ``size_bytes``, ``mime``,
+        ``category`` (= "asset").
+
+    Raises:
+        FileNotFoundError: If the asset file does not exist.
+        ValueError: If size > 512KB, MIME not supported, or SHA mismatch.
+    """
+    asset_path = plugin_dir / rel_path
+
+    # Realpath containment — asset must stay inside plugin_dir
+    plugin_real = os.path.realpath(str(plugin_dir))
+    asset_real = os.path.realpath(str(asset_path))
+    if not asset_real.startswith(plugin_real + os.sep):
+        raise ValueError(
+            f"Asset path '{rel_path}' escapes plugin directory (path traversal)."
+        )
+
+    if not asset_path.exists():
+        raise FileNotFoundError(
+            f"Plugin '{slug}': declared asset '{rel_path}' not found in plugin directory."
+        )
+
+    # Size check
+    size_bytes = asset_path.stat().st_size
+    if size_bytes > _ASSET_MAX_BYTES:
+        size_kb = size_bytes // 1024
+        raise ValueError(
+            f"Asset '{rel_path}' exceeds 512KB limit ({size_kb}KB). "
+            "Reduce the image size or use a compressed format."
+        )
+
+    # Magic byte MIME sniff
+    with open(asset_path, "rb") as f:
+        header = f.read(16)
+    mime = _sniff_image_mime(header)
+    if mime is None:
+        raise ValueError(
+            f"Asset '{rel_path}' is not a supported image format. "
+            "Allowed: PNG, JPEG, WEBP. SVG is rejected due to XSS risk."
+        )
+
+    # SHA256 — compute always; compare if declared
+    actual_sha256 = _sha256_file(asset_path)
+    if expected_sha256 is not None and actual_sha256 != expected_sha256.lower():
+        raise ValueError(
+            f"Asset '{rel_path}' SHA256 mismatch. "
+            f"Expected: {expected_sha256}. Actual: {actual_sha256}."
+        )
+
+    logger.info(
+        "Registered in-place asset '%s' for plugin '%s' (size=%dB, mime=%s, sha=%s...)",
+        rel_path, slug, size_bytes, mime, actual_sha256[:12],
+    )
+
+    return {
+        "category": "asset",
+        "rel_path": rel_path,
+        "sha256": actual_sha256,
+        "size_bytes": size_bytes,
+        "mime": mime,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Atomic file write helper (AC33 — TOCTOU prevention)
 # ---------------------------------------------------------------------------
 

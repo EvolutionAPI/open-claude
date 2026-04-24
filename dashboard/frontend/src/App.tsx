@@ -1,6 +1,7 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { hydrateAgentMeta } from './lib/agent-meta'
 import { NotificationProvider } from './context/NotificationContext'
 import Sidebar from './components/Sidebar'
 import Overview from './pages/Overview'
@@ -69,6 +70,14 @@ function AppContent() {
   const isWorkspace = location.pathname === '/workspace' || location.pathname.startsWith('/workspace/')
   const { user, loading, needsSetup, hasPermission } = useAuth()
   const extUser = user as (typeof user & OnboardingUser) | null
+
+  // Wave 2.0: hydrate agent meta once per authenticated session.
+  // Must be declared before any early return (Rules of Hooks).
+  useEffect(() => {
+    if (user) {
+      hydrateAgentMeta()
+    }
+  }, [user])
 
   // Share links are public — render without auth or sidebar
   if (isShare) {

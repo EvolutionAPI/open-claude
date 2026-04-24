@@ -14,6 +14,13 @@ WORKSPACE = Path(__file__).resolve().parent.parent.parent
 # Slug: starts and ends with alphanum, interior may have hyphens, 3-64 chars
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 
+# Allowed asset extensions for plugin icon / avatar (Wave 2.0).
+# SVG is intentionally excluded — XSS surface, no sanitizer in v2.0.
+_ALLOWED_ASSET_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+
+# Hex SHA256 pattern (64 chars)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
 # Semver: MAJOR.MINOR.PATCH with optional pre-release/build metadata
 _SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -134,6 +141,132 @@ class ReadonlyQuery(BaseModel):
         return v
 
 
+def _validate_asset_path(v: str) -> str:
+    """Shared validator for icon / avatar path fields (Wave 2.0).
+
+    Rules (ADR decisions 2, 3, 6):
+    - Must be relative (no leading slash)
+    - Must not contain path traversal sequences (..)
+    - Must start with 'ui/' (ensures serving by existing endpoint)
+    - Must use forward slashes only
+    - Extension must be in _ALLOWED_ASSET_EXTENSIONS (rejects .svg)
+    - External URLs (http/https) are rejected
+    """
+    if v.startswith(("http://", "https://")):
+        raise ValueError(
+            f"Asset path '{v}' must be a relative path inside the plugin tarball. "
+            "External URLs are not supported in v2.0."
+        )
+    if v.startswith("/"):
+        raise ValueError(f"Asset path '{v}' must be relative (no leading slash).")
+    # Reject backslash (Windows-style paths)
+    if "\\" in v:
+        raise ValueError(f"Asset path '{v}' must use forward slashes only.")
+    # Reject traversal sequences
+    parts = Path(v).parts
+    depth = 0
+    for part in parts:
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(
+                    f"Asset path '{v}' contains path traversal sequence '..'."
+                )
+        else:
+            depth += 1
+    # Must start with ui/
+    if not v.startswith("ui/"):
+        raise ValueError(
+            f"Asset path '{v}' must start with 'ui/' so it is served by the "
+            "existing /plugins/<slug>/ui/<path> endpoint."
+        )
+    # Extension whitelist
+    ext = Path(v).suffix.lower()
+    if ext not in _ALLOWED_ASSET_EXTENSIONS:
+        raise ValueError(
+            f"Asset '{v}' has extension '{ext}' which is not allowed. "
+            f"Allowed extensions: {sorted(_ALLOWED_ASSET_EXTENSIONS)}. "
+            "SVG is rejected due to XSS risk (see ADR decision 6)."
+        )
+    return v
+
+
+class PluginMetadata(BaseModel):
+    """Optional visual identity metadata for a plugin (Wave 2.0).
+
+    Declared under ``metadata:`` in plugin.yaml.  All fields are optional
+    at the struct level; icon is required when the metadata block is present.
+    """
+
+    icon: str
+    icon_sha256: Optional[str] = None
+
+    @field_validator("icon")
+    @classmethod
+    def icon_path_valid(cls, v: str) -> str:
+        return _validate_asset_path(v)
+
+    @field_validator("icon_sha256")
+    @classmethod
+    def icon_sha256_pattern(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _SHA256_RE.match(v):
+            raise ValueError(
+                f"icon_sha256 '{v}' must be a 64-character lowercase hex SHA256."
+            )
+        return v
+
+
+class PluginAgentEntry(BaseModel):
+    """Optional per-agent metadata that enriches the agent scan (Wave 2.0).
+
+    Declared under ``agents:`` in plugin.yaml.  ``file`` is the key used to
+    match against the scanned agent .md files in ``agents/`` directory.
+    Existence of ``file`` in the tarball is validated at install time (not
+    here) to avoid coupling schema to filesystem state.
+    """
+
+    file: str
+    avatar: Optional[str] = None
+    avatar_sha256: Optional[str] = None
+
+    @field_validator("file")
+    @classmethod
+    def file_path_relative(cls, v: str) -> str:
+        """file must be relative and not traverse up."""
+        if v.startswith("/"):
+            raise ValueError(f"agents[].file '{v}' must be relative.")
+        if "\\" in v:
+            raise ValueError(f"agents[].file '{v}' must use forward slashes.")
+        parts = Path(v).parts
+        depth = 0
+        for part in parts:
+            if part == "..":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError(
+                        f"agents[].file '{v}' contains path traversal sequence '..'."
+                    )
+            else:
+                depth += 1
+        return v
+
+    @field_validator("avatar")
+    @classmethod
+    def avatar_path_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return _validate_asset_path(v)
+        return v
+
+    @field_validator("avatar_sha256")
+    @classmethod
+    def avatar_sha256_pattern(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _SHA256_RE.match(v):
+            raise ValueError(
+                f"avatar_sha256 '{v}' must be a 64-character lowercase hex SHA256."
+            )
+        return v
+
+
 class PluginManifest(BaseModel):
     """Full plugin.yaml manifest schema for v1a."""
 
@@ -173,6 +306,11 @@ class PluginManifest(BaseModel):
 
     # --- Source URL (for remote installs, Vault condition C6) ---
     source_url: Optional[str] = None
+
+    # --- Wave 2.0: Plugin & Agent identity (icon + avatar) ---
+    # Both optional — existing plugins without these fields are unaffected.
+    metadata: Optional[PluginMetadata] = None
+    agents: Optional[List[PluginAgentEntry]] = None
 
     @field_validator("id")
     @classmethod
@@ -248,7 +386,6 @@ class PluginManifest(BaseModel):
                         "All plugin queries must only access the plugin's own tables."
                     )
         return self
-
 
 def load_plugin_manifest(plugin_dir: Path) -> PluginManifest:
     """Load and validate plugin.yaml from a plugin directory.

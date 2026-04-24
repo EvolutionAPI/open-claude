@@ -62,7 +62,26 @@ def _audit(conn: sqlite3.Connection, plugin_id: str, action: str, payload: Any =
 
 
 def _plugin_to_dict(row: sqlite3.Row) -> dict:
-    return dict(row)
+    """Serialize a plugins_installed row to a dict.
+
+    Wave 2.0: adds ``icon_url`` derived from ``manifest.metadata.icon`` when
+    present.  URL follows the existing /plugins/<slug>/ui/<path> pattern.
+    """
+    d = dict(row)
+    # Derive icon_url from manifest metadata (Wave 2.0, additive)
+    try:
+        manifest = json.loads(d.get("manifest_json") or "{}")
+        metadata = manifest.get("metadata") or {}
+        icon_path = metadata.get("icon")
+        if icon_path and isinstance(icon_path, str) and icon_path.startswith("ui/"):
+            slug = d.get("slug", "")
+            # icon_path is e.g. "ui/assets/icon.png"; strip the "ui/" prefix for URL
+            d["icon_url"] = f"/plugins/{slug}/ui/{icon_path[3:]}"
+        else:
+            d["icon_url"] = None
+    except Exception:
+        d["icon_url"] = None
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +449,7 @@ def install_plugin():
     from plugin_loader import PluginInstaller, ConflictError, VersionError
     from plugin_file_ops import (
         copy_with_manifest, append_rules_index, write_manifest,
+        register_in_place_asset,
     )
     from plugin_migrator import install_plugin_sql, MigrationError
     from plugin_hook_runner import run_lifecycle_hook, LifecycleHookError
@@ -648,6 +668,41 @@ def install_plugin():
         state["completed_steps"].append({"step": "copy_widgets", "widget_files": widget_files})
         save_state(slug, state)
 
+        # --- Step: Wave 2.0 — validate + register in-place assets (icon/avatar) ---
+        # Assets stay inside plugins/{slug}/ui/assets/; serving uses the existing
+        # /plugins/<slug>/ui/<path> endpoint. Size, magic-byte MIME, and optional
+        # SHA256 are validated here before the DB is written.
+        asset_records: list[dict] = []
+        _plugin_manifest_obj = None
+        try:
+            from plugin_schema import PluginManifest
+            _plugin_manifest_obj = PluginManifest.model_validate(manifest)
+        except Exception:
+            pass  # schema already validated at preview; best-effort here
+
+        if _plugin_manifest_obj is not None:
+            # Icon
+            if _plugin_manifest_obj.metadata and _plugin_manifest_obj.metadata.icon:
+                rec = register_in_place_asset(
+                    plugin_dir,
+                    _plugin_manifest_obj.metadata.icon,
+                    slug,
+                    expected_sha256=_plugin_manifest_obj.metadata.icon_sha256,
+                )
+                asset_records.append(rec)
+            # Agent avatars
+            for agent_entry in (_plugin_manifest_obj.agents or []):
+                if agent_entry.avatar:
+                    rec = register_in_place_asset(
+                        plugin_dir,
+                        agent_entry.avatar,
+                        slug,
+                        expected_sha256=agent_entry.avatar_sha256,
+                    )
+                    asset_records.append(rec)
+        state["completed_steps"].append({"step": "register_assets", "asset_files": asset_records})
+        save_state(slug, state)
+
         # --- Step: post-install hook ---
         post_hook = plugin_dir / "hooks" / "post-install.sh"
         if post_hook.exists():
@@ -690,11 +745,13 @@ def install_plugin():
             "commands": command_files,
             "rules": rule_files,
             "widgets": widget_files,
+            "assets": asset_records,
             "routine_activation_pending": routine_error is not None,
         }
         finalize_install(slug, final_manifest)
 
         _audit(conn, slug, "install", {"source_url": source_url}, success=True)
+        invalidate_agent_meta_cache()
         lock.__exit__(None, None, None)
 
         return jsonify({
@@ -846,6 +903,7 @@ def uninstall_plugin(slug: str):
         _reload_scheduler()
 
         _audit(conn, slug, "uninstall", success=True)
+        invalidate_agent_meta_cache()
         return jsonify({"slug": slug, "status": "uninstalled"})
 
     except Exception as exc:
@@ -1162,6 +1220,19 @@ def plugin_health(slug: str):
         hash_target = dest / "SKILL.md" if dest.is_dir() else dest
         if expected_sha and hash_target.is_file() and _sha256(hash_target) != expected_sha:
             tampered.append(f"tampered:{dest}")
+
+    # Wave 2.0: validate in-place assets (icon / avatar) — AC2.0.6
+    for asset_info in manifest.get("assets", []):
+        rel_path = asset_info.get("rel_path")
+        expected_sha = asset_info.get("sha256")
+        if not rel_path:
+            continue
+        asset_path = plugin_dir / rel_path
+        if not asset_path.exists():
+            tampered.append(f"missing_asset:{rel_path}")
+            continue
+        if expected_sha and _sha256(asset_path) != expected_sha:
+            tampered.append(f"tampered_asset:{rel_path}")
 
     if tampered:
         return jsonify({"slug": slug, "status": "broken", "tampered_files": tampered}), 200
@@ -1963,6 +2034,7 @@ def update_plugin(slug: str):
 
         # 13. Audit log
         _audit(conn, slug, "update", {"from": installed_version, "to": new_version, "sql_sha_preserved": True})
+        invalidate_agent_meta_cache()
 
         return jsonify({
             "status": "updated",
@@ -1993,3 +2065,99 @@ def marketplace():
         return jsonify({"plugins": [], "error": "registry_module_not_available"})
     except Exception as exc:
         return jsonify({"plugins": [], "error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Wave 2.0: GET /api/agent-meta — merged registry (natives + plugin agents)
+#
+# Response shape: { slug: { label, avatar_url } }
+# Cached in-process; invalidated by install / uninstall / update.
+# Frontend hydrates agent-meta.ts once on mount — getAgentMeta() stays sync.
+# ---------------------------------------------------------------------------
+
+_AGENT_META_CACHE: dict | None = None
+_AGENT_META_LOCK = threading.Lock()
+
+
+def invalidate_agent_meta_cache() -> None:
+    """Clear the agent-meta cache. Call after install / uninstall / update."""
+    global _AGENT_META_CACHE
+    with _AGENT_META_LOCK:
+        _AGENT_META_CACHE = None
+
+
+def _build_agent_meta_response() -> dict:
+    """Build the merged {slug → {label, avatar_url}} dict.
+
+    Merges:
+    1. Native agent seed (38 agents, static).
+    2. Plugin agents from installed + active plugins that declare ``agents``
+       with an ``avatar`` in their manifest.
+    """
+    from agent_meta_seed import NATIVE_AGENT_SEED
+
+    result: dict = {}
+
+    # 1. Start with native seed
+    for slug, entry in NATIVE_AGENT_SEED.items():
+        result[slug] = {"label": entry["label"], "avatar_url": entry["avatar_url"]}
+
+    # 2. Merge plugin agents
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT slug, manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active'"
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning("agent-meta: DB query failed, returning native-only seed: %s", exc)
+        return result
+
+    for row in rows:
+        plugin_slug = row["slug"]
+        try:
+            manifest = json.loads(row["manifest_json"] or "{}")
+        except Exception:
+            continue
+
+        agents_entries = manifest.get("agents") or []
+        for agent_entry in agents_entries:
+            file_path = agent_entry.get("file", "")
+            avatar_path = agent_entry.get("avatar")
+            if not file_path:
+                continue
+
+            # Derive namespaced slug: agents/pm-nova.md → plugin-pm-essentials-pm-nova
+            filename = Path(file_path).stem  # "pm-nova"
+            namespaced_slug = f"plugin-{plugin_slug}-{filename}"
+
+            label = f"{manifest.get('name', plugin_slug)} / {filename}"
+            avatar_url: str | None = None
+            if avatar_path:
+                # avatar_path is relative to plugin dir (e.g. ui/assets/avatars/pm-nova.png)
+                avatar_url = f"/plugins/{plugin_slug}/ui/{avatar_path[len('ui/') if avatar_path.startswith('ui/') else 0:]}"
+                # Always use the clean /plugins/{slug}/ui/{subpath} form
+                if avatar_path.startswith("ui/"):
+                    avatar_url = f"/plugins/{plugin_slug}/ui/{avatar_path[3:]}"
+                else:
+                    avatar_url = f"/plugins/{plugin_slug}/ui/{avatar_path}"
+
+            result[namespaced_slug] = {"label": label, "avatar_url": avatar_url}
+
+    return result
+
+
+@bp.route("/api/agent-meta", methods=["GET"])
+@login_required
+def get_agent_meta():
+    """Return merged agent metadata dict (Wave 2.0).
+
+    Cached in-process; invalidated by install / uninstall / update.
+    Response: { slug: { label: str, avatar_url: str | null } }
+    """
+    global _AGENT_META_CACHE
+    with _AGENT_META_LOCK:
+        if _AGENT_META_CACHE is None:
+            _AGENT_META_CACHE = _build_agent_meta_response()
+        return jsonify(_AGENT_META_CACHE)

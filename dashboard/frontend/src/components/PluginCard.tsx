@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { useState } from 'react'
 import { Package, AlertTriangle, CheckCircle, Loader2, XCircle } from 'lucide-react'
 
 export interface Plugin {
@@ -15,6 +16,8 @@ export interface Plugin {
   last_error?: string
   // Wave 1.1: per-capability disable state (JSON string from DB)
   capabilities_disabled?: string
+  // Wave 2.0: plugin icon URL served by /plugins/<slug>/ui/<path>
+  icon_url?: string | null
 }
 
 interface Props {
@@ -45,6 +48,8 @@ export default function PluginCard({ plugin, onClick, onToggle }: Props) {
   const { t } = useTranslation()
   const isEnabled = plugin.enabled === 1
   const busy = plugin.status === 'installing' || plugin.status === 'uninstalling'
+  // Wave 2.0: track icon load error per card (useState prevents reset on re-render)
+  const [iconError, setIconError] = useState(false)
 
   let manifest: { description?: string; capabilities?: string[] } = {}
   try {
@@ -52,6 +57,8 @@ export default function PluginCard({ plugin, onClick, onToggle }: Props) {
   } catch {
     // ignore malformed manifest
   }
+
+  const showIcon = !iconError && !!plugin.icon_url
 
   return (
     <div
@@ -63,7 +70,16 @@ export default function PluginCard({ plugin, onClick, onToggle }: Props) {
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#00FFA7]/8 border border-[#00FFA7]/15 shrink-0">
-            <Package size={18} className="text-[#00FFA7]" />
+            {showIcon ? (
+              <img
+                src={plugin.icon_url!}
+                alt={plugin.name}
+                className="w-[18px] h-[18px] object-contain"
+                onError={() => setIconError(true)}
+              />
+            ) : (
+              <Package size={18} className="text-[#00FFA7]" />
+            )}
           </div>
           <div className="min-w-0">
             <p className="text-sm font-semibold text-[#e6edf3] truncate">{plugin.name}</p>
