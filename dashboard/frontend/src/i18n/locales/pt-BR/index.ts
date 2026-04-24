@@ -652,6 +652,8 @@ const translations = {
         createMilestone: 'Criar marco',
         milestoneCreated: 'Marco do Brain Repo criado: {{tag}}',
         milestoneFailed: 'Falha ao criar marco do Brain Repo',
+        syncError: 'erro de sync',
+        reconnect: 'Reconectar',
       },
     },
 

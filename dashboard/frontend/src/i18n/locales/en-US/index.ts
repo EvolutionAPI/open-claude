@@ -660,6 +660,8 @@ const translations = {
         createMilestone: 'Create milestone',
         milestoneCreated: 'Brain Repo milestone created: {{tag}}',
         milestoneFailed: 'Failed to create Brain Repo milestone',
+        syncError: 'sync error',
+        reconnect: 'Reconnect',
       },
     },
 

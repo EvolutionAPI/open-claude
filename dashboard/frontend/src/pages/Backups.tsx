@@ -364,20 +364,38 @@ function DestinationsPanel({
       </div>
 
       {/* Brain Repo */}
-      <div className={`${cardBase} ${brainConfigured ? cardConnected : cardOff}`}>
+      {/* When last_error is present the card uses a danger border so the user
+          can't miss that auto-sync is broken — plus a Reconnect action that
+          clears the error and re-runs the onboarding flow. */}
+      <div className={`${cardBase} ${
+        brainConfigured && brain?.last_error
+          ? 'border-[#3a1515] hover:border-[#5a2020]'
+          : brainConfigured ? cardConnected : cardOff
+      }`}>
         <div className="flex items-start justify-between gap-2 mb-3">
           <div className="flex items-center gap-3">
             <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${
-              brainConfigured ? 'bg-[#00FFA7]/10 border-[#00FFA7]/20' : 'bg-[#152030] border-[#1e2a3a]'
+              brainConfigured && !brain?.last_error ? 'bg-[#00FFA7]/10 border-[#00FFA7]/20'
+                : brainConfigured && brain?.last_error ? 'bg-[#3a1515]/40 border-[#5a2020]'
+                : 'bg-[#152030] border-[#1e2a3a]'
             }`}>
-              <GitBranch size={16} className={brainConfigured ? 'text-[#00FFA7]' : 'text-[#5a6b7f]'} />
+              <GitBranch size={16} className={
+                brainConfigured && !brain?.last_error ? 'text-[#00FFA7]'
+                : brainConfigured && brain?.last_error ? 'text-[#f87171]'
+                : 'text-[#5a6b7f]'
+              } />
             </div>
             <div>
               <div className="text-[14px] font-semibold text-[#e2e8f0]">{t('backups.destinations.brainRepo')}</div>
               <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.destinations.brainRepoDesc')}</div>
             </div>
           </div>
-          {brainConfigured ? (
+          {brainConfigured && brain?.last_error ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-500/10 text-[#f87171] border border-red-500/20 uppercase tracking-wider">
+              <AlertCircle size={9} />
+              {t('backups.destinations.syncError')}
+            </span>
+          ) : brainConfigured ? (
             <span className={badgeOk}>
               <span className="h-1.5 w-1.5 rounded-full bg-[#00FFA7]" />
               {t('backups.destinations.connected')}
@@ -403,6 +421,14 @@ function DestinationsPanel({
                 <span className="ml-2 text-[#F59E0B]">• {brain!.pending_count} {t('backups.destinations.pending')}</span>
               )}
             </div>
+            {brain?.last_error && (
+              <div className="mt-2 flex items-start gap-1.5 p-2 rounded-lg bg-[#1a0a0a] border border-[#3a1515]">
+                <AlertTriangle size={11} className="text-[#f87171] flex-shrink-0 mt-0.5" />
+                <p className="text-[10px] text-[#f87171] leading-tight break-words">
+                  {brain.last_error}
+                </p>
+              </div>
+            )}
             <div className="flex items-center gap-2 mt-3">
               <button
                 onClick={onMilestone}
@@ -418,6 +444,14 @@ function DestinationsPanel({
               >
                 {t('backups.destinations.manage')}
               </Link>
+              {brain?.last_error && (
+                <Link
+                  to="/onboarding"
+                  className={`${pillBtn} bg-[#f87171]/10 text-[#f87171] border border-[#3a1515] hover:bg-[#f87171]/20`}
+                >
+                  {t('backups.destinations.reconnect')}
+                </Link>
+              )}
             </div>
           </>
         ) : (
@@ -739,6 +773,20 @@ export default function Backups() {
       fetchBrainSnapshots()
     }
   }, [activeTab, config?.brain_repo_configured, brainSnapshots, brainLoading, fetchBrainSnapshots])
+
+  // Poll the backup config every 30s while the user is on this page and
+  // brain repo is connected. Surfaces last_error changes from the watcher
+  // (auto-sync failures) without requiring a manual refresh. Pauses when
+  // the tab is hidden to avoid burning CPU in background tabs.
+  useEffect(() => {
+    if (!config?.brain_repo_configured) return
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return
+      api.get('/backups/config').then((c) => setConfig(c)).catch(() => { /* ignore transient failures */ })
+    }
+    const interval = setInterval(tick, 30000)
+    return () => clearInterval(interval)
+  }, [config?.brain_repo_configured])
 
   // Poll job status while running
   useEffect(() => {
