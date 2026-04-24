@@ -633,9 +633,12 @@ except ImportError:
     pass  # Routes not yet created
 
 # Brain Repo watcher startup
+# Pass the app instance explicitly to avoid the circular `from app import app`
+# that triggered "Flask app is not registered with this 'SQLAlchemy' instance"
+# on every boot, leaving auto-sync permanently off.
 try:
     from brain_repo.watcher import start_brain_watcher
-    start_brain_watcher(WORKSPACE)
+    start_brain_watcher(WORKSPACE, flask_app=app)
 except Exception as _bw_exc:
     pass  # Brain watcher starts only when a brain repo is configured
 

@@ -134,19 +134,40 @@ class BrainRepoWatcher:
             log.info("BrainRepoWatcher stopped")
 
 
-def start_brain_watcher(install_dir: Path) -> "BrainRepoWatcher | None":
+def start_brain_watcher(install_dir: Path, flask_app=None) -> "BrainRepoWatcher | None":
     """Create and start a BrainRepoWatcher if sync is enabled.
 
     Reads BrainRepoConfig from the database (requires Flask app context).
     Returns None if no enabled config is found.
+
+    Args:
+        install_dir: workspace root — what the watcher observes.
+        flask_app: Flask app instance for DB queries. MUST be passed from
+            app.py after ``db.init_app(app)``. The old code used
+            ``from app import app`` which hit a circular import with a
+            half-initialised SQLAlchemy, producing the startup warning
+            "current Flask app is not registered with this 'SQLAlchemy'
+            instance" — and the watcher silently gave up. Passing ``app``
+            explicitly avoids the circular dependency.
     """
     try:
-        from app import app  # type: ignore[import]
+        if flask_app is None:
+            # Legacy fallback for callers that haven't been updated yet.
+            # Emits a clear warning so the issue is visible in logs.
+            try:
+                from app import app as flask_app  # type: ignore[import]
+            except Exception as exc:
+                log.error(
+                    "start_brain_watcher: flask_app not provided and fallback import failed: %s",
+                    exc,
+                )
+                return None
+
         from models import BrainRepoConfig  # type: ignore[import]
         from brain_repo.github_oauth import decrypt_token, get_master_key  # type: ignore[import]
         import brain_repo.git_ops as git_ops  # type: ignore[import]
 
-        with app.app_context():
+        with flask_app.app_context():
             config = BrainRepoConfig.query.filter_by(sync_enabled=True).first()
             if config is None:
                 log.info("start_brain_watcher: no enabled brain repo config found")
@@ -168,10 +189,23 @@ def start_brain_watcher(install_dir: Path) -> "BrainRepoWatcher | None":
             _master_key = master_key
 
             def _sync_fn() -> None:
-                """Commit and push any changes in the brain repo."""
+                """Commit and push any changes in the brain repo.
+
+                Mirrors the install_dir watched folders into brain_repo_dir
+                first (that's the step sync_force/tag_milestone also do).
+                Without it, the auto-sync commit finds nothing to commit
+                because the brain_repo_dir is frozen at bootstrap time.
+                """
                 token = decrypt_token(_token_enc, _master_key)
+                # Lazy import to avoid circular: routes.brain_repo imports
+                # from here at module load.
+                try:
+                    from routes.brain_repo import _sync_workspace_to_brain_repo
+                    _sync_workspace_to_brain_repo(install_dir, brain_repo_dir)
+                except Exception as exc:
+                    log.warning("watcher _sync_fn: workspace mirror failed: %s", exc)
                 git_ops.commit_all(brain_repo_dir, "auto: file watcher sync")
-                git_ops.push(brain_repo_dir, token)
+                git_ops.push(brain_repo_dir, token, with_tags=True)
 
             watcher = BrainRepoWatcher(
                 install_dir=install_dir,
