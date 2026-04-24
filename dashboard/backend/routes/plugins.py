@@ -761,8 +761,12 @@ def install_plugin():
                     detail={"cache_hit": scan_result.get("cache_hit", False)},
                 )
         else:
-            # Local dir source — no staged path, skip scan gracefully
-            logger.info("No staged_path for '%s' — skipping security scan (local source)", slug)
+            # preview() always sets staged_path for github:/https:/upload flows,
+            # so reaching this branch means something went wrong upstream.
+            return jsonify({
+                "error": "staged_path_missing",
+                "detail": "Plugin source was not staged — cannot run security scan.",
+            }), 500
     # -----------------------------------------------------------------------
     # End Wave 2.5 security scan gate
     # -----------------------------------------------------------------------
@@ -789,12 +793,9 @@ def install_plugin():
 
         # Wave 2.5 — use staged_path from preview() (single-resolve invariant).
         # preview() already downloaded + extracted the source; re-using staged_path
-        # avoids a second download.  staged_path is None for local-dir sources
-        # that were never staged, so fall back to resolve_source() in that case.
+        # avoids a second download. The scan gate above guarantees staged_path
+        # is set before we reach this point.
         source_path = preview.get("staged_path")
-        if source_path is None:
-            source_path = installer.resolve_source(source_url, auth_token=auth_token)
-
         if not isinstance(source_path, Path):
             from pathlib import Path as _Path
             source_path = _Path(source_path)

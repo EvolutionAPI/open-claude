@@ -1,6 +1,6 @@
 ---
 name: plugin-install
-description: Install an EvoNexus plugin from a git URL or local path. Use when the user asks to install a plugin, add a plugin, or mentions a plugin source URL (github:user/repo, https://github.com/..., or absolute local path). Triggers on phrases like "instala plugin", "install plugin X", "adicionar plugin", "quero instalar Y".
+description: Install an EvoNexus plugin from a git URL or uploaded archive. Use when the user asks to install a plugin, add a plugin, or mentions a plugin source URL (github:user/repo, https://..., or a ZIP/tar.gz upload). Triggers on phrases like "instala plugin", "install plugin X", "adicionar plugin", "quero instalar Y".
 metadata:
   category: plugins
   version: 1.0.0
@@ -17,11 +17,11 @@ Install an EvoNexus plugin through the `/api/plugins/*` endpoints. Plugins execu
 Ask for the plugin source if not provided. Accepted forms:
 
 - `github:user/repo` — default branch
-- `github:user/repo@v1.2.3` — specific tag
-- `https://github.com/user/repo` — same as github:
-- Absolute local path (dev only; rejected if under `/root`, `/etc`, `~/.ssh`)
+- `github:user/repo@v1.2.3` — specific tag or branch
+- `https://…/archive.tar.gz` or `https://…/archive.zip` — HTTPS tarball / zip URL
+- Uploaded archive (`.zip` / `.tar.gz`) — via the `/plugins` upload flow
 
-Reject `file://`, `ssh://`, and other schemes — backend will anyway.
+Local filesystem paths (`/abs/path`, `./rel`, `~/...`) and non-HTTPS schemes (`file://`, `ssh://`, etc.) are **rejected by the backend** — do not try to work around that. If the user has a local checkout, tell them to push to a branch, create a release tag, or zip the plugin directory and upload it.
 
 ### Step 2 — Preview the manifest
 

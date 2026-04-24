@@ -253,18 +253,27 @@ class PluginInstaller:
         """Resolve a source_url to a local directory containing plugin.yaml.
 
         Supported forms:
-          - local path: `/abs/path` or `./rel/path`
           - GitHub shorthand: `github:owner/repo` or `github:owner/repo@ref`
-          - HTTPS tarball: `https://.../archive.tar.gz`
-          - HTTPS zip: `https://.../archive.zip`
+          - HTTPS tarball:    `https://.../archive.tar.gz`
+          - HTTPS zip:        `https://.../archive.zip`
+
+        Uploaded archives (ZIP / tar.gz) go through
+        :meth:`extract_uploaded_archive` instead and never reach this function.
+
+        Local filesystem paths and non-HTTPS schemes (`file://`, `ssh://`,
+        bare `/abs/path`, `./rel`, `~/...`) are rejected — the install flow
+        must not read arbitrary directories off the host.
 
         Args:
-            source_url: One of the forms above.
+            source_url: One of the supported forms above.
             auth_token: Optional GitHub Personal Access Token for private
                 repos. Sent as `Authorization: token <pat>` header.
 
         Returns:
-            Path to a directory containing plugin.yaml.
+            Path to a staging directory containing plugin.yaml.
+
+        Raises:
+            ValueError: If the source does not match a supported form.
         """
         s = str(source_url).strip()
 
@@ -291,7 +300,11 @@ class PluginInstaller:
             staging_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", s)[-80:]
             return PluginInstaller.fetch_from_tarball(s, staging_slug, auth_token=auth_token)
 
-        return Path(s)
+        raise ValueError(
+            "Unsupported plugin source. Use `github:owner/repo[@ref]`, "
+            "an `https://` tarball URL, or upload a ZIP / tar.gz archive. "
+            "Local filesystem paths and other schemes are not accepted."
+        )
 
     @staticmethod
     def extract_uploaded_archive(file_storage, staging_slug: str) -> Path:
@@ -430,9 +443,13 @@ class PluginInstaller:
     ) -> tuple[Path, str]:
         """Resolve a plugin source and return (path, tarball_sha256).
 
-        For remote sources (github: / https:), captures the raw tarball bytes
-        SHA-256 *before* the temp file is unlinked, satisfying the Wave 2.5
-        cache key requirement.  For local directory sources, sha256 is "".
+        Captures the raw tarball bytes SHA-256 *before* the temp file is
+        unlinked, satisfying the Wave 2.5 cache key requirement.
+
+        Only `github:` and `https://` sources are accepted here — local
+        filesystem paths are rejected upstream by
+        :meth:`resolve_source`. Uploaded archives take a different entry
+        point (``extract_uploaded_archive``) and do not call this.
 
         This is the single-resolve entry-point — ``preview()`` and
         ``install_plugin()`` must both use this instead of calling
@@ -440,9 +457,10 @@ class PluginInstaller:
         """
         s = source.strip()
 
-        # Local directory path — no download, no SHA
         if not s.startswith("github:") and not s.startswith("https://"):
-            return self.resolve_source(s, auth_token=auth_token), ""
+            # Delegate error reporting to resolve_source for a single
+            # consistent rejection message.
+            self.resolve_source(s, auth_token=auth_token)
 
         # GitHub shorthand → tarball URL
         if s.startswith("github:"):
