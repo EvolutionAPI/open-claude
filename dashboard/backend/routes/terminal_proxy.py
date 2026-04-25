@@ -26,11 +26,10 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from urllib.parse import urlparse
 
 import requests
 from flask import Blueprint, Response, request, stream_with_context
-from flask_login import login_required
+from flask_login import current_user, login_required
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +124,7 @@ def register_websocket_proxy(sock) -> None:
     ``app.py``. Calling this from there keeps the dependency one-way.
     """
     try:
-        from websocket import WebSocketApp, create_connection  # type: ignore
+        from websocket import create_connection  # type: ignore
     except ImportError:
         log.warning(
             "terminal_proxy.register_websocket_proxy: websocket-client not "
@@ -136,7 +135,24 @@ def register_websocket_proxy(sock) -> None:
 
     @sock.route("/terminal/ws")
     def proxy_ws(client_ws):
-        """Bidirectional bridge: browser <-> Flask <-> terminal-server."""
+        """Bidirectional bridge: browser <-> Flask <-> terminal-server.
+
+        Auth: the global ``auth_middleware`` only gates ``/api/*`` and
+        ``/ws/*`` paths, so a request to ``/terminal/ws`` is *not* checked
+        upstream. Without the explicit ``current_user.is_authenticated``
+        guard below, anyone able to reach the dashboard (LAN, Tailscale
+        Funnel, Cloudflare Tunnel, public VPS) could open a PTY on the
+        host. flask-login's session cookie is read from the WS upgrade
+        request, so this works the same as ``@login_required`` on HTTP
+        routes.
+        """
+        if not current_user.is_authenticated:
+            try:
+                client_ws.close(reason="auth required")
+            except Exception:
+                pass
+            return
+
         target = f"{TERMINAL_WS_BASE}/ws"
         try:
             upstream = create_connection(target, timeout=10)
