@@ -102,8 +102,16 @@ export default function UpdatePreviewModal({
   // header for GET preview and in the POST body for update.
   const [authToken, setAuthToken] = useState('')
   const [authTokenOpen, setAuthTokenOpen] = useState(false)
+  // Editable source override. The prop `sourceUrl` is whatever was pinned
+  // at install time (often `@v0.1.0`) — when the user wants to look for
+  // newer releases they can point this to `@main` or a specific tag
+  // without having to uninstall/reinstall. The effective source used for
+  // preview + update is `sourceOverride || sourceUrl`.
+  const [sourceOverride, setSourceOverride] = useState('')
+  const [sourceOverrideOpen, setSourceOverrideOpen] = useState(false)
   const [previewAttempt, setPreviewAttempt] = useState(0)
-  const isGithubSource = sourceUrl.startsWith('github:')
+  const effectiveSource = (sourceOverride.trim() || sourceUrl).trim()
+  const isGithubSource = effectiveSource.startsWith('github:')
 
   // Wave 2.5 — security scan state
   const [scanVerdict, setScanVerdict] = useState<ScanVerdict | null>(null)
@@ -134,7 +142,7 @@ export default function UpdatePreviewModal({
     }
     api
       .get(
-        `/plugins/${slug}/update/preview?source=${encodeURIComponent(sourceUrl)}`,
+        `/plugins/${slug}/update/preview?source=${encodeURIComponent(effectiveSource)}`,
         Object.keys(headers).length > 0 ? headers : undefined,
       )
       .then((result) => {
@@ -155,6 +163,8 @@ export default function UpdatePreviewModal({
       })
     return () => { cancelled = true }
     // previewAttempt bumps trigger re-fetch after the user submits a token
+    // or changes the source override. effectiveSource is derived state, so
+    // sourceUrl + sourceOverride together drive it via previewAttempt.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, sourceUrl, t, previewAttempt])
 
@@ -163,7 +173,7 @@ export default function UpdatePreviewModal({
     setApplying(true)
     setApplyError(null)
     try {
-      const body: Record<string, unknown> = { source_url: sourceUrl }
+      const body: Record<string, unknown> = { source_url: effectiveSource }
       // Include GitHub PAT when provided (private-repo updates).
       if (authToken.trim()) {
         body.auth_token = authToken.trim()
@@ -235,6 +245,50 @@ export default function UpdatePreviewModal({
             <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-3">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <span>{previewError}</span>
+            </div>
+          )}
+
+          {/* Source override — let the user point preview/update at a
+              different ref (e.g. @main, a newer tag, or a different branch)
+              without uninstalling. Default is the pinned install-time URL. */}
+          {!loading && (
+            <div className="border border-[#21262d] rounded-xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSourceOverrideOpen((o) => !o)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-medium text-[#D0D5DD] hover:bg-white/5 transition-colors"
+              >
+                <span>📦 Source <span className="text-[#667085] font-mono">{effectiveSource}</span></span>
+                {sourceOverrideOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {sourceOverrideOpen && (
+                <div className="px-4 pb-3 pt-1 space-y-2">
+                  <input
+                    type="text"
+                    value={sourceOverride}
+                    onChange={(e) => setSourceOverride(e.target.value)}
+                    placeholder={sourceUrl || 'github:owner/repo@main'}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full bg-[#0d1117] border border-[#344054] rounded-lg px-3 py-2 text-xs font-mono text-[#e6edf3] placeholder:text-[#667085] focus:outline-none focus:border-[#00FFA7]"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] text-[#667085]">
+                      Override the pinned source (e.g. <code className="text-[#D0D5DD]">@main</code> or a newer tag) to discover updates beyond the installed version.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewError(null)
+                        setPreviewAttempt((n) => n + 1)
+                      }}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-[#00FFA7]/10 border border-[#00FFA7]/30 text-[#00FFA7] text-xs font-medium hover:bg-[#00FFA7]/20 transition-colors"
+                    >
+                      Preview
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
