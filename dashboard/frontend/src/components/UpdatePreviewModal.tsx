@@ -96,6 +96,14 @@ export default function UpdatePreviewModal({
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
   const [applyError, setApplyError] = useState<string | null>(null)
+  // GitHub PAT for private repos. Shown when the source is github:* and/or
+  // when an initial preview fetch fails with fetch_failed. Kept in component
+  // state only — never logged, never cached. Sent as X-Plugin-Auth-Token
+  // header for GET preview and in the POST body for update.
+  const [authToken, setAuthToken] = useState('')
+  const [authTokenOpen, setAuthTokenOpen] = useState(false)
+  const [previewAttempt, setPreviewAttempt] = useState(0)
+  const isGithubSource = sourceUrl.startsWith('github:')
 
   // Wave 2.5 — security scan state
   const [scanVerdict, setScanVerdict] = useState<ScanVerdict | null>(null)
@@ -120,19 +128,35 @@ export default function UpdatePreviewModal({
     let cancelled = false
     setLoading(true)
     setPreviewError(null)
+    const headers: Record<string, string> = {}
+    if (authToken.trim()) {
+      headers['X-Plugin-Auth-Token'] = authToken.trim()
+    }
     api
-      .get(`/plugins/${slug}/update/preview?source=${encodeURIComponent(sourceUrl)}`)
+      .get(
+        `/plugins/${slug}/update/preview?source=${encodeURIComponent(sourceUrl)}`,
+        Object.keys(headers).length > 0 ? headers : undefined,
+      )
       .then((result) => {
         if (!cancelled) setPreview(result as PreviewResult)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setPreviewError(e instanceof Error ? e.message : t('plugins.updatePreviewError'))
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : t('plugins.updatePreviewError')
+          setPreviewError(msg)
+          // Auto-open token input when the likely cause is private-repo auth
+          if (isGithubSource && !authToken && /fetch_failed|404|401/.test(msg)) {
+            setAuthTokenOpen(true)
+          }
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [slug, sourceUrl, t])
+    // previewAttempt bumps trigger re-fetch after the user submits a token
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, sourceUrl, t, previewAttempt])
 
   async function handleApply() {
     if (!preview || preview.up_to_date || preview.sql_migrations_blocked) return
@@ -140,6 +164,10 @@ export default function UpdatePreviewModal({
     setApplyError(null)
     try {
       const body: Record<string, unknown> = { source_url: sourceUrl }
+      // Include GitHub PAT when provided (private-repo updates).
+      if (authToken.trim()) {
+        body.auth_token = authToken.trim()
+      }
       // Wave 2.5 — attach scan confirmation info
       if (scanVerdict === 'WARN' && confirmed) {
         body.confirmed_verdict = 'WARN'
@@ -207,6 +235,50 @@ export default function UpdatePreviewModal({
             <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-3">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <span>{previewError}</span>
+            </div>
+          )}
+
+          {/* GitHub PAT input — for private repos. Always available for
+              github: sources; auto-opens when preview fails with 401/404. */}
+          {!loading && isGithubSource && (
+            <div className="border border-[#21262d] rounded-xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setAuthTokenOpen((o) => !o)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-medium text-[#D0D5DD] hover:bg-white/5 transition-colors"
+              >
+                <span>🔒 Private repository? (optional GitHub PAT)</span>
+                {authTokenOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {authTokenOpen && (
+                <div className="px-4 pb-3 pt-1 space-y-2">
+                  <input
+                    type="password"
+                    value={authToken}
+                    onChange={(e) => setAuthToken(e.target.value)}
+                    placeholder="ghp_... or gho_..."
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full bg-[#0d1117] border border-[#344054] rounded-lg px-3 py-2 text-xs font-mono text-[#e6edf3] placeholder:text-[#667085] focus:outline-none focus:border-[#00FFA7]"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] text-[#667085]">
+                      Required for private repos. Scope: <code className="text-[#D0D5DD]">repo</code>. Never logged.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewError(null)
+                        setPreviewAttempt((n) => n + 1)
+                      }}
+                      disabled={!authToken.trim()}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-[#00FFA7]/10 border border-[#00FFA7]/30 text-[#00FFA7] text-xs font-medium hover:bg-[#00FFA7]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
