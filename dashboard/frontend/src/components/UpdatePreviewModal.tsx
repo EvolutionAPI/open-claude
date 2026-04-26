@@ -202,7 +202,8 @@ export default function UpdatePreviewModal({
   // Wave 2.5 — canApply depends on scan verdict
   const scanGatePassed =
     scanVerdict === 'APPROVE' ||
-    scanVerdict === null /* skip */ ||
+    scanVerdict === 'SKIPPED' /* admin bypassed */ ||
+    scanVerdict === null /* legacy: still represents skip until a result arrives */ ||
     (scanVerdict === 'WARN' && confirmed) ||
     (scanVerdict === 'BLOCK' && !!overrideReason)
 

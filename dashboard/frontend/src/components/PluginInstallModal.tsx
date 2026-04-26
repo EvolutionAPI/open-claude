@@ -44,6 +44,9 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   const [, setScanResult] = useState<ScanResult | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
   const [warnConfirmed, setWarnConfirmed] = useState(false)
+  // Optional reason captured when admin checks "Skip scan" — never required;
+  // backend audit logs the skip regardless.
+  const [skipReason, setSkipReason] = useState('')
 
   // Effective source: uploaded staged path wins over URL input
   const effectiveSource = () => (uploadedPath ?? sourceUrl.trim())
@@ -62,12 +65,15 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
   }, [])
 
   // Scan gate logic (mirrors UpdatePreviewModal):
-  // null = scan not yet completed (wait) | APPROVE = pass | WARN+confirmed = pass |
-  // BLOCK+overrideReason(≥20) = admin pass
+  //   null    = scan not yet completed (wait)
+  //   APPROVE = pass
+  //   WARN    = pass when checkbox confirmed
+  //   BLOCK   = pass when admin types a ≥20-char override reason
+  //   SKIPPED = pass immediately (admin chose to bypass; audit logs the action)
   const scanGatePassed =
     scanVerdict === null
       ? false // still scanning
-      : scanVerdict === 'APPROVE'
+      : scanVerdict === 'APPROVE' || scanVerdict === 'SKIPPED'
         ? true
         : scanVerdict === 'WARN'
           ? warnConfirmed
@@ -129,6 +135,12 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
       if (scanVerdict === 'WARN' && warnConfirmed) body.confirmed_verdict = 'WARN'
       if (scanVerdict === 'BLOCK' && overrideReason.trim().length >= 20) {
         body.override_reason = overrideReason.trim()
+      }
+      // SKIPPED — admin bypassed the scan; backend audit-logs both the skip
+      // and the optional reason.
+      if (scanVerdict === 'SKIPPED') {
+        body.skip_scan = true
+        if (skipReason.trim()) body.skip_reason = skipReason.trim()
       }
       const result = await api.post('/plugins/install', body) as { slug: string; mcp_servers_installed?: Array<{ effective_name: string }> }
       setInstalledSlug(result.slug)
@@ -284,6 +296,7 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
                 authToken={authToken.trim() || undefined}
                 onVerdict={handleScanVerdict}
                 onOverride={handleOverride}
+                onSkipReason={setSkipReason}
               />
 
               {/* WARN confirmation checkbox */}
