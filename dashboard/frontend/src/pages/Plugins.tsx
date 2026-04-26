@@ -6,6 +6,7 @@ import {
   CheckCircle, Star,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { hydratePluginUiRegistry } from '../lib/plugin-ui-registry'
 import PluginCard, { type Plugin } from '../components/PluginCard'
 import PluginInstallModal from '../components/PluginInstallModal'
 
@@ -313,7 +314,15 @@ export default function Plugins() {
       {showInstall && (
         <PluginInstallModal
           onClose={() => setShowInstall(false)}
-          onInstalled={fetchPlugins}
+          onInstalled={async () => {
+            // Re-fetch plugin list AND the UI registry so the sidebar +
+            // bundle URLs reflect the manifest just installed (without this,
+            // the user has to hard-reload the browser to see the new pages).
+            await Promise.all([
+              hydratePluginUiRegistry(true),
+              Promise.resolve(fetchPlugins()),
+            ])
+          }}
         />
       )}
     </div>
