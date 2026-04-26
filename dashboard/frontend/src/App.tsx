@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import { hydrateAgentMeta } from './lib/agent-meta'
 import { hydratePluginUiRegistry } from './lib/plugin-ui-registry'
 import { initEvoNexusSdk } from './lib/evonexus-sdk'
+import { loadWorkspaceTimezone } from './lib/format'
 import PluginPageHost from './pages/PluginPageHost'
 import { NotificationProvider } from './context/NotificationContext'
 import Sidebar from './components/Sidebar'
@@ -135,6 +136,7 @@ function AppContent() {
       hydrateAgentMeta()
       hydratePluginUiRegistry()
       initEvoNexusSdk()
+      loadWorkspaceTimezone()
     }
   }, [user])
 
