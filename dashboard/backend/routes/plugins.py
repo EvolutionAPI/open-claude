@@ -51,7 +51,12 @@ def _get_db() -> sqlite3.Connection:
 
 
 def _audit(conn: sqlite3.Connection, plugin_id: str, action: str, payload: Any = None, success: bool = True) -> None:
-    """Write a row to plugin_audit_log."""
+    """Write a row to plugin_audit_log.
+
+    Rollback on failure so a constraint violation doesn't leave the caller's
+    connection in a 'pending transaction' state that would block subsequent
+    writes with SQLITE_BUSY.
+    """
     try:
         conn.execute(
             "INSERT INTO plugin_audit_log (plugin_id, action, payload, success, created_at) "
@@ -62,6 +67,10 @@ def _audit(conn: sqlite3.Connection, plugin_id: str, action: str, payload: Any =
         conn.commit()
     except Exception as exc:
         logger.warning("audit log write failed: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _plugin_to_dict(row: sqlite3.Row) -> dict:
@@ -600,26 +609,53 @@ def _audit_scan_event(
     actor_username: str | None,
     detail: dict | None = None,
 ) -> None:
-    """Insert a row into plugin_audit_log. Silently swallows errors."""
+    """Insert a row into plugin_audit_log. Silently swallows errors.
+
+    plugin_audit_log carries a legacy `plugin_id TEXT NOT NULL` column from the
+    original schema (used by `_audit()` above). The newer scan-event row shape
+    only knows the slug at install time (the plugin row hasn't been INSERTed
+    yet), so we duplicate the slug into both `plugin_id` and `slug` to satisfy
+    the legacy NOT NULL constraint without altering the table.
+
+    Connection lifecycle uses try/finally so a failed INSERT (e.g. constraint
+    violation) does not leak an open connection holding a write lock — that
+    leak is what produced the cascading 'database is locked' errors during
+    the v0.1.4 install attempt.
+    """
+    conn = None
     try:
         conn = _get_db()
         conn.execute(
             """INSERT INTO plugin_audit_log
-               (slug, event, verdict, actor_user_id, actor_username, detail_json)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (plugin_id, slug, event, verdict, actor_user_id, actor_username,
+                detail_json, action, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                slug,
+                slug,                                       # plugin_id (legacy NOT NULL)
+                slug,                                       # slug (Wave 2.5)
                 event,
                 verdict,
                 actor_user_id,
                 actor_username,
                 json.dumps(detail or {}),
+                event,                                      # action (legacy NOT NULL)
+                _now_iso(),                                 # created_at (legacy NOT NULL)
             ),
         )
         conn.commit()
-        conn.close()
     except Exception as exc:
         logger.warning("Audit log insert failed: %s", exc)
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
