@@ -1274,11 +1274,28 @@ def uninstall_plugin(slug: str):
         _body = request.get_json(force=True, silent=True) or {}
         _phrase_required = (_safe_uninstall_spec.get("user_confirmation") or {}).get("typed_phrase", "")
         _phrase_given = _body.get("confirmation_phrase", "")
-        if _phrase_required and _phrase_given != _phrase_required:
+        # Normalize both sides before comparing so the user is not punished for
+        # invisible characters that the browser silently inserts (NBSP from
+        # copy-paste, trailing whitespace from autofill, NFD vs NFC composition).
+        # The phrase is a human-typed confirmation token, not a cryptographic key —
+        # tolerance is appropriate. The raw values are still preserved for the
+        # error response so the operator can see the actual diff if needed.
+        import unicodedata
+        def _normalize_phrase(s: str) -> str:
+            return unicodedata.normalize("NFC", str(s or "")).strip().replace(" ", " ")
+        _required_norm = _normalize_phrase(_phrase_required)
+        _given_norm = _normalize_phrase(_phrase_given)
+        if _required_norm and _given_norm != _required_norm:
+            # Surface the actual diff so the UI can highlight the mismatch
+            # without the operator having to guess what went wrong.
             return jsonify({
                 "error": "confirmation_phrase_mismatch",
                 "detail": f"Typed phrase must be exactly: {_phrase_required}",
                 "code": "bad_request",
+                "expected": _phrase_required,
+                "received": _phrase_given,
+                "expected_length": len(_required_norm),
+                "received_length": len(_given_norm),
             }), 400
 
         _exported_at = _body.get("exported_at", "")

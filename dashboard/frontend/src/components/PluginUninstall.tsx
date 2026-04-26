@@ -61,14 +61,22 @@ export default function PluginUninstall({
   const [uninstalling, setUninstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Normalize the same way the backend does (NFC + strip + collapse common
+  // whitespace lookalikes) so a copy-paste with a trailing space or NBSP
+  // doesn't fail the strict comparison silently.
+  const normalize = (s: string) =>
+    s.normalize('NFC').replace(/ /g, ' ').trim()
+
   const requiredPhrase = safeUninstall?.user_confirmation?.typed_phrase ?? ''
+  const requiredPhraseNorm = normalize(requiredPhrase)
   const checkboxLabel =
     safeUninstall?.user_confirmation?.checkbox_label ??
     'Tenho uma cópia dos dados exportados e assumo responsabilidade pela retenção legal.'
   const reason = safeUninstall?.reason ?? ''
   const preservedTables = safeUninstall?.preserved_tables ?? []
 
-  const phraseMatches = typedPhrase === requiredPhrase
+  const typedPhraseNorm = normalize(typedPhrase)
+  const phraseMatches = typedPhraseNorm === requiredPhraseNorm
   const passwordsMatch = zipPassword === zipPasswordConfirm && zipPassword.length >= 8
 
   async function handleUninstall() {
@@ -76,7 +84,9 @@ export default function PluginUninstall({
     setError(null)
     try {
       const body: Record<string, unknown> = {
-        confirmation_phrase: typedPhrase,
+        // Send the normalised value so the backend never sees stray NBSP or
+        // surrounding whitespace from autofill / copy-paste.
+        confirmation_phrase: typedPhraseNorm,
         zip_password: zipPassword,
       }
       await api.delete(`/plugins/${slug}`, body)
