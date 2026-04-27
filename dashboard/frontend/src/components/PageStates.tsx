@@ -12,6 +12,23 @@ export function FullPageLoader({ label = 'Loading...' }: { label?: string }) {
   )
 }
 
+export function PageSkeleton({ rows = 3, cards = 0 }: { rows?: number; cards?: number }) {
+  return (
+    <div className="animate-pulse space-y-6">
+      {cards > 0 && (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: cards }).map((_, i) => (
+            <div key={i} className="h-24 rounded-2xl bg-[#0f1520]" />
+          ))}
+        </div>
+      )}
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="h-16 rounded-2xl bg-[#0f1520]" />
+      ))}
+    </div>
+  )
+}
+
 export function SectionLoader({ label = 'Loading section...' }: { label?: string }) {
   return (
     <div className="flex min-h-[40vh] items-center justify-center px-6 py-12">
