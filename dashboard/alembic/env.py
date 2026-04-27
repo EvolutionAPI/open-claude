@@ -92,12 +92,28 @@ def _stamp_if_legacy(connection) -> None:  # noqa: ANN001
             ).fetchone()
 
         if result is not None:
-            # Legacy install detected — stamp head so Alembic doesn't try to re-create schema
-            from alembic.config import Config as _AlembicConfig
-            from alembic import command as _alembic_cmd
-            _cfg = _AlembicConfig(str(_HERE / "alembic.ini"))
-            _cfg.set_main_option("sqlalchemy.url", _database_url)
-            _alembic_cmd.stamp(_cfg, "head")
+            # Legacy install detected — stamp head directly via SQL to avoid
+            # recursive env.py execution (calling alembic.command.stamp() re-runs
+            # env.py and crashes the Alembic context globals).
+            try:
+                connection.execute(text(
+                    "CREATE TABLE IF NOT EXISTS alembic_version "
+                    "(version_num VARCHAR(32) NOT NULL)"
+                ))
+                connection.execute(text(
+                    "DELETE FROM alembic_version"
+                ))
+                connection.execute(text(
+                    "INSERT INTO alembic_version (version_num) VALUES ('0001')"
+                ))
+                connection.commit()
+                print("[alembic/env.py] legacy-stamp bootstrap: stamped as 0001")
+            except Exception as _stamp_exc:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                print(f"[alembic/env.py] legacy-stamp bootstrap failed: {_stamp_exc}")
     except Exception as exc:
         print(f"[alembic/env.py] legacy-stamp bootstrap skipped: {exc}")
 
@@ -126,8 +142,15 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    # Run the legacy-stamp check using a SEPARATE, short-lived connection so
+    # that any rollback/commit inside _stamp_if_legacy never touches the
+    # migration connection. Postgres aborts the current transaction on any
+    # SQL error; if we shared a connection, the rollback would wipe the
+    # Alembic migration context.
+    with connectable.connect() as stamp_connection:
+        _stamp_if_legacy(stamp_connection)
+
     with connectable.connect() as connection:
-        _stamp_if_legacy(connection)
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
