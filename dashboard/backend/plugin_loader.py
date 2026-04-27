@@ -7,6 +7,15 @@ is wired in later steps.
 Vault conditions implemented here:
   C6 — only https:// source URLs (enforced by PluginManifest.source_url validator).
   C7 — tarfile.extractall(filter='data') prevents zip-slip attacks.
+
+Plugin SQL discovery (ADR PG-Q7 — plugin contract v2):
+  SQLite backend: prefers migrations/install.sqlite.sql; falls back to
+    migrations/install.sql (legacy) with a DeprecationWarning.
+  Postgres backend: requires migrations/install.postgres.sql; no fallback —
+    legacy install.sql is SQLite-only SQL and will break on PG.  Missing file
+    raises PluginCompatError pointing to docs/plugin-migration-v1.md.
+
+  Same resolution applies to uninstall.{dialect}.sql and any future hook SQLs.
 """
 
 from __future__ import annotations
@@ -16,6 +25,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -93,6 +103,100 @@ class ConflictError(PluginError):
 
 class VersionError(PluginError):
     """Raised when plugin requires a newer EvoNexus version."""
+
+
+class PluginCompatError(PluginError):
+    """Raised when a plugin is not compatible with the active database backend.
+
+    This occurs when the plugin only ships a legacy install.sql (SQLite format)
+    but the active backend is Postgres.  See docs/plugin-migration-v1.md.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Dialect-aware SQL file resolution (ADR PG-Q7)
+# ---------------------------------------------------------------------------
+
+def resolve_plugin_sql(migrations_dir: Path, hook: str) -> Path:
+    """Return the SQL file path for *hook* that matches the active backend dialect.
+
+    Resolution rules
+    ----------------
+    SQLite (default):
+      1. ``{hook}.sqlite.sql``   — preferred (v2 contract)
+      2. ``{hook}.sql``          — legacy fallback; emits DeprecationWarning
+      3. Neither found           — raises FileNotFoundError
+
+    Postgres:
+      1. ``{hook}.postgres.sql`` — required
+      2. ``{hook}.sql`` present  — fail-fast with PluginCompatError pointing to
+                                   docs/plugin-migration-v1.md
+      3. Neither found           — raises FileNotFoundError
+
+    Parameters
+    ----------
+    migrations_dir:
+        Absolute path to the plugin's ``migrations/`` directory.
+    hook:
+        Base name without extension, e.g. ``"install"`` or ``"uninstall"``.
+
+    Returns
+    -------
+    Path
+        Resolved path (guaranteed to exist).
+
+    Raises
+    ------
+    PluginCompatError
+        Postgres backend + only legacy ``{hook}.sql`` is present.
+    FileNotFoundError
+        No SQL file found for this hook.
+    """
+    from db.engine import dialect as _dialect
+
+    dialect_name: str = _dialect.name  # "sqlite" or "postgresql"
+
+    # Paths to probe
+    dialect_sql = migrations_dir / f"{hook}.{dialect_name.replace('postgresql', 'postgres')}.sql"
+    legacy_sql = migrations_dir / f"{hook}.sql"
+
+    if dialect_name == "postgresql":
+        postgres_sql = migrations_dir / f"{hook}.postgres.sql"
+        if postgres_sql.exists():
+            return postgres_sql
+        # No dialect-specific file — check for legacy to give a targeted error
+        plugin_slug = migrations_dir.parent.name
+        if legacy_sql.exists():
+            raise PluginCompatError(
+                f"Plugin '{plugin_slug}' has {hook}.sql (legacy SQLite format) but no "
+                f"{hook}.postgres.sql.\n"
+                "This plugin is not compatible with the Postgres backend.\n"
+                "See docs/plugin-migration-v1.md for migration instructions."
+            )
+        raise FileNotFoundError(
+            f"Plugin '{plugin_slug}': no SQL file found for hook '{hook}' "
+            f"in {migrations_dir}. Expected {hook}.postgres.sql."
+        )
+
+    # SQLite path
+    sqlite_sql = migrations_dir / f"{hook}.sqlite.sql"
+    if sqlite_sql.exists():
+        return sqlite_sql
+    if legacy_sql.exists():
+        plugin_slug = migrations_dir.parent.name
+        warnings.warn(
+            f"Plugin '{plugin_slug}' uses legacy {hook}.sql (SQLite-only format). "
+            f"Migrate to {hook}.sqlite.sql + {hook}.postgres.sql before v1.1.0. "
+            "See docs/plugin-migration-v1.md.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return legacy_sql
+    plugin_slug = migrations_dir.parent.name
+    raise FileNotFoundError(
+        f"Plugin '{plugin_slug}': no SQL file found for hook '{hook}' "
+        f"in {migrations_dir}. Expected {hook}.sqlite.sql (or legacy {hook}.sql)."
+    )
 
 
 def _parse_version(v: str) -> tuple[int, int, int]:
