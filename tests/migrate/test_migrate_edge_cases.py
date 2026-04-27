@@ -37,7 +37,9 @@ def _make_pg_engine(url: str):
 def _apply_schema(engine):
     import subprocess, os, sys
     env = os.environ.copy()
-    env["DATABASE_URL"] = str(engine.url)
+    # render_as_string(hide_password=False) is required — str(engine.url) masks
+    # the password as '***' in SQLAlchemy 2.0, breaking the subprocess call.
+    env["DATABASE_URL"] = engine.url.render_as_string(hide_password=False)
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", "dashboard/alembic/alembic.ini", "upgrade", "head"],
         capture_output=True, text=True, env=env,
@@ -248,6 +250,26 @@ class TestAC5EdgeCases:
                     )
 
 
+def _truncate_pg_for_test(engine) -> None:
+    """Truncate goal-related tables in the PG target so each PG test starts clean.
+
+    Uses TRUNCATE … CASCADE to handle FK chains; RESTART IDENTITY resets sequences.
+    This is safe because PG tests are the only writer to those rows — the shared
+    container is otherwise empty or contains rows from a prior run (same test data).
+    """
+    tables = [
+        "goal_tasks", "goals", "projects", "missions",
+        "users", "heartbeats", "heartbeat_runs", "heartbeat_triggers",
+        "tickets", "ticket_comments", "ticket_activity",
+    ]
+    with engine.begin() as conn:
+        # Disable trigger before truncate to avoid noise
+        conn.execute(text("ALTER TABLE goal_tasks DISABLE TRIGGER trg_task_done_updates_goal"))
+        for tbl in tables:
+            conn.execute(text(f"TRUNCATE TABLE {tbl} RESTART IDENTITY CASCADE"))
+        conn.execute(text("ALTER TABLE goal_tasks ENABLE TRIGGER trg_task_done_updates_goal"))
+
+
 @pytest.mark.postgres
 class TestAC5EdgeCasesPostgres:
     """Postgres-specific tests: verify trigger DISABLE/ENABLE dance works correctly."""
@@ -267,12 +289,14 @@ class TestAC5EdgeCasesPostgres:
         dst_engine = _make_pg_engine(dst_url)
         _apply_schema(src_engine)
         _apply_schema(dst_engine)
+        # Clean slate for this test run so row counts and checksums align
+        _truncate_pg_for_test(dst_engine)
         _seed_ac5_source(src_engine)
 
         ok = migrate(
             source_url=src_url,
             target_url=dst_url,
-            allow_non_empty=True,
+            allow_non_empty=False,
         )
         assert ok
 
@@ -298,12 +322,14 @@ class TestAC5EdgeCasesPostgres:
         dst_engine = _make_pg_engine(dst_url)
         _apply_schema(src_engine)
         _apply_schema(dst_engine)
+        # Clean slate for this test run so row counts and checksums align
+        _truncate_pg_for_test(dst_engine)
         _seed_ac5_source(src_engine)
 
-        ok = migrate(source_url=src_url, target_url=dst_url, allow_non_empty=True)
+        ok = migrate(source_url=src_url, target_url=dst_url, allow_non_empty=False)
         assert ok
 
-        # Trigger the last task
+        # Trigger the last task — this exercises the PG plpgsql trigger
         with dst_engine.begin() as dc:
             dc.execute(text("UPDATE goal_tasks SET status='done' WHERE id=11"))
 

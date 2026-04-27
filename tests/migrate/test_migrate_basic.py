@@ -40,7 +40,9 @@ def _apply_schema(engine):
     """Run alembic upgrade head on the given engine."""
     import subprocess, os, sys
     env = os.environ.copy()
-    env["DATABASE_URL"] = str(engine.url)
+    # render_as_string(hide_password=False) is required — str(engine.url) masks
+    # the password as '***' in SQLAlchemy 2.0, breaking the subprocess call.
+    env["DATABASE_URL"] = engine.url.render_as_string(hide_password=False)
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", "dashboard/alembic/alembic.ini", "upgrade", "head"],
         capture_output=True,
