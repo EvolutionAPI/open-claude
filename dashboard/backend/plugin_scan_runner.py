@@ -20,13 +20,14 @@ import os
 import re
 import shutil
 import signal
-import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import text
 
 from plugin_scanner import (
     SCANNER_VERSION,
@@ -320,25 +321,25 @@ def _cache_lookup(db_path: Path, tarball_sha256: str) -> dict | None:
     if not tarball_sha256:
         return None
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        from db.engine import get_engine
+        conn = get_engine().connect()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=_CACHE_TTL_DAYS)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
         row = conn.execute(
-            """SELECT verdict, findings_json, scanned_files, llm_augmented, created_at
+            text("""SELECT verdict, findings_json, scanned_files, llm_augmented, created_at
                FROM plugin_scan_cache
-               WHERE tarball_sha256 = ? AND scanner_version = ? AND created_at > ?""",
-            (tarball_sha256, SCANNER_VERSION, cutoff),
+               WHERE tarball_sha256 = :sha AND scanner_version = :ver AND created_at > :cutoff"""),
+            {"sha": tarball_sha256, "ver": SCANNER_VERSION, "cutoff": cutoff},
         ).fetchone()
         conn.close()
         if row is None:
             return None
         return {
-            "verdict": row["verdict"],
-            "findings": json.loads(row["findings_json"] or "[]"),
-            "scanned_files": row["scanned_files"],
-            "llm_augmented": bool(row["llm_augmented"]),
+            "verdict": row.verdict,
+            "findings": json.loads(row.findings_json or "[]"),
+            "scanned_files": row.scanned_files,
+            "llm_augmented": bool(row.llm_augmented),
         }
     except Exception as exc:
         logger.warning("Cache lookup failed: %s", exc)
@@ -350,22 +351,30 @@ def _cache_store(db_path: Path, tarball_sha256: str, result: dict) -> None:
     if not tarball_sha256:
         return
     try:
-        conn = sqlite3.connect(str(db_path))
+        from db.engine import get_engine
+        conn = get_engine().connect()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         conn.execute(
-            """INSERT OR REPLACE INTO plugin_scan_cache
+            text("""INSERT INTO plugin_scan_cache
                (tarball_sha256, scanner_version, verdict, findings_json,
                 scanned_files, llm_augmented, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                tarball_sha256,
-                SCANNER_VERSION,
-                result.get("verdict", "APPROVE"),
-                json.dumps(result.get("findings", [])),
-                result.get("scanned_files", 0),
-                1 if result.get("llm_augmented") else 0,
-                now,
-            ),
+               VALUES (:sha, :ver, :verdict, :findings_json,
+                       :scanned_files, :llm_augmented, :now)
+               ON CONFLICT(tarball_sha256, scanner_version) DO UPDATE SET
+                 verdict=excluded.verdict,
+                 findings_json=excluded.findings_json,
+                 scanned_files=excluded.scanned_files,
+                 llm_augmented=excluded.llm_augmented,
+                 created_at=excluded.created_at"""),
+            {
+                "sha": tarball_sha256,
+                "ver": SCANNER_VERSION,
+                "verdict": result.get("verdict", "APPROVE"),
+                "findings_json": json.dumps(result.get("findings", [])),
+                "scanned_files": result.get("scanned_files", 0),
+                "llm_augmented": 1 if result.get("llm_augmented") else 0,
+                "now": now,
+            },
         )
         conn.commit()
         conn.close()

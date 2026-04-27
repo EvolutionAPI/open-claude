@@ -14,11 +14,13 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-import sqlite3
 import tarfile
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError as _SAOperationalError
 
 from pydantic import ValidationError
 
@@ -114,12 +116,10 @@ def _current_evonexus_version() -> str:
     return "0.0.0"
 
 
-def _get_db() -> sqlite3.Connection:
-    db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+def _get_db():
+    """Return a SQLAlchemy Connection (replaces raw sqlite3.connect)."""
+    from db.engine import get_engine
+    return get_engine().connect()
 
 
 class PluginInstaller:
@@ -197,14 +197,14 @@ class PluginInstaller:
             conn = _get_db()
             try:
                 row = conn.execute(
-                    "SELECT id FROM plugins WHERE slug = ? LIMIT 1", (slug,)
+                    text("SELECT id FROM plugins WHERE slug = :slug LIMIT 1"), {"slug": slug}
                 ).fetchone()
                 if row:
                     raise ConflictError(
                         f"Plugin '{slug}' is already registered in the database. "
                         "Uninstall first or use update."
                     )
-            except sqlite3.OperationalError:
+            except _SAOperationalError:
                 # Table doesn't exist yet (step 9 creates it) — no conflict
                 pass
             finally:

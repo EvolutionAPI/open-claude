@@ -9,16 +9,16 @@ from __future__ import annotations
 import logging
 import os
 import re
-import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
+
+from sqlalchemy import text
 
 log = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 PLUGINS_DIR = WORKSPACE / "plugins"
-DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
 
 # Hard cap on HTTP timeout regardless of what the manifest declares (ADR decision 4)
 _MAX_TIMEOUT_SECONDS = 10
@@ -49,21 +49,24 @@ def _resolve_vars(url: str, declared_names: set[str]) -> Optional[str]:
 
 
 def _upsert_health(
-    conn: sqlite3.Connection,
+    conn,
     plugin_slug: str,
     integration_slug: str,
     status: str,
     error: Optional[str],
 ) -> None:
+    from datetime import datetime, timezone as _tz
+    now = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        """INSERT INTO integration_health_cache
+        text("""INSERT INTO integration_health_cache
            (plugin_slug, integration_slug, last_status, last_checked_at, last_error)
-           VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)
+           VALUES (:plugin, :integ, :status, :now, :error)
            ON CONFLICT(plugin_slug, integration_slug) DO UPDATE SET
              last_status=excluded.last_status,
              last_checked_at=excluded.last_checked_at,
-             last_error=excluded.last_error""",
-        (plugin_slug, integration_slug, status, error),
+             last_error=excluded.last_error"""),
+        {"plugin": plugin_slug, "integ": integration_slug, "status": status,
+         "now": now, "error": error},
     )
     conn.commit()
 
@@ -84,7 +87,8 @@ def tick() -> dict:
     if not PLUGINS_DIR.is_dir():
         return {"checked": 0, "ok": 0, "failed": 0}
 
-    conn = sqlite3.connect(str(DB_PATH))
+    from db.engine import get_engine
+    conn = get_engine().connect()
     checked = 0
     ok_count = 0
     fail_count = 0

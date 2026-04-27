@@ -4,10 +4,11 @@ import logging
 import os
 import re
 import shutil
-import sqlite3
 import tempfile
 import time
 from pathlib import Path
+
+from sqlalchemy import text
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,6 @@ bp = Blueprint("integrations", __name__)
 WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
 SKILLS_DIR = WORKSPACE / ".claude" / "skills"
 PLUGINS_DIR = WORKSPACE / "plugins"
-DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
 
 #
 # Each entry declares the env vars that must all be set for the integration to
@@ -150,16 +150,15 @@ def _upsert_env_vars(
 def _get_health_cache(plugin_slug: str, integration_slug: str) -> dict | None:
     """Return the latest health cache row for a plugin integration, or None."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT last_status, last_checked_at, last_error "
-            "FROM integration_health_cache WHERE plugin_slug = ? AND integration_slug = ?",
-            (plugin_slug, integration_slug),
+        from models import db
+        row = db.session.execute(
+            text("SELECT last_status, last_checked_at, last_error "
+                 "FROM integration_health_cache WHERE plugin_slug = :plugin AND integration_slug = :integ"),
+            {"plugin": plugin_slug, "integ": integration_slug},
         ).fetchone()
-        conn.close()
         if row:
-            return dict(row)
+            return {"last_status": row.last_status, "last_checked_at": row.last_checked_at,
+                    "last_error": row.last_error}
     except Exception:
         pass
     return None
@@ -755,19 +754,21 @@ def test_plugin_integration(global_slug: str):
 
     # Update health cache
     try:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.execute(
-            """INSERT INTO integration_health_cache
+        from datetime import datetime, timezone as _tz
+        from models import db
+        _now = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        db.session.execute(
+            text("""INSERT INTO integration_health_cache
                (plugin_slug, integration_slug, last_status, last_checked_at, last_error)
-               VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)
+               VALUES (:plugin, :integ, :status, :now, :error)
                ON CONFLICT(plugin_slug, integration_slug) DO UPDATE SET
                  last_status=excluded.last_status,
                  last_checked_at=excluded.last_checked_at,
-                 last_error=excluded.last_error""",
-            (plugin_slug, integration_slug, "ok" if ok else "error", error_msg),
+                 last_error=excluded.last_error"""),
+            {"plugin": plugin_slug, "integ": integration_slug,
+             "status": "ok" if ok else "error", "now": _now, "error": error_msg},
         )
-        conn.commit()
-        conn.close()
+        db.session.commit()
     except Exception:
         pass
 
