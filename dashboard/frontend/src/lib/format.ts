@@ -38,7 +38,12 @@ export function getTimezoneSync(): string {
   return browserTz()
 }
 
-/** Fetch from API and cache. Subsequent callers reuse the in-flight promise. */
+/** Fetch from API and cache. Subsequent callers reuse the in-flight promise.
+ *
+ * Race-safe with `refreshWorkspaceTimezone`: if the user updates the setting
+ * (or any other code path populates the cache) while this fetch is in flight,
+ * the resolved value is dropped — we never overwrite a fresher cache value
+ * with the stale server response. */
 export async function loadWorkspaceTimezone(): Promise<string> {
   if (cachedTz) return cachedTz
   if (inflight) return inflight
@@ -46,14 +51,20 @@ export async function loadWorkspaceTimezone(): Promise<string> {
     .get('/settings/workspace')
     .then((data: any) => {
       const tz: string = data?.workspace?.timezone || browserTz()
-      cachedTz = tz
-      try { window.localStorage.setItem(STORAGE_KEY, tz) } catch { /* noop */ }
-      return tz
+      // Only write if nothing else claimed the cache in the meantime
+      // (e.g. a concurrent refreshWorkspaceTimezone from Settings save).
+      if (cachedTz == null) {
+        cachedTz = tz
+        try { window.localStorage.setItem(STORAGE_KEY, tz) } catch { /* noop */ }
+      }
+      return cachedTz!
     })
     .catch(() => {
       const fallback = browserTz()
-      cachedTz = fallback
-      return fallback
+      if (cachedTz == null) {
+        cachedTz = fallback
+      }
+      return cachedTz!
     })
     .finally(() => { inflight = null })
   return inflight
