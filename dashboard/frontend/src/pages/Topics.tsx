@@ -8,6 +8,7 @@ import {
   Lock, Clock, CheckCircle, XCircle, Eye, MessageSquare,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { formatDateTime } from '../lib/format'
 import { useTranslation } from 'react-i18next'
 import { AgentIcon } from '../components/AgentIcon'
 
@@ -74,15 +75,8 @@ const PRIORITY_ICON: Record<TicketPriority, React.ReactNode> = {
 const ALL_STATUSES: TicketStatus[] = ['open', 'in_progress', 'blocked', 'review', 'resolved', 'closed', 'archived']
 const ALL_PRIORITIES: TicketPriority[] = ['urgent', 'high', 'medium', 'low']
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '--'
-  const d = new Date(iso)
-  return d.toLocaleString('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    day: '2-digit', month: '2-digit', year: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
+// Use shared formatDateTime from lib/format.ts — respects workspace.timezone setting.
+const formatDate = formatDateTime
 
 // ── StatusBadge ───────────────────────────────────────────────────────────────
 

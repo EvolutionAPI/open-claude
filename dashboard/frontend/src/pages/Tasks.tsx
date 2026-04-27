@@ -3,6 +3,7 @@ import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/ConfirmDialog'
 import { CalendarClock, Plus, Play, X, Eye, RefreshCw, Pencil, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
+import { formatDateTime } from '../lib/format'
 import { useTranslation } from 'react-i18next'
 
 interface Task {
@@ -54,11 +55,8 @@ const AGENT_LABELS: Record<string, string> = {
   'mentor-courses': '@mentor',
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '--'
-  const d = new Date(iso)
-  return d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
+// Use shared formatDateTime from lib/format.ts — respects workspace.timezone setting.
+const formatDate = formatDateTime
 
 const emptyForm = { name: '', description: '', type: 'skill', payload: '', agent: '', scheduled_at: '' }
 

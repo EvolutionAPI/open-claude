@@ -7,6 +7,7 @@ import {
   Camera, Users, Compass, Cog, type LucideIcon,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { refreshWorkspaceTimezone } from '../lib/format'
 import Markdown from '../components/Markdown'
 
 // ── Toggle (copied from Providers.tsx) ─────────────────────────────────────
@@ -184,6 +185,9 @@ function WorkspaceTab({ showToast }: { showToast: (msg: string, type?: ToastType
         },
         dashboard: { port: config.port },
       })
+      // Refresh the cached timezone so date formatting on other pages
+      // picks up the change without a hard reload.
+      refreshWorkspaceTimezone(config.timezone)
       showToast('Workspace saved successfully')
     } catch {
       showToast('Failed to save workspace config', 'error')

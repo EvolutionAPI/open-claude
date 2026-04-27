@@ -8,6 +8,7 @@ import {
   PanelLeft,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { formatDateTime } from '../lib/format'
 import AgentChat from '../components/AgentChat'
 import ThreadsSidebar from '../components/ThreadsSidebar'
 import { TS_HTTP } from '../lib/terminal-url'
@@ -77,15 +78,8 @@ const STATUS_STYLES: Record<TicketStatus, string> = {
 const ALL_STATUSES: TicketStatus[] = ['open', 'in_progress', 'blocked', 'review', 'resolved', 'closed']
 const ALL_PRIORITIES: TicketPriority[] = ['urgent', 'high', 'medium', 'low']
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '--'
-  const d = new Date(iso)
-  return d.toLocaleString('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    day: '2-digit', month: '2-digit', year: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
+// Use shared formatDateTime from lib/format.ts — respects workspace.timezone setting.
+const formatDate = formatDateTime
 
 function actionLabel(action: string, payload: Record<string, any>): string {
   switch (action) {
