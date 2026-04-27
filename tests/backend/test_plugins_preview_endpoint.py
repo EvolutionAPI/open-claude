@@ -123,9 +123,15 @@ def app(tmp_db):
     def unauthorized():
         return flask.jsonify({"error": "Authentication required"}), 401
 
-    # Patch DB_PATH before importing plugins blueprint
+    # Patch _get_db before importing plugins blueprint (DB_PATH no longer used; _get_db uses SQLAlchemy)
     import routes.plugins as plugins_mod
-    plugins_mod.DB_PATH = tmp_db
+    from sqlalchemy import create_engine as _create_engine
+    _sa_engine = _create_engine(f"sqlite:///{tmp_db}", connect_args={"check_same_thread": False})
+
+    def _get_db_override():
+        return _sa_engine.connect()
+
+    plugins_mod._get_db = _get_db_override
 
     from routes.plugins import bp as plugins_bp
     _app.register_blueprint(plugins_bp)

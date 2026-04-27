@@ -22,15 +22,34 @@ class HeartbeatConfig(BaseModel):
     id: Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")]
     agent: Annotated[str, Field(min_length=1, max_length=100)]
     interval_seconds: Annotated[int, Field(ge=60)]
-    max_turns: Annotated[int, Field(ge=1, le=100)] = 10
+    # handler-based heartbeats (Wave 2.2r) set max_turns=0 and decision_prompt=""
+    max_turns: Annotated[int, Field(ge=0, le=100)] = 10
     timeout_seconds: Annotated[int, Field(ge=30, le=3600)] = 600
     lock_timeout_seconds: Annotated[int, Field(ge=60)] = 1800
     wake_triggers: Annotated[List[WakeTrigger], Field(min_length=1)]
     enabled: bool = False
     goal_id: Optional[str] = None
     required_secrets: List[str] = Field(default_factory=list)
-    decision_prompt: Annotated[str, Field(min_length=20)]
+    # handler-based heartbeats may leave decision_prompt empty
+    decision_prompt: str = ""
+    # Wave 2.2r: optional Python module.function for in-process handlers
+    handler: Optional[str] = None
     source_plugin: Optional[str] = None  # AC4: set to plugin slug for plugin-contributed heartbeats
+
+    @model_validator(mode="after")
+    def validate_handler_or_prompt(self) -> "HeartbeatConfig":
+        """Either handler XOR a non-empty decision_prompt must be provided."""
+        has_handler = bool(self.handler)
+        has_prompt = len(self.decision_prompt.strip()) >= 20
+        if not has_handler and not has_prompt:
+            raise ValueError(
+                "decision_prompt must be at least 20 characters when no handler is set"
+            )
+        if has_handler and self.max_turns != 0:
+            raise ValueError(
+                "max_turns must be 0 for handler-based heartbeats (no Claude CLI invocation)"
+            )
+        return self
 
     @field_validator("agent")
     @classmethod

@@ -213,19 +213,22 @@ def test_step8_idempotent_no_duplicate(tmp_db):
         "started_at": _now_iso(),
     }
 
-    conn = sqlite3.connect(str(tmp_db))
-    conn.row_factory = sqlite3.Row
+    from sqlalchemy import create_engine
+    sa_engine = create_engine(f"sqlite:///{tmp_db}", connect_args={"check_same_thread": False})
+    sa_conn = sa_engine.connect()
 
     # First persist
-    step8_persist(run_id, "atlas-4h", result, None, "manual", "test prompt", conn)
+    step8_persist(run_id, "atlas-4h", result, None, "manual", "test prompt", sa_conn)
 
     # Second persist (simulating restart after crash)
-    step8_persist(run_id, "atlas-4h", result, None, "manual", "test prompt", conn)
+    step8_persist(run_id, "atlas-4h", result, None, "manual", "test prompt", sa_conn)
+    sa_conn.close()
 
-    count = conn.execute(
+    verify = sqlite3.connect(str(tmp_db))
+    count = verify.execute(
         "SELECT COUNT(*) FROM heartbeat_runs WHERE run_id=?", (run_id,)
     ).fetchone()[0]
-    conn.close()
+    verify.close()
 
     assert count == 1, f"Expected 1 run, got {count} (duplicate inserted)"
 
@@ -237,26 +240,34 @@ def test_step8_already_finalized_skips_update(tmp_db):
     run_id = str(uuid.uuid4())
     now = _now_iso()
 
-    conn = sqlite3.connect(str(tmp_db))
-    conn.row_factory = sqlite3.Row
+    setup_conn = sqlite3.connect(str(tmp_db))
+    setup_conn.row_factory = sqlite3.Row
 
     # Pre-insert a finalized run
-    conn.execute(
+    setup_conn.execute(
         """INSERT INTO heartbeat_runs
            (run_id, heartbeat_id, started_at, status, triggered_by)
            VALUES (?, 'atlas-4h', ?, 'success', 'manual')""",
         (run_id, now),
     )
-    conn.commit()
+    setup_conn.commit()
+    setup_conn.close()
+
+    from sqlalchemy import create_engine
+    sa_engine = create_engine(f"sqlite:///{tmp_db}", connect_args={"check_same_thread": False})
+    sa_conn = sa_engine.connect()
 
     # Try to "persist" a failure result — should be ignored
     result = {"status": "fail", "error": "late write", "duration_ms": 0, "agent": "atlas-project"}
-    step8_persist(run_id, "atlas-4h", result, None, "manual", "late", conn)
+    step8_persist(run_id, "atlas-4h", result, None, "manual", "late", sa_conn)
+    sa_conn.close()
 
-    row = conn.execute(
+    verify = sqlite3.connect(str(tmp_db))
+    verify.row_factory = sqlite3.Row
+    row = verify.execute(
         "SELECT status FROM heartbeat_runs WHERE run_id=?", (run_id,)
     ).fetchone()
-    conn.close()
+    verify.close()
 
     # Status should still be 'success' (not overwritten by 'fail')
     assert row["status"] == "success"
@@ -304,10 +315,11 @@ def test_step8_writes_jsonl_log(tmp_db, tmp_path):
     original_logs_dir = runner_mod.LOGS_DIR
     runner_mod.LOGS_DIR = tmp_path / "heartbeats"
     try:
-        conn = sqlite3.connect(str(tmp_db))
-        conn.row_factory = sqlite3.Row
-        step8_persist(run_id, "atlas-4h", result, None, "interval", "test", conn)
-        conn.close()
+        from sqlalchemy import create_engine
+        sa_engine = create_engine(f"sqlite:///{tmp_db}", connect_args={"check_same_thread": False})
+        sa_conn = sa_engine.connect()
+        step8_persist(run_id, "atlas-4h", result, None, "interval", "test", sa_conn)
+        sa_conn.close()
 
         log_files = list((tmp_path / "heartbeats").glob("atlas-4h-*.jsonl"))
         assert len(log_files) >= 1

@@ -165,9 +165,9 @@ def app(tmp_path, tmp_db):
     plugins_mod.PLUGINS_DIR = plugins_root
 
     def _get_db_override():
-        c = sqlite3.connect(str(tmp_db))
-        c.row_factory = sqlite3.Row
-        return c
+        from sqlalchemy import create_engine
+        engine = create_engine(f"sqlite:///{tmp_db}", connect_args={"check_same_thread": False})
+        return engine.connect()
     plugins_mod._get_db = _get_db_override
 
     from routes.plugins import bp as plugins_bp

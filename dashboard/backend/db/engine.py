@@ -29,14 +29,15 @@ from sqlalchemy.exc import OperationalError
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Locate the workspace root (two levels above backend/)
+# Locate the repository root (four levels above db/engine.py:
+#   db/engine.py → db/ → backend/ → dashboard/ → repo root)
 # ---------------------------------------------------------------------------
-_WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 # ---------------------------------------------------------------------------
 # Build DATABASE_URL
 # ---------------------------------------------------------------------------
-_DEFAULT_DB_PATH = _WORKSPACE / "dashboard" / "data" / "evonexus.db"
+_DEFAULT_DB_PATH = _REPO_ROOT / "dashboard" / "data" / "evonexus.db"
 _DEFAULT_URL = f"sqlite:///{_DEFAULT_DB_PATH}"
 
 DATABASE_URL: str = os.environ.get("DATABASE_URL", "") or _DEFAULT_URL
