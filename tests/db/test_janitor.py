@@ -64,10 +64,23 @@ def app(tmp_path, request):
 
     yield _app
 
-    # Cleanup — PG keeps tables across tests unless we drop
+    # Cleanup — PG keeps tables across tests unless we drop.
+    # db.drop_all() fails on PG when views (goal_progress_v) depend on
+    # underlying tables; DROP SCHEMA CASCADE is the reliable teardown.
     with _app.app_context():
         _models.db.session.remove()
-        _models.db.drop_all()
+        dialect = _models.db.engine.dialect.name
+        if dialect == "postgresql":
+            _models.db.engine.dispose()
+            from sqlalchemy import create_engine, text as _text
+            _engine = create_engine(db_url)
+            with _engine.connect() as _conn:
+                _conn.execute(_text("DROP SCHEMA public CASCADE"))
+                _conn.execute(_text("CREATE SCHEMA public"))
+                _conn.commit()
+            _engine.dispose()
+        else:
+            _models.db.drop_all()
 
 
 def _create_locked_ticket(db, locked_at: datetime, timeout_secs: int = 1800) -> str:

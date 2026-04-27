@@ -50,9 +50,23 @@ def app(tmp_path):
 
     yield _app
 
+    # Cleanup — PG views (goal_progress_v) block db.drop_all(); use CASCADE.
     with _app.app_context():
         _models.db.session.remove()
-        _models.db.drop_all()
+        dialect = _models.db.engine.dialect.name
+        if dialect == "postgresql":
+            _models.db.engine.dispose()
+            import os as _os
+            from sqlalchemy import create_engine, text as _text
+            _db_url = _os.environ.get("DATABASE_URL", "")
+            _engine = create_engine(_db_url)
+            with _engine.connect() as _conn:
+                _conn.execute(_text("DROP SCHEMA public CASCADE"))
+                _conn.execute(_text("CREATE SCHEMA public"))
+                _conn.commit()
+            _engine.dispose()
+        else:
+            _models.db.drop_all()
 
 
 def _make_goal_and_task(db):
