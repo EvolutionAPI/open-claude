@@ -104,6 +104,14 @@ _INTEGER_PK_TABLES: list[tuple[str, str]] = [
     ("knowledge_connection_events", "id"),
 ]
 
+# Tables with a non-standard single PK column name (not 'id').
+# Confirmed from 0002_core_schema.py:
+#   heartbeat_runs  → run_id  (String, primary_key)
+#   heartbeats      → id      (String — already 'id', no override needed)
+_NONSTANDARD_PK: dict[str, str] = {
+    "heartbeat_runs": "run_id",
+}
+
 # Tables that have composite PKs (no single ``id`` column) — idempotency
 # uses ON CONFLICT DO NOTHING without specifying a column list.
 _COMPOSITE_PK_TABLES: set[str] = {
@@ -306,7 +314,9 @@ def _get_pk_col(table: str) -> Optional[str]:
     """Return the single PK column name, or None for composite-PK tables."""
     if table in _COMPOSITE_PK_TABLES:
         return None
-    # All other tables have 'id' as PK (confirmed from 0002_core_schema.py)
+    if table in _NONSTANDARD_PK:
+        return _NONSTANDARD_PK[table]
+    # All other tables use 'id' as PK (confirmed from 0002_core_schema.py)
     return "id"
 
 
@@ -499,14 +509,17 @@ def _migrate_table(
         insert_sql = text(
             f"INSERT INTO {table} ({cols_str}) VALUES ({placeholders}) {conflict_clause}"
         )
-        dst_conn.execute(insert_sql, batch)
+        result = dst_conn.execute(insert_sql, batch)
         dst_conn.commit()
 
-        inserted_this_batch = len(batch)
-        total_inserted += inserted_this_batch
-        offset += inserted_this_batch
+        # rowcount reflects actual rows inserted (skipped by ON CONFLICT = 0)
+        # SQLAlchemy returns -1 if the driver doesn't support rowcount on executemany;
+        # fall back to len(batch) in that case (conservative — counts attempts).
+        actual_inserted = result.rowcount if result.rowcount >= 0 else len(batch)
+        total_inserted += actual_inserted
+        offset += len(batch)  # always advance offset by batch size
         if verbose:
-            log.info("    %s: +%d rows (offset %d)", table, inserted_this_batch, offset)
+            log.info("    %s: +%d rows (offset %d)", table, actual_inserted, offset)
 
     if resume:
         _mark_table_completed(dst_conn, table, total_inserted)
