@@ -713,6 +713,13 @@ with app.app_context():
     except Exception as _hb_exc:
         print(f"WARNING: heartbeat dispatcher init failed: {_hb_exc}")
 
+    # Register SQLAlchemy event listeners (observability layer — PG-Q3)
+    try:
+        from db.listeners import register_all as _register_listeners
+        _register_listeners()
+    except Exception as _ls_exc:
+        print(f"WARNING: db listeners registration failed: {_ls_exc}")
+
     # Start ticket janitor (auto-release timed-out locks)
     try:
         from ticket_janitor import start_janitor_thread
