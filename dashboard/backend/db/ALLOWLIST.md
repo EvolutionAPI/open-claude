@@ -98,6 +98,7 @@ the `0002_schema_baseline.py` migration.
 ## datetime('now') Inventory (PG-Q2)
 
 Six occurrences of SQLite-specific `datetime('now')` — annotated here; **not migrated in Step 1**.
+One additional occurrence in the knowledge module (out-of-scope SQLite-only module).
 
 | Site | File:Line | Migration strategy |
 |------|-----------|-------------------|
@@ -107,7 +108,25 @@ Six occurrences of SQLite-specific `datetime('now')` — annotated here; **not m
 | 4 | `app.py:639` | Same block as site 3 |
 | 5 | `routes/backups.py:42` | Inside `_post_restore_migrate()` — stays SQLite-only (guarded; see entry 6 above) |
 | 6 | `routes/backups.py:43` | Same function as site 5 |
+| 7 | `knowledge/api_keys.py:228` | SQLite-only module — see entry 9 below |
 
 **Decision (PG-Q2):** Sites 2, 3, 4, 5, 6 remain SQLite-only via dialect guard.
 Site 1 (`ticket_janitor.py`) is the only site that runs unconditionally — it will be
 migrated to `datetime.utcnow(timezone.utc)` in Step 2.
+Site 7 (`knowledge/api_keys.py`) is in a SQLite-only module (see entry 9) — no migration needed.
+
+---
+
+### 9. `dashboard/backend/knowledge/api_keys.py:228` — `datetime('now')` in `verify_token()`
+
+**Classification:** OUT-OF-SCOPE (SQLite-only module)
+**Reason:** `knowledge/api_keys.py` uses raw `sqlite3.Connection` throughout (see `_connect()`),
+connects to the knowledge vector store via `connection_pool._resolve_sqlite_db_path()`, and issues
+`PRAGMA journal_mode=WAL` — all structurally incompatible with PostgreSQL. This module operates on
+an **isolated SQLite database** that is separate from the main `evonexus.db` (or PG equivalent).
+The `datetime('now')` on line 228 is inside a raw `sqlite3.execute()` call and will never run
+against the main PostgreSQL backend.
+
+Guard 1 excludes `dashboard/backend/knowledge/` entirely via the allowlist path pattern, so the
+`import sqlite3` and `sqlite3.connect()` calls are already covered. This entry documents the
+`datetime('now')` occurrence specifically for PG-Q2 traceability.
