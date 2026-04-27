@@ -118,6 +118,12 @@ CORS(
     expose_headers=["X-CSRF-Token"],
 )
 
+# --------------- Rate limiting (in-memory, single-process Flask) ---------------
+# Vault audit §2.S1 CRITICAL: all public endpoints require rate limiting.
+# The limiter singleton lives in rate_limit.py to avoid circular imports with blueprints.
+from rate_limit import limiter
+limiter.init_app(app)
+
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
 db.init_app(app)
@@ -628,6 +634,27 @@ with app.app_context():
         _conn.commit()
     # --- End Wave 2.2r migration ---
 
+    # --- B3 safe_uninstall migration: plugin_orphans table ---
+    _existing_tables_b3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "plugin_orphans" not in _existing_tables_b3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS plugin_orphans (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                tablename TEXT NOT NULL,
+                orphaned_at TEXT NOT NULL,
+                orphaned_by_user_id INTEGER,
+                original_plugin_version TEXT,
+                original_sha256 TEXT,
+                original_publisher_url TEXT,
+                recovered_at TEXT,
+                UNIQUE(slug, tablename)
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_orphans_slug ON plugin_orphans(slug);
+        """)
+        _conn.commit()
+    # --- End B3 safe_uninstall migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -891,6 +918,7 @@ from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
 from routes.plugins import bp as plugins_bp
 from routes.mcp_servers import bp as mcp_servers_bp
+from routes.plugin_public_pages import bp as plugin_public_pages_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -963,6 +991,8 @@ app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
 app.register_blueprint(plugins_bp)
 app.register_blueprint(mcp_servers_bp)
+# B2.0: plugin public pages (unauthenticated, token-bound portals)
+app.register_blueprint(plugin_public_pages_bp)
 
 # TKR Platform routes (observability, cache, queue)
 try:
