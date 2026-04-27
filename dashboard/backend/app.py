@@ -141,7 +141,7 @@ with app.app_context():
     if not _is_pg_backend:
         import sqlite3 as _sqlite3  # noqa: F401 — allowlisted: app.py boot SQLite migration
         _db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
-        _conn = _sqlite3.connect(_db_path)
+        _conn = _sqlite3.connect(_db_path)  # noqa — allowlisted: SQLite-only boot migration (guarded by `if not _is_pg_backend`)
         _cur = _conn.cursor()
         _existing_cols = {row[1] for row in _cur.execute("PRAGMA table_info(roles)").fetchall()}
         if "agent_access_json" not in _existing_cols:

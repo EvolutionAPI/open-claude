@@ -14,10 +14,13 @@ import fcntl
 import json
 import logging
 import os
-import sqlite3
+import sqlite3  # noqa: F401 — allowlisted: rollback_from_state passes conn to plugin_migrator.run_sql_transactional (SQLite DDL engine)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError as _SAOperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +170,7 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
         uninstall_sql_path = PLUGINS_DIR / slug / "migrations" / "uninstall.sql"
         if uninstall_sql_path.exists() and db_path.exists():
             try:
-                conn = sqlite3.connect(str(db_path))
+                conn = sqlite3.connect(str(db_path))  # noqa — allowlisted: rollback DDL via plugin_migrator (SQLite DDL engine; PG migration deferred to Step 2)
                 from plugin_migrator import run_sql_transactional
                 run_sql_transactional(conn, uninstall_sql_path.read_text(encoding="utf-8"))
                 conn.close()
@@ -178,10 +181,11 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
     elif step_name == "db_register":
         if db_path.exists():
             try:
-                conn = sqlite3.connect(str(db_path))
-                conn.execute("DELETE FROM plugins_installed WHERE slug = ?", (slug,))
-                conn.commit()
-                conn.close()
+                from db.engine import get_engine
+                _conn = get_engine().connect()
+                _conn.execute(text("DELETE FROM plugins_installed WHERE slug = :slug"), {"slug": slug})
+                _conn.commit()
+                _conn.close()
                 log.append("Rolled back: db_register")
             except Exception as exc:
                 log.append(f"WARN: db_register rollback failed: {exc}")
@@ -243,12 +247,13 @@ def get_plugin_mcp_servers(slug: str, db_path: Path) -> list[dict]:
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(str(db_path))
+        from db.engine import get_engine
+        conn = get_engine().connect()
         row = conn.execute(
-            "SELECT manifest_json FROM plugins_installed WHERE slug = ?", (slug,)
+            text("SELECT manifest_json FROM plugins_installed WHERE slug = :slug"), {"slug": slug}
         ).fetchone()
         conn.close()
-    except sqlite3.OperationalError as exc:
+    except _SAOperationalError as exc:
         logger.warning("get_plugin_mcp_servers: DB error for '%s': %s", slug, exc)
         return []
 
@@ -256,7 +261,7 @@ def get_plugin_mcp_servers(slug: str, db_path: Path) -> list[dict]:
         return []
 
     try:
-        manifest = json.loads(row[0] or "{}")
+        manifest = json.loads(row.manifest_json or "{}")
     except (json.JSONDecodeError, TypeError):
         return []
 
@@ -278,18 +283,19 @@ def all_plugin_mcp_names(db_path: Path) -> set[str]:
     if not db_path.exists():
         return names
     try:
-        conn = sqlite3.connect(str(db_path))
+        from db.engine import get_engine
+        conn = get_engine().connect()
         rows = conn.execute(
-            "SELECT manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active'"
+            text("SELECT manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active'")
         ).fetchall()
         conn.close()
-    except sqlite3.OperationalError as exc:
+    except _SAOperationalError as exc:
         logger.warning("all_plugin_mcp_names: DB error: %s", exc)
         return names
 
-    for (manifest_json,) in rows:
+    for row in rows:
         try:
-            manifest = json.loads(manifest_json or "{}")
+            manifest = json.loads(row.manifest_json or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
         for rec in manifest.get("mcp_servers_installed", []):

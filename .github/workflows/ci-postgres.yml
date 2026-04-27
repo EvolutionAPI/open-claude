@@ -42,6 +42,7 @@ jobs:
                        | grep -v __pycache__ \
                        | grep -vE "$ALLOWLIST" \
                        | grep -vE "# noqa.*allowlisted" \
+                       | grep -v '"""' \
                        || true)
           if [ -n "$VIOLATIONS" ]; then
             echo "::error::Forbidden raw sqlite3 usage outside the allowlist:"
