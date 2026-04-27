@@ -7,7 +7,7 @@ import os
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 JANITOR_INTERVAL_SECONDS = int(os.getenv("TICKET_JANITOR_INTERVAL", "300"))  # 5 min default
 
@@ -30,16 +30,37 @@ def release_expired_locks(app=None) -> int:
     try:
         from models import db, Ticket, TicketActivity
 
-        # Find all tickets whose lock has expired
-        expired = db.session.execute(
-            db.text("""
-                SELECT id, locked_by, COALESCE(lock_timeout_seconds, 1800) as timeout_secs
-                FROM tickets
-                WHERE locked_at IS NOT NULL
-                  AND datetime(locked_at, '+' || COALESCE(lock_timeout_seconds, 1800) || ' seconds')
-                      < datetime('now')
-            """)
+        # Find all locked tickets and filter expired ones in Python so the
+        # query is dialect-portable (no SQLite-specific datetime() arithmetic).
+        # Dataset is small — this 1-SELECT approach is not a performance concern.
+        locked_rows = db.session.execute(
+            db.text(
+                "SELECT id, locked_by, locked_at, "
+                "COALESCE(lock_timeout_seconds, 1800) AS timeout_secs "
+                "FROM tickets WHERE locked_at IS NOT NULL"
+            )
         ).fetchall()
+
+        utcnow = datetime.now(timezone.utc)
+        expired = []
+        for row in locked_rows:
+            locked_at_raw = row[2]  # stored as ISO-8601 string
+            try:
+                # Handle both offset-aware ("...Z") and naive strings
+                if locked_at_raw.endswith("Z"):
+                    locked_at = datetime.fromisoformat(locked_at_raw[:-1]).replace(tzinfo=timezone.utc)
+                elif "+" in locked_at_raw or locked_at_raw.count("-") > 2:
+                    locked_at = datetime.fromisoformat(locked_at_raw)
+                    if locked_at.tzinfo is None:
+                        locked_at = locked_at.replace(tzinfo=timezone.utc)
+                else:
+                    locked_at = datetime.fromisoformat(locked_at_raw).replace(tzinfo=timezone.utc)
+                timeout_secs = int(row[3])
+                if locked_at + timedelta(seconds=timeout_secs) < utcnow:
+                    expired.append(row)
+            except (ValueError, TypeError):
+                # Malformed locked_at — release defensively
+                expired.append(row)
 
         now = _now()
         for row in expired:
