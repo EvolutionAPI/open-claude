@@ -74,7 +74,7 @@ def _stamp_if_legacy(connection) -> None:  # noqa: ANN001
         if row is not None:
             return  # already stamped
     except Exception:
-        pass  # table doesn't exist yet — normal on a brand-new DB
+        connection.rollback()  # Postgres: reset aborted transaction before next statement
 
     # Check whether ANY dashboard table exists (indicates a legacy install)
     try:
