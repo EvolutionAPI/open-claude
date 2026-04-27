@@ -5,6 +5,7 @@ const {
   loadProviderConfig,
   resolveProviderModel,
   getProviderMode,
+  getProviderCandidates,
 } = require('./provider-config');
 
 class ClaudeBridge {
@@ -104,10 +105,17 @@ class ClaudeBridge {
 
     try {
       // Reload provider config fresh on every session start
-      // so switching provider in the dashboard takes effect immediately
-      const providerConfig = this._loadProviderConfig();
+      // so switching provider in the dashboard takes effect immediately.
+      // TKR Customization: Use failover provider chain for resilience
+      const activeProviderConfig = this._loadProviderConfig();
+      const providerCandidates = getProviderCandidates('code', activeProviderConfig.provider_id || activeProviderConfig.active);
+      const providerConfig = providerCandidates[0] || activeProviderConfig;
       const providerMode = getProviderMode(providerConfig);
       const providerModel = resolveProviderModel(providerConfig);
+
+      if (providerConfig.provider_id && providerConfig.provider_id !== (activeProviderConfig.provider_id || activeProviderConfig.active)) {
+        console.log(`[failover] Selected provider ${providerConfig.provider_id} after ${activeProviderConfig.provider_id || activeProviderConfig.active} was unavailable`);
+      }
 
       // Block session if no provider is active
       if (!providerConfig.active || providerConfig.active === 'none') {

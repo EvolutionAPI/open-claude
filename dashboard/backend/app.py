@@ -8,9 +8,28 @@ from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, send_from_directory, request, jsonify
+from flask import Flask, send_from_directory, request, jsonify, abort
 from flask_cors import CORS
 from flask_login import LoginManager, current_user, login_user
+
+# TKR Security Hardening imports
+try:
+    from runtime_config import load_dashboard_runtime_config
+    _runtime_config = load_dashboard_runtime_config
+except ImportError:
+    _runtime_config = None
+try:
+    from structured_logging import install_request_logging
+except ImportError:
+    install_request_logging = None
+try:
+    from request_security import require_xhr
+except ImportError:
+    require_xhr = None
+try:
+    from session_security import attach_session_token
+except ImportError:
+    attach_session_token = None
 
 # Workspace root: two levels up from backend/
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
@@ -91,7 +110,13 @@ except AttributeError:
     # Flask <2.2 exposed this through app.config; keep compatibility.
     app.config["JSON_AS_ASCII"] = False
 
-CORS(app, origins=_cors_allowed_origins(), supports_credentials=True)
+CORS(
+    app,
+    origins=_cors_allowed_origins(),
+    supports_credentials=True,
+    allow_headers=["Content-Type", "X-Requested-With", "X-CSRF-Token", "Authorization"],
+    expose_headers=["X-CSRF-Token"],
+)
 
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
@@ -743,6 +768,7 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/needs-setup",
     "/api/auth/setup",
+    "/api/auth/csrf",
     "/api/health",
     "/api/auth/needs-onboarding",
     "/api/config/workspace-status",
@@ -814,6 +840,21 @@ def auth_middleware():
     # Require auth for all other API paths
     if not current_user.is_authenticated:
         return jsonify({"error": "Authentication required"}), 401
+
+# --------------- TKR Security Headers ---------------
+@app.after_request
+def attach_security_headers(response):
+    """Attach security-related headers to every response."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # Attach session token if module available
+    if attach_session_token is not None:
+        try:
+            attach_session_token(response)
+        except Exception:
+            pass
+    return response
 
 # --------------- Register blueprints ---------------
 from routes.overview import bp as overview_bp
@@ -922,6 +963,13 @@ app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
 app.register_blueprint(plugins_bp)
 app.register_blueprint(mcp_servers_bp)
+
+# TKR Platform routes (observability, cache, queue)
+try:
+    from routes.platform import bp as platform_bp
+    app.register_blueprint(platform_bp)
+except ImportError:
+    pass  # Platform module not available
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp

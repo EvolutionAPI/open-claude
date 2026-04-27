@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff-check
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        files: ^dashboard/frontend/.*\.(ts|tsx|js|jsx|json|css|md|html|yaml|yml)$
+
+  - repo: local
+    hooks:
+      - id: frontend-typecheck
+        name: frontend type-check
+        entry: npm --prefix dashboard/frontend run build
+        language: system
+        files: ^dashboard/frontend/
+        pass_filenames: false
+        always_run: true

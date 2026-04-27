@@ -14,6 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = REPO_ROOT / "dashboard" / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
+XHR_HEADERS = {"X-Requested-With": "XMLHttpRequest"}
+
 
 @pytest.fixture
 def app():
@@ -81,8 +83,18 @@ def client(app):
         yield c
 
 
+def csrf_headers(client):
+    response = client.get("/api/auth/csrf")
+    token = response.get_json()["csrf_token"]
+    return {**XHR_HEADERS, "X-CSRF-Token": token}
+
+
 def login_admin(client):
-    response = client.post("/api/auth/login", json={"username": "admin", "password": "Valid!123"})
+    response = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "Valid!123"},
+        headers=csrf_headers(client),
+    )
     assert response.status_code == 200
 
 
@@ -119,10 +131,30 @@ def test_create_user_rejects_weak_password(client):
             "password": "weak",
             "role": "viewer",
         },
+        headers=csrf_headers(client),
     )
 
     assert response.status_code == 400
     assert b"Password must be at least 8 characters" in response.data
+
+
+def test_login_requires_xhr_header(client):
+    response = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "Valid!123"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_login_requires_csrf_token(client):
+    response = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "Valid!123"},
+        headers=XHR_HEADERS,
+    )
+
+    assert response.status_code == 403
 
 
 def test_change_password_rejects_weak_password(client):
@@ -134,6 +166,7 @@ def test_change_password_rejects_weak_password(client):
             "old_password": "Valid!123",
             "new_password": "weak",
         },
+        headers=csrf_headers(client),
     )
 
     assert response.status_code == 400
@@ -145,12 +178,14 @@ def test_login_locks_after_repeated_failures(client, app):
         response = client.post(
             "/api/auth/login",
             json={"username": "alice", "password": f"wrong-{attempt}"},
+            headers=csrf_headers(client),
         )
         assert response.status_code == 401
 
     locked_response = client.post(
         "/api/auth/login",
         json={"username": "alice", "password": "wrong-final"},
+        headers=csrf_headers(client),
     )
     assert locked_response.status_code == 429
 
@@ -166,8 +201,37 @@ def test_login_locks_after_repeated_failures(client, app):
     success = client.post(
         "/api/auth/login",
         json={"username": "alice", "password": "Strong!234"},
+        headers=csrf_headers(client),
     )
     assert success.status_code == 200
 
     with app.app_context():
         assert LoginThrottle.query.count() == 0
+
+
+def test_login_requires_totp_when_enabled(client, app):
+    from totp_security import generate_totp_code, generate_totp_secret
+    from models import User, db
+
+    secret = generate_totp_secret()
+    with app.app_context():
+      user = User.query.filter_by(username="alice").first()
+      assert user is not None
+      user.enable_totp(secret)
+      db.session.commit()
+
+    response = client.post(
+        "/api/auth/login",
+        json={"username": "alice", "password": "Strong!234"},
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 412
+    assert response.get_json()["requires_totp"] is True
+
+    code = generate_totp_code(secret)
+    success = client.post(
+        "/api/auth/login",
+        json={"username": "alice", "password": "Strong!234", "totp_code": code},
+        headers=csrf_headers(client),
+    )
+    assert success.status_code == 200

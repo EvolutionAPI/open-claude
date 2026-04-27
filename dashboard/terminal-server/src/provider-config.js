@@ -3,6 +3,7 @@ const path = require('path');
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PROVIDERS_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.json');
+const CODEX_AUTH_FILE = path.join(WORKSPACE_ROOT, 'config', 'codex-auth.json');
 
 const ALLOWED_CLI = new Set(['claude', 'openclaude']);
 const ALLOWED_ENV_VARS = new Set([
@@ -24,9 +25,129 @@ const ALLOWED_ENV_VARS = new Set([
   'CLOUD_ML_REGION',
 ]);
 
+// ---- TKR Customization: Failover routing support ----
+const DEFAULT_FAILOVER_ORDER = [
+  'anthropic',
+  'openrouter',
+  'openai',
+  'codex_auth',
+  'gemini',
+  'bedrock',
+  'vertex',
+];
+
 function _normalizeModel(model) {
   return (model || '').trim().toLowerCase();
 }
+
+function loadProvidersFile() {
+  try {
+    if (!fs.existsSync(PROVIDERS_PATH)) {
+      return { active_provider: 'anthropic', providers: {} };
+    }
+    return JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8'));
+  } catch {
+    return { active_provider: 'anthropic', providers: {} };
+  }
+}
+
+function getProviderRouting(config, activeProviderId = null) {
+  const providers = config?.providers || {};
+  const active = activeProviderId || config?.active_provider || 'anthropic';
+  const routing = config?.routing && typeof config.routing === 'object' ? config.routing : {};
+  const seen = new Set();
+  const ordered = [];
+
+  const append = (providerId) => {
+    if (!providerId || seen.has(providerId)) return;
+    const provider = providers[providerId];
+    if (!provider || provider.coming_soon) return;
+    seen.add(providerId);
+    ordered.push(providerId);
+  };
+
+  append(active);
+  if (routing.enabled !== false && Array.isArray(routing.failover_order)) {
+    routing.failover_order.forEach(append);
+  }
+  DEFAULT_FAILOVER_ORDER.forEach(append);
+  Object.keys(providers).forEach(append);
+
+  return {
+    enabled: routing.enabled !== false,
+    failover_order: ordered,
+  };
+}
+
+function buildProviderConfig(config, providerId) {
+  const active = providerId || config?.active_provider || 'anthropic';
+  const provider = config?.providers?.[active] || {};
+
+  let cliCommand = provider.cli_command || 'claude';
+  if (!ALLOWED_CLI.has(cliCommand)) cliCommand = 'claude';
+
+  const envVars = Object.fromEntries(
+    Object.entries(provider.env_vars || {}).filter(
+      ([k, v]) => v !== '' && ALLOWED_ENV_VARS.has(k)
+    )
+  );
+
+  if (active === 'codex_auth' && 'OPENAI_API_KEY' in envVars) {
+    delete envVars.OPENAI_API_KEY;
+  }
+
+  return {
+    provider_id: active,
+    cli_command: cliCommand,
+    env_vars: envVars,
+    active,
+    provider_name: provider.name || active,
+    routing: getProviderRouting(config, active),
+    provider,
+  };
+}
+
+function isProviderReady(providerConfig) {
+  if (!providerConfig || providerConfig.active === 'none') return false;
+  if (providerConfig.active === 'anthropic') return true;
+  if (providerConfig.active === 'codex_auth') {
+    return fs.existsSync(CODEX_AUTH_FILE);
+  }
+
+  const env = providerConfig.env_vars || {};
+  const requiredKeys = Object.keys(env).filter((key) =>
+    /API_KEY|TOKEN|BEARER|PROJECT_ID|AUTH_JSON_PATH/.test(key)
+  );
+  return requiredKeys.some((key) => Boolean((env[key] || '').trim()));
+}
+
+function supportsMode(providerConfig, mode) {
+  if (!providerConfig) return false;
+  if (mode === 'chat') {
+    return providerConfig.active !== 'anthropic' && providerConfig.cli_command === 'openclaude';
+  }
+  if (mode === 'code') {
+    if (providerConfig.active === 'anthropic') return true;
+    return getProviderMode(providerConfig) === 'code';
+  }
+  return true;
+}
+
+function resolveProviderChain(mode = 'chat', preferredProviderId = null) {
+  const config = loadProvidersFile();
+  const routing = getProviderRouting(config, preferredProviderId || config.active_provider);
+  const providers = config.providers || {};
+  return routing.failover_order
+    .map((providerId) => buildProviderConfig(config, providerId))
+    .filter((providerConfig) => providers[providerConfig.provider_id])
+    .filter((providerConfig) => supportsMode(providerConfig, mode))
+    .filter((providerConfig) => isProviderReady(providerConfig));
+}
+
+function getProviderCandidates(mode = 'chat', preferredProviderId = null) {
+  return resolveProviderChain(mode, preferredProviderId);
+}
+// ---- End TKR Customization ----
 
 function isCodeModel(model) {
   const m = _normalizeModel(model);
@@ -46,9 +167,12 @@ function isChatCompletionModel(model) {
 
 function resolveProviderModel(providerConfig) {
   const env = providerConfig?.env_vars || {};
+  const provider = providerConfig?.provider || {};
   const active = providerConfig?.active || 'anthropic';
   const fromEnv = (env.OPENAI_MODEL || '').trim();
   if (fromEnv) return fromEnv;
+  const fromDefault = (provider.default_model || '').trim();
+  if (fromDefault) return fromDefault;
   if (active === 'codex_auth') return 'codexplan';
   if (active === 'openai') return 'gpt-4.1';
   return '';
@@ -62,45 +186,30 @@ function getProviderMode(providerConfig) {
   return 'chat';
 }
 
-function loadProviderConfig() {
+function loadProviderConfig(providerId = null) {
+  const config = loadProvidersFile();
   try {
-    if (!fs.existsSync(PROVIDERS_PATH)) {
-      return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
-    }
-
-    const config = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8'));
-    const active = config.active_provider || 'anthropic';
-    const provider = config.providers?.[active] || {};
-
-    let cliCommand = provider.cli_command || 'claude';
-    if (!ALLOWED_CLI.has(cliCommand)) cliCommand = 'claude';
-
-    const envVars = Object.fromEntries(
-      Object.entries(provider.env_vars || {}).filter(
-        ([k, v]) => v !== '' && ALLOWED_ENV_VARS.has(k)
-      )
-    );
-
-    if (active === 'codex_auth' && 'OPENAI_API_KEY' in envVars) {
-      delete envVars.OPENAI_API_KEY;
-    }
-
-    return {
-      cli_command: cliCommand,
-      env_vars: envVars,
-      active,
-      provider_name: provider.name || active,
-    };
+    return buildProviderConfig(config, providerId || config.active_provider || 'anthropic');
   } catch {
-    return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
+    return {
+      provider_id: providerId || 'anthropic',
+      cli_command: 'claude',
+      env_vars: {},
+      active: providerId || 'anthropic',
+      provider_name: providerId || 'anthropic',
+      routing: { enabled: true, failover_order: [providerId || 'anthropic'] },
+      provider: {},
+    };
   }
 }
 
 module.exports = {
   loadProviderConfig,
+  loadProvidersFile,
+  resolveProviderChain,
+  getProviderCandidates,
   resolveProviderModel,
   getProviderMode,
   isCodeModel,
   isChatCompletionModel,
 };
-

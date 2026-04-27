@@ -1,0 +1,29 @@
+{
+  "name": "Evo Workspace",
+  "short_name": "EvoNexus",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0C111D",
+  "theme_color": "#0C111D",
+  "description": "EvoNexus dashboard and agent workspace.",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/EVO_NEXUS.webp",
+      "sizes": "512x512",
+      "type": "image/webp",
+      "purpose": "any"
+    }
+  ]
+}
+
