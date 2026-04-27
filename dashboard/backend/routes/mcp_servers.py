@@ -30,7 +30,7 @@ def _plugin_mcp_ownership() -> dict[str, str]:
     try:
         from models import db
         rows = db.session.execute(
-            text("SELECT slug, manifest_json FROM plugins_installed WHERE enabled = 1")
+            text("SELECT slug, manifest_json FROM plugins_installed WHERE enabled IS TRUE")
         ).fetchall()
     except Exception:
         return ownership

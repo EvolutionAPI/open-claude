@@ -265,7 +265,7 @@ def _load_disabled_hooks() -> dict[str, set]:
         conn = get_engine().connect()
         rows = conn.execute(
             text("SELECT slug, capabilities_disabled FROM plugins_installed "
-                 "WHERE enabled = 1 AND status = 'active'")
+                 "WHERE enabled IS TRUE AND status = 'active'")
         ).fetchall()
         conn.close()
         for row in rows:
