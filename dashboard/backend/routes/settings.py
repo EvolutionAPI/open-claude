@@ -197,7 +197,15 @@ def _build_routine_entry(r: dict, frequency: str, agents: dict) -> dict:
 @bp.route("/api/settings/routines")
 @login_required
 def get_routines():
-    """Return all routines grouped by frequency."""
+    """Return all routines grouped by frequency.
+
+    PG mode: reads from routine_definitions table via routine_store.
+    SQLite mode: reads from config/routines.yaml (unchanged).
+    """
+    if get_dialect() == "postgresql":
+        from routine_store import list_routines_grouped
+        return jsonify(list_routines_grouped())
+
     data = _load_yaml(_routines_path())
     agents = get_script_agents()
 
@@ -212,12 +220,25 @@ def get_routines():
 @bp.route("/api/settings/routines/<frequency>/<slug>/toggle", methods=["PATCH"])
 @login_required
 def toggle_routine(frequency: str, slug: str):
-    """Toggle the enabled field of a single routine."""
+    """Toggle the enabled field of a single routine.
+
+    PG mode: updates routine_definitions via routine_store.
+    SQLite mode: updates config/routines.yaml (unchanged).
+    """
     from models import audit
     _require_manage()
 
     if frequency not in ("daily", "weekly", "monthly"):
         abort(400, "Invalid frequency")
+
+    if get_dialect() == "postgresql":
+        from routine_store import toggle_routine_enabled
+        new_enabled = toggle_routine_enabled(slug)
+        if new_enabled is None:
+            abort(404, f"Routine '{slug}' not found")
+        audit(current_user, "routine_toggled", "config",
+              f"Toggled {frequency}/{slug} → enabled={new_enabled} (PG)")
+        return jsonify({"status": "ok", "enabled": new_enabled})
 
     data = _load_yaml(_routines_path())
     routines = data.get(frequency, []) or []
@@ -241,7 +262,11 @@ def toggle_routine(frequency: str, slug: str):
 @bp.route("/api/settings/routines/<frequency>/<slug>", methods=["PUT"])
 @login_required
 def update_routine(frequency: str, slug: str):
-    """Update fields of a single routine."""
+    """Update fields of a single routine.
+
+    PG mode: updates routine_definitions via routine_store.
+    SQLite mode: updates config/routines.yaml (unchanged).
+    """
     from models import audit
     _require_manage()
 
@@ -249,6 +274,38 @@ def update_routine(frequency: str, slug: str):
         abort(400, "Invalid frequency")
 
     body = request.get_json(force=True) or {}
+
+    if get_dialect() == "postgresql":
+        import json as _json
+        from routine_store import get_routine_by_slug, update_routine_fields, _build_schedule_label
+        row = get_routine_by_slug(slug)
+        if row is None:
+            abort(404, f"Routine '{slug}' not found")
+
+        # Merge allowed schedule fields into existing config_json.
+        try:
+            cfg = _json.loads(row.get("config_json") or "{}")
+        except (ValueError, TypeError):
+            cfg = {}
+
+        for field in ("time", "interval", "day", "days", "args"):
+            if field in body:
+                cfg[field] = body[field]
+
+        fields: dict = {"config_json": _json.dumps(cfg)}
+        if "enabled" in body:
+            fields["enabled"] = body["enabled"]
+        if "name" in body:
+            fields["name"] = body["name"]
+        # Regenerate display label from updated config_json.
+        fields["schedule"] = _build_schedule_label(cfg, row.get("frequency") or frequency)
+
+        found = update_routine_fields(row["id"], fields)
+        if not found:
+            abort(404, f"Routine '{slug}' not found")
+        audit(current_user, "routine_updated", "config", f"Updated {frequency}/{slug} (PG)")
+        return jsonify({"status": "saved"})
+
     data = _load_yaml(_routines_path())
     routines = data.get(frequency, []) or []
 
@@ -274,7 +331,11 @@ def update_routine(frequency: str, slug: str):
 @bp.route("/api/settings/routines", methods=["POST"])
 @login_required
 def create_routine():
-    """Create a new routine entry."""
+    """Create a new routine entry.
+
+    PG mode: inserts into routine_definitions via routine_store.
+    SQLite mode: appends to config/routines.yaml (unchanged).
+    """
     from models import audit
     _require_manage()
 
@@ -287,6 +348,25 @@ def create_routine():
     missing = required - set(body.keys())
     if missing:
         abort(400, f"Missing required fields: {', '.join(missing)}")
+
+    if get_dialect() == "postgresql":
+        from routine_store import upsert_routine, _routine_slug as _rs
+        cfg: dict = {}
+        for opt in ("time", "interval", "day", "days", "args"):
+            if opt in body:
+                cfg[opt] = body[opt]
+        slug = _rs(body["name"])
+        upsert_routine(
+            slug=slug,
+            name=body["name"],
+            script=body["script"],
+            frequency=frequency,
+            config_json=cfg,
+            enabled=body.get("enabled", True),
+        )
+        audit(current_user, "routine_created", "config",
+              f"Created {frequency}/{slug} (PG)")
+        return jsonify({"status": "created", "slug": slug}), 201
 
     entry = {
         "name": body["name"],
@@ -312,12 +392,24 @@ def create_routine():
 @bp.route("/api/settings/routines/<frequency>/<slug>", methods=["DELETE"])
 @login_required
 def delete_routine(frequency: str, slug: str):
-    """Delete a routine by frequency + slug."""
+    """Delete a routine by frequency + slug.
+
+    PG mode: deletes from routine_definitions via routine_store.
+    SQLite mode: removes from config/routines.yaml (unchanged).
+    """
     from models import audit
     _require_manage()
 
     if frequency not in ("daily", "weekly", "monthly"):
         abort(400, "Invalid frequency")
+
+    if get_dialect() == "postgresql":
+        from routine_store import delete_routine as _delete_routine
+        deleted = _delete_routine(slug)
+        if not deleted:
+            abort(404, f"Routine '{slug}' not found")
+        audit(current_user, "routine_deleted", "config", f"Deleted {frequency}/{slug} (PG)")
+        return jsonify({"status": "deleted"})
 
     data = _load_yaml(_routines_path())
     routines = data.get(frequency, []) or []

@@ -2,9 +2,12 @@
 """
 EvoNexus Scheduler
 Runs core routines on schedule. Custom routines loaded from config/routines.yaml.
+In PostgreSQL mode, routine definitions are read from the routine_definitions table
+(pg-native-configs Fase 4); SIGHUP and LISTEN/NOTIFY both trigger hot-reload.
 Usage: runs automatically with make dashboard-app
 """
 
+import json
 import subprocess
 import os
 import sys
@@ -18,6 +21,12 @@ WORKSPACE = Path(__file__).parent
 PYTHON = "uv run python" if os.system("command -v uv > /dev/null 2>&1") == 0 else "python3"
 ROUTINES_DIR = WORKSPACE / "ADWs" / "routines"
 PID_FILE = WORKSPACE / "ADWs" / "logs" / "scheduler.pid"
+
+# dashboard/backend is added to sys.path so routine_store can be imported
+# whether we are running as root scheduler.py or from within the dashboard.
+_BACKEND_DIR = WORKSPACE / "dashboard" / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 # SIGHUP reload flag — set by handler, cleared by main loop (ADR-2)
 _reload_flag = threading.Event()
@@ -206,6 +215,168 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             raise
 
 
+def _get_scheduler_dialect() -> str:
+    """Return 'postgresql' or 'sqlite' based on DATABASE_URL env var.
+
+    Avoids importing SQLAlchemy at module level — called lazily.
+    """
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url.startswith("postgresql") or db_url.startswith("postgres://"):
+        return "postgresql"
+    return "sqlite"
+
+
+def _load_routines_from_db(schedule) -> None:
+    """Load routine_definitions from PG DB into the schedule (PG mode only).
+
+    Reads all enabled rows from routine_definitions, interprets config_json
+    (preserving original YAML shape), and registers jobs.  Monthly routines
+    are appended to _monthly_routines.
+    """
+    global _monthly_routines
+
+    try:
+        from routine_store import list_routines
+    except ImportError as exc:
+        print(f"  [scheduler] WARNING: could not import routine_store: {exc}")
+        return
+
+    try:
+        rows = list_routines()
+    except Exception as exc:
+        print(f"  [scheduler] WARNING: could not read routine_definitions from DB: {exc}")
+        return
+
+    registered = 0
+    monthly: list[dict] = []
+
+    for row in rows:
+        if not row.get("enabled", False):
+            continue
+
+        name = row["name"]
+        script = row["script"]
+        frequency = row.get("frequency") or "daily"
+
+        try:
+            cfg = json.loads(row.get("config_json") or "{}")
+        except (ValueError, TypeError):
+            cfg = {}
+
+        args = cfg.get("args", "")
+
+        if frequency == "monthly":
+            monthly.append({"name": name, "script": script, "args": args, "enabled": True})
+            continue
+
+        if frequency == "daily":
+            if cfg.get("interval"):
+                schedule.every(int(cfg["interval"])).minutes.do(
+                    run_adw, name, f"custom/{script}", args
+                )
+                registered += 1
+            elif cfg.get("time"):
+                schedule.every().day.at(cfg["time"]).do(
+                    run_adw, name, f"custom/{script}", args
+                )
+                registered += 1
+
+        elif frequency == "weekly":
+            day = cfg.get("day", "friday").lower()
+            time_str = cfg.get("time", "09:00")
+            days = cfg.get("days", [day])
+            for d in days:
+                getattr(schedule.every(), d, schedule.every().friday).at(time_str).do(
+                    run_adw, name, f"custom/{script}", args
+                )
+            registered += 1
+
+    _monthly_routines = monthly
+    print(f"  [scheduler] loaded {registered} routines + {len(monthly)} monthly from DB (PG mode)")
+
+
+def _start_routine_listen_thread() -> None:
+    """Start a background thread that LISTENs on 'config_changed' for routine changes.
+
+    On receiving a notification payload with table='routine_definitions', sets
+    _reload_flag so the main loop reloads routines on the next iteration.
+    PG mode only — no-op in SQLite mode.
+
+    Architecture note:
+        Implements a *per-scheduler* LISTEN connection (1 extra PG conn).
+        TODO(PG-NC-8): consolidate via multiplexer if connection budget becomes issue.
+    """
+    if _get_scheduler_dialect() != "postgresql":
+        return
+
+    try:
+        import psycopg2  # type: ignore[import]
+        import select as _select
+    except ImportError:
+        print(
+            "  [scheduler] WARNING: psycopg2 not installed — LISTEN/NOTIFY hot-reload disabled"
+        )
+        return
+
+    _stop_event = threading.Event()
+
+    def _listener() -> None:
+        db_url = os.environ.get("DATABASE_URL", "")
+        # Normalise to plain postgresql:// for psycopg2 (strip +psycopg2 driver hint)
+        dsn = db_url.replace("postgresql+psycopg2://", "postgresql://")
+        if dsn.startswith("postgres://"):
+            dsn = "postgresql://" + dsn[len("postgres://"):]
+
+        conn = None
+        while not _stop_event.is_set():
+            try:
+                conn = psycopg2.connect(dsn)
+                conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+                cur = conn.cursor()
+                cur.execute("LISTEN config_changed;")
+                print("  [scheduler] LISTEN config_changed registered (routine hot-reload)")
+
+                while not _stop_event.is_set():
+                    ready = _select.select([conn], [], [], 5.0)
+                    if ready == ([], [], []):
+                        continue
+                    try:
+                        conn.poll()
+                    except Exception as poll_exc:
+                        print(
+                            f"  [scheduler] LISTEN poll error: {poll_exc} — reconnecting"
+                        )
+                        break
+
+                    while conn.notifies:
+                        notif = conn.notifies.pop(0)
+                        try:
+                            payload = json.loads(notif.payload)
+                        except (ValueError, TypeError):
+                            payload = {}
+                        if payload.get("table") == "routine_definitions":
+                            print(
+                                f"  [scheduler] NOTIFY: routine_definitions {payload.get('op')} "
+                                f"id={payload.get('id')} — scheduling hot-reload"
+                            )
+                            _reload_flag.set()
+
+            except Exception as exc:
+                print(f"  [scheduler] LISTEN connection error: {exc} — retrying in 5s")
+                threading.Event().wait(5)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                conn = None
+
+    t = threading.Thread(target=_listener, daemon=True, name="routine-listen")
+    t.start()
+    print("  [scheduler] LISTEN thread started (PG mode, routine hot-reload)")
+
+
 def _load_disabled_routines() -> dict[str, set]:
     """Load per-plugin disabled routines from capabilities_disabled column.
 
@@ -238,10 +409,23 @@ def _load_disabled_routines() -> dict[str, set]:
 
 
 def _load_custom_routines(schedule):
-    """Load custom routines from config/routines.yaml + plugins/*/routines.yaml (ADR-2).
+    """Load custom routines — PG mode reads from routine_definitions DB table;
+    SQLite mode reads from config/routines.yaml + plugins/*/routines.yaml (ADR-2).
 
-    Wave 1.1: skips plugin routines whose make-id is in capabilities_disabled["routines"].
+    PG mode (pg-native-configs Fase 4):
+        Calls _load_routines_from_db() which queries routine_definitions.
+        Plugin routines stored in DB by plugin_loader at install time.
+        capabilities_disabled filtering is applied by the installer; not re-applied here.
+
+    SQLite mode (unchanged):
+        Reads config/routines.yaml and plugins/*/routines.yaml.
+        Wave 1.1: skips plugin routines whose make-id is in capabilities_disabled["routines"].
     """
+    if _get_scheduler_dialect() == "postgresql":
+        _load_routines_from_db(schedule)
+        return
+
+    # SQLite path — unchanged from original implementation.
     # 1. Core config
     _load_routines_from_yaml(schedule, WORKSPACE / "config" / "routines.yaml", is_plugin=False)
 
@@ -280,6 +464,9 @@ def main():
     total = len(schedule.get_jobs())
     print(f"  {total} routines scheduled")
     print(f"  Press Ctrl+C to stop\n")
+
+    # PG mode: start LISTEN thread for hot-reload when routine_definitions changes.
+    _start_routine_listen_thread()
 
     def shutdown(sig, frame):
         release_lock()

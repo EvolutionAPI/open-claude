@@ -159,7 +159,7 @@ def test_sqlite_fresh_upgrade_head(tmp_path):
         assert _REQUIRED_TRIGGERS <= triggers, f"Missing triggers: {_REQUIRED_TRIGGERS - triggers}"
 
         ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        assert ver[0] == "0007", f"Expected version 0007, got {ver[0]}"
+        assert ver[0] == "0009", f"Expected version 0009, got {ver[0]}"
 
 
 @pytest.mark.sqlite
@@ -310,7 +310,7 @@ def test_postgres_fresh_upgrade_head():
         assert _REQUIRED_TRIGGERS <= triggers, f"Missing triggers: {_REQUIRED_TRIGGERS - triggers}"
 
         ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        assert ver[0] == "0007", f"Expected version 0007, got {ver[0]}"
+        assert ver[0] == "0009", f"Expected version 0009, got {ver[0]}"
 
         # 0007 tables must exist on Postgres (migration is PG-only).
         pg_tables_0007 = {"runtime_configs", "llm_providers", "routine_definitions"}
