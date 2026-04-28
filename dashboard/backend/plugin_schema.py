@@ -465,20 +465,19 @@ class PluginAgentEntry(BaseModel):
 
 
 class PluginPage(BaseModel):
-    """A full-screen page declared in plugin.yaml under ui_entry_points.pages (Wave 2.1).
+    """A full-screen page declared in plugin.yaml under ui_entry_points.pages (v2).
 
-    The page bundle is a vanilla JS Web Component (no bundler, no framework).
-    It is served by the existing /plugins/<slug>/ui/<path> endpoint.
+    The page bundle is a pre-built ESM module that exports a default React
+    component.  It is served by the /plugins/<slug>/<bundle> endpoint.
+    The host mounts the component inside a PluginErrorBoundary per route.
     """
 
     id: Annotated[str, Field(min_length=1, max_length=100)]
     label: Annotated[str, Field(min_length=1, max_length=200)]
     # React Router sub-path under /plugins-ui/<slug>/ (e.g. "projects")
     path: Annotated[str, Field(min_length=1, max_length=200)]
-    # Relative path inside the tarball, e.g. "ui/pages/projects.js"
+    # Relative path inside the plugin directory, e.g. "dist/pages/home.js"
     bundle: Annotated[str, Field(min_length=1, max_length=500)]
-    # Web component tag name registered by the bundle via customElements.define()
-    custom_element_name: Annotated[str, Field(min_length=1, max_length=200)]
     # sidebar_group id to inject into (matches PluginSidebarGroup.id or native group)
     sidebar_group: Optional[str] = None
     # Lucide icon name or null
@@ -503,31 +502,20 @@ class PluginPage(BaseModel):
     @field_validator("bundle")
     @classmethod
     def bundle_path_valid(cls, v: str) -> str:
-        """Bundle must be relative, under ui/, with a .js or .mjs extension."""
+        """Bundle must be a relative path with a .js or .mjs extension.
+
+        v2 plugins output to dist/ via Vite library mode.  The old ui/ prefix
+        constraint is lifted; any relative path ending in .js/.mjs is valid.
+        """
         if v.startswith(("/", "http://", "https://")):
             raise ValueError(
-                f"PluginPage bundle '{v}' must be a relative path starting with 'ui/'"
-            )
-        if not v.startswith("ui/"):
-            raise ValueError(
-                f"PluginPage bundle '{v}' must start with 'ui/' to be served "
-                "by the existing /plugins/<slug>/ui/<path> endpoint."
+                f"PluginPage bundle '{v}' must be a relative path "
+                "(no absolute paths or external URLs)."
             )
         ext = Path(v).suffix.lower()
         if ext not in {".js", ".mjs"}:
             raise ValueError(
                 f"PluginPage bundle '{v}' must have a .js or .mjs extension."
-            )
-        return v
-
-    @field_validator("custom_element_name")
-    @classmethod
-    def custom_element_name_has_hyphen(cls, v: str) -> str:
-        """Web Components spec: custom element names must contain at least one hyphen."""
-        if "-" not in v:
-            raise ValueError(
-                f"custom_element_name '{v}' must contain at least one hyphen "
-                "(Web Components specification requirement)."
             )
         return v
 
@@ -844,7 +832,14 @@ class PluginUIEntryPoints(BaseModel):
 
 
 class PluginManifest(BaseModel):
-    """Full plugin.yaml manifest schema for v1a."""
+    """Full plugin.yaml manifest schema.
+
+    schema_version must be "2.0".  v0 plugins (no field or "1.0") are rejected
+    with a clear migration error at install/preview time.
+    """
+
+    # --- Schema version gate (required since v2) ---
+    schema_version: Literal["2.0"]
 
     # --- Identity ---
     id: Annotated[str, Field(min_length=3, max_length=64)]

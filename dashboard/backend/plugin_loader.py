@@ -530,7 +530,21 @@ class PluginInstaller:
             result["conflicts"].append(str(exc))
             return result
         except ValidationError as exc:
-            result["conflicts"].append(f"Invalid plugin.yaml: {exc}")
+            # Produce a clear message when the plugin is missing schema_version
+            # or declares a pre-v2 value (e.g. "1.0" or absent field).
+            errors = exc.errors()
+            schema_ver_errors = [
+                e for e in errors if "schema_version" in (e.get("loc") or ())
+            ]
+            if schema_ver_errors:
+                result["conflicts"].append(
+                    "Plugin schema version is not supported. "
+                    "This plugin requires schema_version: \"2.0\" in plugin.yaml. "
+                    "v0 plugins (schema_version: \"1.0\" or missing) are not supported "
+                    "in EvoNexus v2.x. See docs/plugin-contract.md for the migration guide."
+                )
+            else:
+                result["conflicts"].append(f"Invalid plugin.yaml: {exc}")
             return result
 
         result["manifest"] = manifest.model_dump()
