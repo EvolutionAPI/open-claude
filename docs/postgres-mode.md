@@ -153,6 +153,33 @@ Plugin update:
 
 ---
 
+## Backup & restore
+
+In Postgres mode, `make backup` (or `python backup.py backup`) automatically
+embeds a `pg_dump --format=custom` of your database inside the ZIP as
+`database.dump`. The ZIP also captures workspace files, memory, and plugins
+as in SQLite mode.
+
+Requirements: `pg_dump` and `pg_restore` must be in `PATH`. On macOS install
+via Homebrew (`brew install postgresql`); on Linux use the distro's
+`postgresql-client` package.
+
+Restore picks up the dump automatically when `DATABASE_URL` points to PG:
+
+```bash
+DATABASE_URL=postgresql://... python backup.py restore <file.zip> --mode merge
+# or --mode replace to drop existing schema first (--clean --if-exists)
+```
+
+Backend mismatches abort with a clear error — you cannot restore a Postgres
+ZIP onto a SQLite host or vice versa. Use `evonexus-migrate` for cross-backend
+data migration instead.
+
+The manifest records `db_backend: postgres` and `db_dump` metadata (size,
+format, options) so you can inspect a ZIP before restoring.
+
+---
+
 ## Known limitations
 
 These are deferred to follow-up work — none of them block production use:

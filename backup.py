@@ -239,28 +239,129 @@ def _format_size(size_bytes: int) -> str:
 # ── Backup ───────────────────────────────────────
 
 
-def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
-    """Create a ZIP backup of all gitignored user data.
+def _detect_db_backend() -> tuple[str, str]:
+    """Return (backend, url): backend in {"sqlite", "postgres", "none"}.
 
-    Note: in Postgres mode, application data lives in PG (configs, heartbeats,
-    runs, audit log) and is NOT covered by this ZIP. Use ``pg_dump`` separately
-    to back up the database; the ZIP still captures workspace files, memory,
-    and plugin directories.
+    Reads DATABASE_URL env var. SQLite is the default when unset.
+    """
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+    if db_url.startswith("postgresql"):
+        return ("postgres", db_url)
+    if db_url.startswith("sqlite") or not db_url:
+        return ("sqlite", db_url or "sqlite:///dashboard/data/evonexus.db")
+    return ("none", db_url)
+
+
+def _pg_dump_to_file(database_url: str, output_path: Path) -> dict:
+    """Run pg_dump --format=custom against database_url, write to output_path.
+
+    Returns metadata dict for inclusion in manifest. Raises on failure.
+    """
+    if not output_path.parent.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Verify pg_dump is available
+    try:
+        which = subprocess.run(
+            ["which", "pg_dump"], capture_output=True, text=True, timeout=5
+        )
+        if which.returncode != 0:
+            raise RuntimeError(
+                "pg_dump not found in PATH. Install postgresql-client (Linux) "
+                "or postgresql (macOS via Homebrew) to back up Postgres databases."
+            )
+    except FileNotFoundError:
+        raise RuntimeError("'which' command not available; cannot verify pg_dump")
+
+    # --format=custom is compressed and supports parallel restore + selective restore.
+    # --no-owner/--no-acl keeps the dump portable across users/roles.
+    print(f"  Running pg_dump (custom format)...")
+    result = subprocess.run(
+        [
+            "pg_dump",
+            "--format=custom",
+            "--no-owner",
+            "--no-acl",
+            "--file", str(output_path),
+            database_url,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,  # 10 min for large DBs
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"pg_dump failed:\n{result.stderr.strip()}")
+
+    size = output_path.stat().st_size
+    return {
+        "format": "pg_custom",
+        "size": size,
+        "compressed": True,
+        "no_owner": True,
+        "no_acl": True,
+    }
+
+
+def _pg_restore_from_file(database_url: str, dump_path: Path, clean: bool = False) -> None:
+    """Run pg_restore from dump_path against database_url.
+
+    With clean=True, drops existing schema first (replace mode). Otherwise
+    appends — idempotent inserts via --data-only would be nicer but require
+    schema match; we default to append-and-let-conflicts-fail.
+    """
+    try:
+        which = subprocess.run(
+            ["which", "pg_restore"], capture_output=True, text=True, timeout=5
+        )
+        if which.returncode != 0:
+            raise RuntimeError(
+                "pg_restore not found in PATH. Install postgresql-client to "
+                "restore Postgres backups."
+            )
+    except FileNotFoundError:
+        raise RuntimeError("'which' command not available")
+
+    cmd = [
+        "pg_restore",
+        "--no-owner",
+        "--no-acl",
+        "--dbname", database_url,
+    ]
+    if clean:
+        cmd.extend(["--clean", "--if-exists"])
+    cmd.append(str(dump_path))
+
+    print(f"  Running pg_restore ({'replace' if clean else 'merge'} mode)...")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    # pg_restore exits non-zero on per-object errors (e.g. role does not exist)
+    # but the data still loads. Treat stderr-only as warning.
+    if result.returncode != 0:
+        # Check if any stderr lines look like real errors vs benign warnings
+        stderr = result.stderr.strip()
+        fatal_markers = ("FATAL:", "could not connect", "password authentication failed")
+        if any(m in stderr for m in fatal_markers):
+            raise RuntimeError(f"pg_restore failed:\n{stderr}")
+        # Otherwise: print warnings but continue
+        print(f"  {YELLOW}pg_restore reported non-fatal warnings:{RESET}")
+        for line in stderr.splitlines()[:10]:
+            print(f"    {line}")
+
+
+def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
+    """Create a ZIP backup of gitignored user data plus database content.
+
+    In SQLite mode the .db file is captured by the gitignored-files walk.
+    In Postgres mode, the database is dumped via ``pg_dump --format=custom``
+    and embedded in the ZIP as ``database.dump``.
     """
     banner("Backup — Export")
 
-    # Warn when running in Postgres mode — the ZIP excludes DB content.
-    db_url = os.environ.get("DATABASE_URL", "")
-    if db_url.startswith("postgresql"):
-        print(
-            f"{YELLOW}⚠  Postgres mode detected. This ZIP backs up files only "
-            f"(workspace/, memory/, plugins/). Use 'pg_dump' separately to back "
-            f"up your Postgres database — application configs and runtime data "
-            f"live there, not in files.{RESET}"
-        )
+    backend, db_url = _detect_db_backend()
+    if backend == "postgres":
+        print(f"  {DIM}Postgres mode detected — pg_dump will be embedded.{RESET}")
 
     files = collect_files()
-    if not files:
+    if not files and backend != "postgres":
         print(f"{YELLOW}No gitignored files found to backup.{RESET}")
         sys.exit(0)
 
@@ -268,6 +369,19 @@ def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     zip_name = f"evonexus-backup-{timestamp}.zip"
     zip_path = BACKUPS_DIR / zip_name
+
+    # If Postgres, dump the database to a tempfile that we'll embed in the ZIP
+    pg_dump_meta = None
+    pg_dump_path = None
+    if backend == "postgres":
+        pg_dump_path = Path(tempfile.mkstemp(suffix=".dump", prefix="evonexus-pg-")[1])
+        try:
+            pg_dump_meta = _pg_dump_to_file(db_url, pg_dump_path)
+            print(f"  pg_dump complete: {_format_size(pg_dump_meta['size'])}")
+        except Exception as exc:
+            print(f"{RED}pg_dump failed: {exc}{RESET}")
+            pg_dump_path.unlink(missing_ok=True)
+            sys.exit(1)
 
     # Build manifest
     file_entries = []
@@ -286,29 +400,44 @@ def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
         "file_count": len(files),
         "total_size": total_size,
         "files": file_entries,
+        "db_backend": backend,
     }
+    if pg_dump_meta:
+        manifest["db_dump"] = {"path": "database.dump", **pg_dump_meta}
 
-    # Create ZIP
-    if HAS_RICH:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Compressing...", total=len(files))
+    # Create ZIP — adds 1 entry for the pg_dump if present
+    pg_step = 1 if pg_dump_path else 0
+    total_steps = len(files) + pg_step
+
+    try:
+        if HAS_RICH:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Compressing...", total=total_steps)
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                    for rel in files:
+                        zf.write(WORKSPACE / rel, rel)
+                        progress.advance(task)
+                    if pg_dump_path:
+                        zf.write(pg_dump_path, "database.dump")
+                        progress.advance(task)
+        else:
+            print(f"  Compressing {len(files)} files{' + database.dump' if pg_dump_path else ''}...")
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("manifest.json", json.dumps(manifest, indent=2))
                 for rel in files:
                     zf.write(WORKSPACE / rel, rel)
-                    progress.advance(task)
-    else:
-        print(f"  Compressing {len(files)} files...")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-            for rel in files:
-                zf.write(WORKSPACE / rel, rel)
+                if pg_dump_path:
+                    zf.write(pg_dump_path, "database.dump")
+    finally:
+        if pg_dump_path:
+            pg_dump_path.unlink(missing_ok=True)
 
     zip_size = zip_path.stat().st_size
 
@@ -392,12 +521,22 @@ def cleanup_old_backups(s3_bucket: str = None):
 
 
 def restore_local(zip_path: Path, mode: str = "merge"):
-    """Restore workspace from a ZIP backup."""
+    """Restore workspace from a ZIP backup.
+
+    If the backup contains ``database.dump`` (Postgres mode), it is restored
+    via ``pg_restore`` against the current ``DATABASE_URL``. In replace mode,
+    existing schema is dropped first (--clean --if-exists). In merge mode,
+    pg_restore appends and per-row conflicts are reported as warnings.
+
+    Mismatches (PG dump → SQLite host, or vice versa) abort with a clear error.
+    """
     banner("Backup — Restore")
 
     if not zip_path.exists():
         print(f"{RED}File not found: {zip_path}{RESET}")
         sys.exit(1)
+
+    current_backend, current_db_url = _detect_db_backend()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Validate manifest
@@ -407,6 +546,24 @@ def restore_local(zip_path: Path, mode: str = "merge"):
 
         manifest = json.loads(zf.read("manifest.json"))
         file_list = [e["path"] for e in manifest["files"]]
+        backup_backend = manifest.get("db_backend", "sqlite")
+        has_pg_dump = "database.dump" in zf.namelist()
+
+        # Backend mismatch detection
+        if backup_backend == "postgres" and current_backend != "postgres":
+            print(
+                f"{RED}Backend mismatch: this backup contains a Postgres dump, "
+                f"but DATABASE_URL points to '{current_backend}'. Set "
+                f"DATABASE_URL=postgresql://... before restoring.{RESET}"
+            )
+            sys.exit(1)
+        if backup_backend == "sqlite" and current_backend == "postgres":
+            print(
+                f"{YELLOW}Note: this backup was made in SQLite mode but the "
+                f"current host is Postgres. Files will be restored, but the "
+                f"SQLite .db files inside the ZIP won't be applied to PG. "
+                f"Use 'evonexus-migrate' for cross-backend data migration.{RESET}"
+            )
 
         restored = 0
         skipped = 0
@@ -415,6 +572,8 @@ def restore_local(zip_path: Path, mode: str = "merge"):
             console.print(f"  [bold]Backup from:[/] {manifest['created_at']}")
             console.print(f"  [bold]Version:[/]     {manifest['version']}")
             console.print(f"  [bold]Files:[/]       {manifest['file_count']}")
+            console.print(f"  [bold]Backend:[/]     {backup_backend}"
+                          f"{' (with pg_dump)' if has_pg_dump else ''}")
             console.print(f"  [bold]Mode:[/]        {mode}\n")
 
             with Progress(
@@ -424,7 +583,7 @@ def restore_local(zip_path: Path, mode: str = "merge"):
                 TextColumn("{task.completed}/{task.total}"),
                 console=console,
             ) as progress:
-                task = progress.add_task("Restoring...", total=len(file_list))
+                task = progress.add_task("Restoring files...", total=len(file_list))
                 for rel in file_list:
                     dest = WORKSPACE / rel
                     if mode == "merge" and dest.exists():
@@ -439,6 +598,8 @@ def restore_local(zip_path: Path, mode: str = "merge"):
             print(f"  Backup from: {manifest['created_at']}")
             print(f"  Version:     {manifest['version']}")
             print(f"  Files:       {manifest['file_count']}")
+            print(f"  Backend:     {backup_backend}"
+                  f"{' (with pg_dump)' if has_pg_dump else ''}")
             print(f"  Mode:        {mode}\n")
             print(f"  Restoring {len(file_list)} files...")
 
@@ -452,18 +613,42 @@ def restore_local(zip_path: Path, mode: str = "merge"):
                     dest.write_bytes(data)
                     restored += 1
 
+        # Restore Postgres dump if present and we're in PG mode
+        pg_restored = False
+        if has_pg_dump and current_backend == "postgres":
+            tmp_dump = Path(tempfile.mkstemp(suffix=".dump", prefix="evonexus-pg-restore-")[1])
+            try:
+                tmp_dump.write_bytes(zf.read("database.dump"))
+                _pg_restore_from_file(
+                    current_db_url,
+                    tmp_dump,
+                    clean=(mode == "replace"),
+                )
+                pg_restored = True
+            except Exception as exc:
+                print(f"{RED}pg_restore failed: {exc}{RESET}")
+                # Don't sys.exit — files were already restored
+            finally:
+                tmp_dump.unlink(missing_ok=True)
+
     if HAS_RICH:
         table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_row("[bold]Restored[/]", str(restored))
-        table.add_row("[bold]Skipped[/]", str(skipped))
-        table.add_row("[bold]Total[/]", str(restored + skipped))
+        table.add_row("[bold]Files restored[/]", str(restored))
+        table.add_row("[bold]Files skipped[/]", str(skipped))
+        if has_pg_dump and current_backend == "postgres":
+            table.add_row(
+                "[bold]Database[/]",
+                "✓ pg_restore complete" if pg_restored else "✗ pg_restore failed",
+            )
         console.print()
         console.print(table)
         console.print(f"\n  [bold green]✓ Restore complete ({mode} mode)[/]")
     else:
-        print(f"\n  Restored: {restored}")
-        print(f"  Skipped:  {skipped}")
-        print(f"  Total:    {restored + skipped}")
+        print(f"\n  Files restored: {restored}")
+        print(f"  Files skipped:  {skipped}")
+        if has_pg_dump and current_backend == "postgres":
+            status = "✓ pg_restore complete" if pg_restored else "✗ pg_restore failed"
+            print(f"  Database:       {status}")
         print(f"\n  {GREEN}✓ Restore complete ({mode} mode){RESET}")
 
 

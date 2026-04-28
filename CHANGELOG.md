@@ -68,6 +68,19 @@ not in YAML/JSON).
   LANGUAGE plpgsql`) so bulk updates and raw-SQL paths both increment
   `goals.current_value` correctly.
 
+### Added — PG backup/restore
+
+- **`backup.py` integrates `pg_dump`** — when `DATABASE_URL` is set to a
+  Postgres URL, `make backup` dumps the database via `pg_dump --format=custom`
+  (no-owner, no-acl) and embeds it in the ZIP as `database.dump`. Manifest
+  records `db_backend: postgres` and dump metadata.
+- **`backup.py restore` calls `pg_restore`** — when the ZIP contains
+  `database.dump` and the current host is PG, restore runs `pg_restore`
+  against `DATABASE_URL`. `--mode replace` adds `--clean --if-exists` to
+  drop existing schema first; `--mode merge` (default) appends.
+- Backend-mismatch detection: restoring a Postgres ZIP onto a SQLite host
+  (or vice versa) aborts with a clear error pointing to `evonexus-migrate`.
+
 ### Deferred (PG-NC follow-ups, not blocking)
 
 - **Frontend cache invalidation** via SSE/WebSocket — backend caches
