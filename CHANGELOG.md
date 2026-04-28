@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [unreleased]
+
+PostgreSQL is now a first-class storage option alongside SQLite. Two
+features land together: **postgres-compat** (dual-backend schema, data
+migration tool) and **pg-native-configs** (configs live in DB when on PG,
+not in YAML/JSON).
+
+### Added — postgres-compat
+
+- **Dual-backend support**: set `DATABASE_URL=postgresql://...` to use PG;
+  unset to keep SQLite default. SQLite mode is byte-compatible with prior
+  releases.
+- **Alembic migrations** replace runtime `executescript()` + `PRAGMA
+  table_info` introspection. 30+ tables managed by versioned migrations
+  (0001-0010). New `make db-upgrade` / `db-current` / `db-history` /
+  `db-downgrade` targets.
+- **`evonexus-migrate` CLI** — copies SQLite data to a fresh PG with
+  trigger DISABLE/ENABLE around bulk inserts (preserves goal counters),
+  optimistic resume, row-count + checksum verification. Flags:
+  `--dry-run`, `--resume`, `--verify`/`--skip-verify`, `--allow-non-empty`,
+  `--batch-size`. New flag `--skip-incompatible-plugins` for partial
+  migration when a plugin still ships only `install.sqlite.sql`.
+- **Plugin contract v2** — plugins must provide both `install.sqlite.sql`
+  and `install.postgres.sql`. Plugins missing PG support fail-fast in PG
+  mode with a link to `docs/plugin-migration-v1.md`.
+- **CI grep guards** — pre-commit and CI block raw `sqlite3.connect` and
+  `UPDATE goal_tasks` outside an explicit allowlist (`db/ALLOWLIST.md`).
+
+### Added — pg-native-configs
+
+- **Configs live in PG when in PG mode** (workspace, providers, heartbeats,
+  routines, plugin-defined heartbeats/routines). SQLite mode is unchanged.
+- **`config_store` / `provider_store` / `routine_store`** — the only seams
+  authorized to read/write configs. Both seams bifurcate by dialect.
+- **LISTEN/NOTIFY hot reload** — heartbeat dispatcher and routine scheduler
+  open a dedicated PG connection on `LISTEN config_changed`. Triggers on
+  `heartbeats` and `routine_definitions` notify on every change. Reload
+  latency < 1s without SIGHUP / process restart.
+- **Plugin auto-import on install (PG mode)** — plugin's `heartbeats.yaml`
+  and `routines.yaml` populate the corresponding tables tagged
+  `source_plugin=<slug>`. Uninstall deletes by `source_plugin`. Update is
+  DELETE+INSERT in a single transaction; user-toggled `enabled` state is
+  preserved.
+- **`evonexus-import-configs` CLI** — one-shot migration of file-based
+  configs to PG for users who already moved their data with `db-migrate`
+  but not their YAMLs. Idempotent; `--dry-run`, `--force`, `--verbose`.
+- **Setup wizard PG-native** — `make setup` writes directly to DB when
+  `DATABASE_URL` is set; no YAML files are created in PG mode.
+- **`greplint pg-native-configs` CI job** — blocks new `yaml.safe_load`
+  calls outside the explicit allowlist of legitimate config seams,
+  preventing regression.
+- **`docs/postgres-mode.md`** — operator guide covering install, migration,
+  pooling, hot reload, plugin contract, and known limitations.
+
+### Changed
+
+- `dashboard.port` reads from `EVONEXUS_PORT` env var only (was YAML
+  fallback). Default 8080.
+- Goal-progress trigger ported from SQLite-only inline trigger to a
+  defense-in-depth pair (SQLite `CREATE TRIGGER` + PG `CREATE FUNCTION ...
+  LANGUAGE plpgsql`) so bulk updates and raw-SQL paths both increment
+  `goals.current_value` correctly.
+
+### Deferred (PG-NC follow-ups, not blocking)
+
+- **Frontend cache invalidation** via SSE/WebSocket — backend caches
+  invalidate via NOTIFY but React state holds stale values until refresh
+  in unrelated browser tabs.
+- **LISTEN multiplexer** — currently each long-running process opens its
+  own connection. A single multiplexer would consolidate down to 1 conn.
+- **Smart-router config in DB** — out of scope; remains file-based for
+  the JS proxy process.
+
 ## [0.33.0] - 2026-04-25
 
 Plugin contract release. Five PRs merged in one day to unblock the EvoNexus Plugin Nutri (and any future plugin needing per-endpoint role enforcement, public token-bound portals, or safe uninstall). Plus a UX fix so `409 CONFLICT` from plugin install actually says *why* it conflicted.

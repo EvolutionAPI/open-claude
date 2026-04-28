@@ -1,0 +1,50 @@
+name: greplint pg-native-configs
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  yaml-leak-detection:
+    name: yaml.safe_load outside allowlist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block yaml.safe_load outside allowlist
+        # Files allowed to call yaml.safe_load (they bifurcate by dialect or are SQLite-only):
+        #   - config_store.py / provider_store.py / routine_store.py — official seams
+        #   - heartbeat_schema.py — SQLite path only
+        #   - plugin_loader.py — install-time import for both modes
+        #   - cli/evonexus_import_configs.py — explicit migration tool
+        #   - cli/evonexus_migrate.py — schema migration
+        #   - setup.py — bootstrap wizard
+        #   - tests/ — fixtures
+        # Anything else MUST go through config_store/provider_store/routine_store.
+        run: |
+          # Allowlist (pipe-separated regex):
+          # - Stores (the only seams that should write configs): config_store, provider_store, routine_store
+          # - SQLite-mode loaders: heartbeat_schema (PG path goes through DB)
+          # - Plugin manifests (NOT configs): plugin_loader, plugin_schema, plugin_integration_health, brain_repo/manifest
+          # - Routes that bifurcate by dialect already: settings, config, integrations, plugins, _helpers
+          # - Bootstrap/migration tools: setup.py, cli/, alembic/versions/
+          # - Misc accepted readers: claude_hook_dispatcher (reads plugin manifests)
+          # - Tests and scripts: tests/, scripts/
+          ALLOWLIST='config_store\.py|provider_store\.py|routine_store\.py|heartbeat_schema\.py|plugin_loader\.py|plugin_schema\.py|plugin_integration_health\.py|brain_repo/manifest\.py|claude_hook_dispatcher\.py|routes/settings\.py|routes/config\.py|routes/integrations\.py|routes/plugins\.py|routes/_helpers\.py|cli/evonexus_import_configs\.py|cli/evonexus_migrate\.py|setup\.py|alembic/versions/|tests/|scripts/'
+          violations=$(grep -rE "yaml\.safe_load\s*\(" dashboard/ setup.py 2>/dev/null \
+            --include='*.py' \
+            | grep -vE "$ALLOWLIST" \
+            | grep -v '# noqa: pg-native-configs' \
+            || true)
+          if [ -n "$violations" ]; then
+            echo "::error::yaml.safe_load found outside the pg-native-configs allowlist."
+            echo "Configs in PG mode must go through config_store/provider_store/routine_store."
+            echo "If this read is legitimate (SQLite-only, fixture, etc.), add '# noqa: pg-native-configs'"
+            echo "or extend the allowlist in .github/workflows/greplint-pg-configs.yml."
+            echo
+            echo "$violations"
+            exit 1
+          fi
+          echo "✅ no violations"
