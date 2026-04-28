@@ -73,7 +73,9 @@ from typing import Any, Optional
 # Python bool before inserting into Postgres (ADR PG-Q5).
 _BOOL_COLUMNS: dict[str, set[str]] = {
     "users":              {"is_active", "onboarding_completed_agents_visit"},
-    "triggers":           {"enabled"},
+    "roles":              {"is_builtin"},
+    "file_shares":        {"enabled"},
+    "triggers":           {"enabled", "from_yaml"},
     "systems":            {"enabled"},
     "heartbeats":         {"enabled"},
     "brain_repo_configs": {"sync_enabled", "sync_in_progress", "cancel_requested"},
@@ -232,6 +234,22 @@ def _parse_datetime(val: Any) -> Optional[datetime]:
     return None
 
 
+def _normalize_datetime_str(val: Any) -> Optional[str]:
+    """Normalise an ISO-8601 datetime string to the canonical 27-char form used
+    by EvoNexus VARCHAR(30) columns: ``YYYY-MM-DDTHH:MM:SS.ffffffZ``.
+
+    Handles both the SQLite ``+00:00`` suffix and the ``Z`` suffix.
+    Returns None if *val* is falsy; returns the string truncated to 30 chars
+    if it cannot be parsed (better to attempt the INSERT than to null it out).
+    """
+    if not val:
+        return None
+    dt = _parse_datetime(val)
+    if dt is None:
+        return str(val)[:30]  # best-effort truncation
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+
 def _cast_row(
     table: str,
     row: dict[str, Any],
@@ -246,6 +264,14 @@ def _cast_row(
     for col in bool_cols:
         if col in out and out[col] is not None:
             out[col] = bool(out[col])
+    # For tables whose timestamp columns are stored as VARCHAR(30) in the PG
+    # schema (tables not listed in _DATETIME_COLUMNS), normalise ISO strings to
+    # the canonical 27-char form to avoid StringDataRightTruncation errors.
+    varchar_dt_candidates = {"created_at", "updated_at"}
+    if table not in _DATETIME_COLUMNS:
+        for col in varchar_dt_candidates:
+            if col in out and out[col] is not None:
+                out[col] = _normalize_datetime_str(out[col])
     for col in dt_cols:
         if col in out:
             out[col] = _parse_datetime(out[col])
@@ -497,7 +523,45 @@ def _migrate_table(
         log.warning("  [WARN] %s has no columns — skipping", table)
         return 0
 
-    cols_str = ", ".join(src_cols)
+    # Use the intersection of source and target columns to tolerate minor
+    # schema drift (e.g. column added/removed between SQLite and PG revisions).
+    dst_cols_all = set(_get_columns(dst_conn, table)) if _table_exists(dst_conn, table) else set(src_cols)
+    shared_cols = [c for c in src_cols if c in dst_cols_all]
+    if not shared_cols:
+        log.warning("  [WARN] %s has no columns in common between source and target — skipping", table)
+        return 0
+    if len(shared_cols) < len(src_cols):
+        dropped = set(src_cols) - dst_cols_all
+        log.warning("  [WARN] %s: %d source column(s) not in target, will be skipped: %s",
+                    table, len(dropped), sorted(dropped))
+
+    # Check that required (NOT NULL, no default) target columns are all covered
+    # by the shared set; if any are missing the INSERT would fail with a
+    # NOT NULL violation, so we skip the table with a clear warning.
+    if is_pg_target:
+        try:
+            from sqlalchemy import inspect as sa_inspect
+            pg_cols_meta = sa_inspect(dst_conn.engine).get_columns(table)
+            missing_required = [
+                c["name"] for c in pg_cols_meta
+                if not c.get("nullable", True)
+                and c.get("default") is None
+                and not c.get("autoincrement", False)
+                and c["name"] not in set(shared_cols)
+                # PG sequences show up as default; exclude PK with sequence
+                and "nextval" not in str(c.get("default") or "")
+            ]
+            if missing_required:
+                log.warning(
+                    "  [SKIP] %s — target has required column(s) absent in source: %s. "
+                    "Schema drift too large to migrate safely — skipping this table.",
+                    table, missing_required,
+                )
+                return 0
+        except Exception:  # noqa: BLE001
+            pass  # If inspection fails, attempt the insert and let it fail naturally
+
+    cols_str = ", ".join(shared_cols)
     pk_col = _get_pk_col(table)
 
     offset = 0
@@ -513,12 +577,12 @@ def _migrate_table(
 
         batch: list[dict[str, Any]] = []
         for raw in rows:
-            row_dict = dict(zip(src_cols, raw))
+            row_dict = dict(zip(shared_cols, raw))
             row_dict = _cast_row(table, row_dict, is_pg_target)
             batch.append(row_dict)
 
         # Build INSERT ... ON CONFLICT DO NOTHING
-        placeholders = ", ".join(f":{c}" for c in src_cols)
+        placeholders = ", ".join(f":{c}" for c in shared_cols)
         if pk_col:
             conflict_clause = f"ON CONFLICT ({pk_col}) DO NOTHING"
         else:
@@ -528,13 +592,41 @@ def _migrate_table(
         insert_sql = text(
             f"INSERT INTO {table} ({cols_str}) VALUES ({placeholders}) {conflict_clause}"
         )
-        result = dst_conn.execute(insert_sql, batch)
-        dst_conn.commit()
-
-        # rowcount reflects actual rows inserted (skipped by ON CONFLICT = 0)
-        # SQLAlchemy returns -1 if the driver doesn't support rowcount on executemany;
-        # fall back to len(batch) in that case (conservative — counts attempts).
-        actual_inserted = result.rowcount if result.rowcount >= 0 else len(batch)
+        try:
+            result = dst_conn.execute(insert_sql, batch)
+            dst_conn.commit()
+            # rowcount reflects actual rows inserted (skipped by ON CONFLICT = 0)
+            # SQLAlchemy returns -1 if the driver doesn't support rowcount on executemany;
+            # fall back to len(batch) in that case (conservative — counts attempts).
+            actual_inserted = result.rowcount if result.rowcount >= 0 else len(batch)
+        except Exception as exc:  # noqa: BLE001
+            # Batch-level failure (e.g. CheckViolation, DataError).
+            # Roll back and retry row-by-row to salvage as many rows as possible.
+            try:
+                dst_conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            log.warning(
+                "  [WARN] %s: batch INSERT failed (%s) — retrying row-by-row",
+                table, type(exc).__name__,
+            )
+            actual_inserted = 0
+            for single_row in batch:
+                try:
+                    dst_conn.execute(insert_sql, [single_row])
+                    dst_conn.commit()
+                    actual_inserted += 1
+                except Exception as row_exc:  # noqa: BLE001
+                    try:
+                        dst_conn.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    pk_col_for_log = _get_pk_col(table)
+                    pk_val = single_row.get(pk_col_for_log, "?") if pk_col_for_log else "?"
+                    log.warning(
+                        "  [SKIP row] %s pk=%s — %s: %s",
+                        table, pk_val, type(row_exc).__name__, str(row_exc)[:120],
+                    )
         total_inserted += actual_inserted
         offset += len(batch)  # always advance offset by batch size
         if verbose:
