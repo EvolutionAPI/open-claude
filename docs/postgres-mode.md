@@ -202,8 +202,8 @@ These are deferred to follow-up work — none of them block production use:
 
 The plugin still ships only `install.sqlite.sql`. Either:
 
-- Update the plugin to v2 (with `install.postgres.sql`) — see
-  [plugin-migration-v1.md](./plugin-migration-v1.md).
+- Ship `install.postgres.sql` alongside the SQLite file — see
+  [plugin-contract.md §10](./plugin-contract.md).
 - Run `make db-migrate-skip-plugins` to migrate core data without the plugin's
   schema/data; reinstall the plugin in PG when an updated version is available.
 

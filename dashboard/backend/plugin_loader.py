@@ -13,7 +13,7 @@ Plugin SQL discovery (ADR PG-Q7 — plugin contract v2):
     migrations/install.sql (legacy) with a DeprecationWarning.
   Postgres backend: requires migrations/install.postgres.sql; no fallback —
     legacy install.sql is SQLite-only SQL and will break on PG.  Missing file
-    raises PluginCompatError pointing to docs/plugin-migration-v1.md.
+    raises PluginCompatError pointing to docs/plugin-contract.md.
 
   Same resolution applies to uninstall.{dialect}.sql and any future hook SQLs.
 """
@@ -109,7 +109,7 @@ class PluginCompatError(PluginError):
     """Raised when a plugin is not compatible with the active database backend.
 
     This occurs when the plugin only ships a legacy install.sql (SQLite format)
-    but the active backend is Postgres.  See docs/plugin-migration-v1.md.
+    but the active backend is Postgres.  See docs/plugin-contract.md.
     """
 
 
@@ -130,7 +130,7 @@ def resolve_plugin_sql(migrations_dir: Path, hook: str) -> Path:
     Postgres:
       1. ``{hook}.postgres.sql`` — required
       2. ``{hook}.sql`` present  — fail-fast with PluginCompatError pointing to
-                                   docs/plugin-migration-v1.md
+                                   docs/plugin-contract.md
       3. Neither found           — raises FileNotFoundError
 
     Parameters
@@ -171,7 +171,7 @@ def resolve_plugin_sql(migrations_dir: Path, hook: str) -> Path:
                 f"Plugin '{plugin_slug}' has {hook}.sql (legacy SQLite format) but no "
                 f"{hook}.postgres.sql.\n"
                 "This plugin is not compatible with the Postgres backend.\n"
-                "See docs/plugin-migration-v1.md for migration instructions."
+                "See docs/plugin-contract.md for migration instructions."
             )
         raise FileNotFoundError(
             f"Plugin '{plugin_slug}': no SQL file found for hook '{hook}' "
@@ -187,7 +187,7 @@ def resolve_plugin_sql(migrations_dir: Path, hook: str) -> Path:
         warnings.warn(
             f"Plugin '{plugin_slug}' uses legacy {hook}.sql (SQLite-only format). "
             f"Migrate to {hook}.sqlite.sql + {hook}.postgres.sql before v1.1.0. "
-            "See docs/plugin-migration-v1.md.",
+            "See docs/plugin-contract.md.",
             DeprecationWarning,
             stacklevel=3,
         )

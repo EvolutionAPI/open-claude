@@ -5,8 +5,7 @@ It documents the `plugin.yaml` manifest, the auxiliary YAML files (`heartbeats.y
 `routines.yaml`), the host endpoints a plugin can call at runtime, and the
 filesystem layout the installer expects.
 
-If you are migrating an older plugin, see [`plugin-migration-v1.md`](plugin-migration-v1.md).
-If you want a working end-to-end example to clone, the **`evo-essentials`** plugin
+For a working end-to-end example to clone, the **`evo-essentials`** plugin
 covers one of every capability:
 [github.com/EvolutionAPI/evonexus-plugin-evo-essentials](https://github.com/EvolutionAPI/evonexus-plugin-evo-essentials).
 
