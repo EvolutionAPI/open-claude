@@ -1,0 +1,53 @@
+/*
+ * EvoNexus design tokens.
+ *
+ * Usage (Tailwind 4, CSS-first config):
+ *   @import "@evonexus/ui/tokens.css";
+ *
+ * This file provides CSS custom properties (:root vars) for inline-style usage.
+ * Example: style={{ color: 'var(--evo-green)' }}
+ *
+ * TAILWIND UTILITIES: If you want Tailwind utility classes (bg-evo-green, etc.),
+ * copy the @theme block below into your plugin's CSS entry file, after
+ * @import "tailwindcss". The @theme directive is not processed transitively
+ * by @tailwindcss/vite — it must be in the root CSS file.
+ *
+ * Host: import AFTER @import "tailwindcss" in index.css.
+ * Plugin: import at the top of your plugin entry CSS (for :root vars).
+ */
+
+/*
+ * Copy this @theme block into your root CSS to enable Tailwind utility classes:
+ *
+ * @theme {
+ *   --color-evo-green: #00FFA7;
+ *   --color-bg-primary: #0C111D;
+ *   --color-bg-card: #182230;
+ *   --color-bg-sidebar: #0a0f1a;
+ *   --color-border: #344054;
+ *   --color-text-primary: #F9FAFB;
+ *   --color-text-secondary: #D0D5DD;
+ *   --color-text-muted: #667085;
+ *   --color-danger: #EF4444;
+ *   --color-warning: #F59E0B;
+ *   --color-surface-hover: #1e2d3d;
+ *   --color-surface-active: #1a2744;
+ *   --color-border-accent: #00FFA7;
+ * }
+ */
+
+:root {
+  --evo-green: #00FFA7;
+  --bg-primary: #0C111D;
+  --bg-card: #182230;
+  --bg-sidebar: #0a0f1a;
+  --border: #344054;
+  --text-primary: #F9FAFB;
+  --text-secondary: #D0D5DD;
+  --text-muted: #667085;
+  --danger: #EF4444;
+  --warning: #F59E0B;
+  --surface-hover: #1e2d3d;
+  --surface-active: #1a2744;
+  --border-accent: #00FFA7;
+}

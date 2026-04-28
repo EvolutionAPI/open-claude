@@ -58,6 +58,7 @@ const KnowledgeUpload = lazyDefault(() => import('./pages/Knowledge/Upload'))
 const KnowledgeBrowse = lazyDefault(() => import('./pages/Knowledge/Browse'))
 const KnowledgeSearch = lazyDefault(() => import('./pages/Knowledge/Search'))
 const KnowledgeApiKeys = lazyDefault(() => import('./pages/Knowledge/ApiKeys'))
+const UIPlayground = lazyDefault(() => import('./pages/UIPlayground'))
 
 function FullPageRoute({
   locationKey,
@@ -276,6 +277,9 @@ function AppContent() {
               {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
               {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
               {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
+              {/* Dev-only: @evonexus/ui component playground */}
+              <Route path="/dev/ui-playground" element={<UIPlayground />} />
+
               {hasPermission('knowledge', 'view') && (
                 <>
                   {/* Top-level Knowledge shell: only Connections + Settings */}
