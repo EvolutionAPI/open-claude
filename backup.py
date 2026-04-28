@@ -240,8 +240,24 @@ def _format_size(size_bytes: int) -> str:
 
 
 def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
-    """Create a ZIP backup of all gitignored user data."""
+    """Create a ZIP backup of all gitignored user data.
+
+    Note: in Postgres mode, application data lives in PG (configs, heartbeats,
+    runs, audit log) and is NOT covered by this ZIP. Use ``pg_dump`` separately
+    to back up the database; the ZIP still captures workspace files, memory,
+    and plugin directories.
+    """
     banner("Backup — Export")
+
+    # Warn when running in Postgres mode — the ZIP excludes DB content.
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url.startswith("postgresql"):
+        print(
+            f"{YELLOW}⚠  Postgres mode detected. This ZIP backs up files only "
+            f"(workspace/, memory/, plugins/). Use 'pg_dump' separately to back "
+            f"up your Postgres database — application configs and runtime data "
+            f"live there, not in files.{RESET}"
+        )
 
     files = collect_files()
     if not files:

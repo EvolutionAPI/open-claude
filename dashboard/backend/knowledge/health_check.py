@@ -8,10 +8,10 @@ Public API:
     start_health_check_thread(get_app_fn)    — background 5-min scheduler
 """
 
-import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict
 
 from sqlalchemy import text
@@ -32,12 +32,14 @@ _hc_timer = None
 def check_connection_health(
     connection_id: str,
     connection_string: str,
-    sqlite_conn,
+    host_conn,
 ) -> Dict[str, Any]:
     """Test connectivity + drift for one connection.
 
     Returns {"status": str, "latency_ms": float, ...}.
-    Updates knowledge_connections in SQLite.
+    Updates knowledge_connections in the host DB (SQLite or Postgres).
+
+    ``host_conn`` is a SQLAlchemy Connection bound to the EvoNexus host DB.
     """
     from .auto_migrator import check_drift, get_alembic_head
 
@@ -51,14 +53,14 @@ def check_connection_health(
         latency_ms = (time.monotonic() - start) * 1000
 
         # Update last_health_check
-        sqlite_conn.execute(
-            "UPDATE knowledge_connections SET last_health_check = ?, last_error = NULL WHERE id = ?",
-            (now_ts, connection_id),
+        host_conn.execute(
+            text("UPDATE knowledge_connections SET last_health_check = :ts, last_error = NULL WHERE id = :id"),
+            {"ts": now_ts, "id": connection_id},
         )
-        sqlite_conn.commit()
+        host_conn.commit()
 
         # Drift check (ADR-005)
-        drift_result = check_drift(connection_id, connection_string, sqlite_conn)
+        drift_result = check_drift(connection_id, connection_string, host_conn)
 
         return {
             "status": "needs_migration" if drift_result.get("needs_migration") else "ready",
@@ -67,11 +69,19 @@ def check_connection_health(
         }
 
     except Exception as exc:
-        sqlite_conn.execute(
-            "UPDATE knowledge_connections SET last_health_check = ?, last_error = ?, status = ? WHERE id = ?",
-            (now_ts, str(exc)[:500], "disconnected", connection_id),
+        host_conn.execute(
+            text(
+                "UPDATE knowledge_connections SET last_health_check = :ts, "
+                "last_error = :err, status = :st WHERE id = :id"
+            ),
+            {
+                "ts": now_ts,
+                "err": str(exc)[:500],
+                "st": "disconnected",
+                "id": connection_id,
+            },
         )
-        sqlite_conn.commit()
+        host_conn.commit()
         return {"status": "disconnected", "error": str(exc)}
 
 
@@ -80,31 +90,39 @@ def check_connection_health(
 # ---------------------------------------------------------------------------
 
 def _run_health_checks(get_app_fn) -> None:
-    """Run health checks for all 'ready' or 'needs_migration' connections."""
+    """Run health checks for all 'ready' or 'needs_migration' connections.
+
+    Uses the shared SQLAlchemy engine (works in SQLite and Postgres).
+    """
     try:
         app = get_app_fn()
         with app.app_context():
-            import os
-            from pathlib import Path
             from .crypto import decrypt_secret
 
-            db_path = str(
-                Path(app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", ""))
-            )
-            conn = sqlite3.connect(db_path)
-            rows = conn.execute(
-                "SELECT id, connection_string_encrypted FROM knowledge_connections "
-                "WHERE status IN ('ready', 'needs_migration', 'disconnected')"
-            ).fetchall()
-            for cid, cs_enc in rows:
-                if cs_enc is None:
-                    continue
-                try:
-                    cs = decrypt_secret(bytes(cs_enc))
-                    check_connection_health(cid, cs, conn)
-                except Exception:
-                    pass
-            conn.close()
+            # Lazy import to avoid circular deps at module load time.
+            import sys
+            backend_dir = str(Path(__file__).resolve().parents[1])
+            if backend_dir not in sys.path:
+                sys.path.insert(0, backend_dir)
+            from db.engine import get_engine as _get_host_engine  # noqa: E402
+
+            host_engine = _get_host_engine()
+            with host_engine.connect() as host_conn:
+                rows = host_conn.execute(
+                    text(
+                        "SELECT id, connection_string_encrypted FROM knowledge_connections "
+                        "WHERE status IN ('ready', 'needs_migration', 'disconnected')"
+                    )
+                ).fetchall()
+                for row in rows:
+                    cid, cs_enc = row[0], row[1]
+                    if cs_enc is None:
+                        continue
+                    try:
+                        cs = decrypt_secret(bytes(cs_enc))
+                        check_connection_health(cid, cs, host_conn)
+                    except Exception:
+                        pass
     except Exception:
         pass
 

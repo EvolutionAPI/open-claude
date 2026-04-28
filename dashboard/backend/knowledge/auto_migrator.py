@@ -78,44 +78,75 @@ def detect_pgbouncer_transaction_pool(cs: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 def _record_event(
-    sqlite_conn,
+    host_conn,
     connection_id: str,
     event_type: str,
     details: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Insert a row into knowledge_connection_events (SQLite local DB)."""
-    import json
-    import uuid
+    """Insert a row into knowledge_connection_events on the host DB.
 
-    sqlite_conn.execute(
-        """INSERT INTO knowledge_connection_events (connection_id, event_type, details)
-           VALUES (?, ?, ?)""",
-        (connection_id, event_type, json.dumps(details or {})),
-    )
-    sqlite_conn.commit()
+    ``host_conn`` may be a raw sqlite3.Connection (legacy) or a SQLAlchemy
+    Connection. Detected by presence of ``execute`` returning a Result.
+    """
+    import json
+
+    if _is_sqlalchemy_conn(host_conn):
+        from sqlalchemy import text as _text
+        host_conn.execute(
+            _text(
+                "INSERT INTO knowledge_connection_events "
+                "(connection_id, event_type, details) "
+                "VALUES (:cid, :et, :d)"
+            ),
+            {"cid": connection_id, "et": event_type, "d": json.dumps(details or {})},
+        )
+        host_conn.commit()
+    else:
+        host_conn.execute(
+            """INSERT INTO knowledge_connection_events (connection_id, event_type, details)
+               VALUES (?, ?, ?)""",
+            (connection_id, event_type, json.dumps(details or {})),
+        )
+        host_conn.commit()
 
 
 def _update_connection_status(
-    sqlite_conn,
+    host_conn,
     connection_id: str,
     status: str,
     last_error: Optional[str] = None,
     extra: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Update knowledge_connections.status (and optional columns) in SQLite."""
+    """Update knowledge_connections.status on the host DB."""
     fields = {"status": status}
     if last_error is not None:
         fields["last_error"] = last_error
     if extra:
         fields.update(extra)
 
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [connection_id]
-    sqlite_conn.execute(
-        f"UPDATE knowledge_connections SET {set_clause} WHERE id = ?",
-        values,
-    )
-    sqlite_conn.commit()
+    if _is_sqlalchemy_conn(host_conn):
+        from sqlalchemy import text as _text
+        set_clause = ", ".join(f"{k} = :{k}" for k in fields)
+        params = dict(fields)
+        params["__id"] = connection_id
+        host_conn.execute(
+            _text(f"UPDATE knowledge_connections SET {set_clause} WHERE id = :__id"),
+            params,
+        )
+        host_conn.commit()
+    else:
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [connection_id]
+        host_conn.execute(
+            f"UPDATE knowledge_connections SET {set_clause} WHERE id = ?",
+            values,
+        )
+        host_conn.commit()
+
+
+def _is_sqlalchemy_conn(conn) -> bool:
+    """Detect SQLAlchemy Connection vs raw sqlite3.Connection."""
+    return type(conn).__module__.startswith("sqlalchemy.")
 
 
 # ---------------------------------------------------------------------------
@@ -360,11 +391,14 @@ def _run_alembic_upgrade(connection_string: str) -> None:
 # check_drift — compare remote alembic_version vs local HEAD
 # ---------------------------------------------------------------------------
 
-def check_drift(connection_id: str, connection_string: str, sqlite_conn) -> Dict[str, Any]:
+def check_drift(connection_id: str, connection_string: str, host_conn) -> Dict[str, Any]:
     """Check if the remote schema is behind the local Alembic HEAD.
 
     Returns {"needs_migration": bool, "remote_rev": str, "head": str}.
     Updates connection status to 'needs_migration' or 'version_mismatch_future' if drift.
+
+    ``host_conn`` may be a raw sqlite3.Connection (legacy) or SQLAlchemy
+    Connection — _update_connection_status and _record_event auto-detect.
     """
     try:
         engine = get_engine(connection_id, connection_string)
@@ -377,10 +411,9 @@ def check_drift(connection_id: str, connection_string: str, sqlite_conn) -> Dict
             remote_rev = row[0] if row else None
 
         if remote_rev is None:
-            # alembic_version table not present → needs full migration
-            _update_connection_status(sqlite_conn, connection_id, "needs_migration")
+            _update_connection_status(host_conn, connection_id, "needs_migration")
             _record_event(
-                sqlite_conn, connection_id, "drift_detected",
+                host_conn, connection_id, "drift_detected",
                 {"remote_rev": None, "head": head},
             )
             return {"needs_migration": True, "remote_rev": None, "head": head}
@@ -388,12 +421,9 @@ def check_drift(connection_id: str, connection_string: str, sqlite_conn) -> Dict
         if remote_rev == head:
             return {"needs_migration": False, "remote_rev": remote_rev, "head": head}
 
-        # Determine direction: compare revision numbers lexicographically
-        # (works for sequential int-prefixed revisions like "001", "002")
         if remote_rev > head:
-            # Remote is newer — EvoNexus is outdated
             _update_connection_status(
-                sqlite_conn, connection_id, "version_mismatch_future",
+                host_conn, connection_id, "version_mismatch_future",
                 f"Remote schema ({remote_rev}) is newer than this EvoNexus ({head}). "
                 "Upgrade EvoNexus or use a different connection.",
             )
@@ -404,18 +434,16 @@ def check_drift(connection_id: str, connection_string: str, sqlite_conn) -> Dict
                 "status": "version_mismatch_future",
             }
 
-        # Remote is behind — needs migration
-        _update_connection_status(sqlite_conn, connection_id, "needs_migration")
+        _update_connection_status(host_conn, connection_id, "needs_migration")
         _record_event(
-            sqlite_conn, connection_id, "drift_detected",
+            host_conn, connection_id, "drift_detected",
             {"remote_rev": remote_rev, "head": head},
         )
         return {"needs_migration": True, "remote_rev": remote_rev, "head": head}
 
     except Exception as exc:
-        # If we can't reach the DB, mark as disconnected (don't mark needs_migration)
         _update_connection_status(
-            sqlite_conn, connection_id, "disconnected", str(exc)
+            host_conn, connection_id, "disconnected", str(exc)
         )
         return {"needs_migration": False, "error": str(exc)}
 

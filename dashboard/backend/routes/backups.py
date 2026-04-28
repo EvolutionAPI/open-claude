@@ -19,14 +19,18 @@ _running_jobs = {}
 def _post_restore_migrate():
     """Run schema fixes after restoring a backup (old DBs may have missing columns/bad data).
 
-    Allowlisted for sqlite3 use: this function runs only after a SQLite backup restore
-    and uses PRAGMA table_info() + SQLite-specific schema inspection. PG does not run
-    this path (backup restore is SQLite-only in current implementation).
+    SQLite-only — uses PRAGMA table_info(). In Postgres mode, restore is handled
+    by pg_restore + Alembic upgrade head; this function returns immediately.
     """
     import sqlite3  # noqa: F401 — allowlisted: SQLite-only post-restore schema repair
     from flask import current_app
 
-    db_path = current_app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+    db_uri = current_app.config["SQLALCHEMY_DATABASE_URI"]
+    if not db_uri.startswith("sqlite"):
+        # Postgres: nothing to do here. pg_restore + alembic upgrade handle it.
+        return
+
+    db_path = db_uri.replace("sqlite:///", "")
     conn = sqlite3.connect(db_path)  # noqa — allowlisted: _post_restore_migrate() is SQLite-only (PRAGMA table_info; called only after SQLite backup restore)
     cur = conn.cursor()
 

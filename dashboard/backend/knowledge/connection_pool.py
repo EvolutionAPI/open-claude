@@ -159,27 +159,36 @@ def _resolve_sqlite_db_path() -> str:
 
 
 def get_dsn(connection_id: str) -> str:
-    """Resolve the plaintext DSN for *connection_id* from the SQLite store.
+    """Resolve the plaintext DSN for *connection_id* from the host store.
 
     Reads ``connection_string_encrypted`` from ``knowledge_connections``, decrypts
     it via ``crypto.decrypt_secret``, and returns the plaintext DSN.
 
+    Uses the shared SQLAlchemy engine — works in both SQLite and Postgres modes.
+
     Raises ``KeyError`` if the connection is not found.
     Raises ``ValueError`` if no connection string is stored for this connection.
     """
-    import sqlite3
+    import sys
+    from pathlib import Path
 
     from knowledge.crypto import decrypt_secret
 
-    db_path = _resolve_sqlite_db_path()
-    conn = sqlite3.connect(db_path)
-    try:
+    backend_dir = str(Path(__file__).resolve().parents[1])
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from db.engine import get_engine as _get_host_engine  # noqa: E402
+    from sqlalchemy import text as _text  # noqa: E402
+
+    engine = _get_host_engine()
+    with engine.connect() as conn:
         row = conn.execute(
-            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ? OR slug = ?",
-            (connection_id, connection_id),
+            _text(
+                "SELECT connection_string_encrypted FROM knowledge_connections "
+                "WHERE id = :id OR slug = :id"
+            ),
+            {"id": connection_id},
         ).fetchone()
-    finally:
-        conn.close()
 
     if row is None:
         raise KeyError(f"Knowledge connection '{connection_id}' not found in local store.")
