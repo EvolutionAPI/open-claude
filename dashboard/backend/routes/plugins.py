@@ -2452,18 +2452,34 @@ def writable_data(slug: str, resource_id: str):
         col_list = ", ".join(cols)
         placeholders = ", ".join(f":col_{c}" for c in cols)
         named_vals = {f"col_{c}": body[c] for c in cols}
+
+        # Returning the inserted id is dialect-specific:
+        # - SQLite exposes cursor.lastrowid for raw SQL
+        # - Postgres requires `RETURNING id` because there is no equivalent
+        #   property on the SQLAlchemy `text()` cursor (`inserted_primary_key`
+        #   only works on Insert() Core constructs and raises
+        #   "Statement is not an insert() expression construct.").
         try:
             conn = _get_db()
-            cur = conn.execute(
-                text(f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"),  # noqa: S608
-                named_vals,
-            )
+            dialect_name = conn.engine.dialect.name if hasattr(conn, "engine") else conn.dialect.name
+            is_postgres = dialect_name == "postgresql"
+            sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"  # noqa: S608
+            if is_postgres:
+                sql += " RETURNING id"
+            cur = conn.execute(text(sql), named_vals)
+            if is_postgres:
+                row = cur.fetchone()
+                last_id = row[0] if row else None
+            else:
+                last_id = getattr(cur, "lastrowid", None)
             conn.commit()
-            # Fetch the inserted id — use lastrowid for SQLite compat
-            last_id = getattr(cur, "lastrowid", None) or getattr(cur, "inserted_primary_key", [None])[0]
             conn.close()
             return jsonify({"id": last_id}), 201
         except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return jsonify({"error": str(exc)}), 500
 
     # PUT — UPDATE by id (accepts both integer and string primary keys)

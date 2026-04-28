@@ -1,13 +1,21 @@
 import { useState, useCallback, type FormEvent } from 'react'
 import Ajv from 'ajv'
+import addFormats from 'ajv-formats'
 import { Button } from './Button.js'
 import { Input, FormField } from './Input.js'
 import { Select, type SelectOption } from './Select.js'
 import { Checkbox } from './Checkbox.js'
 
 // ─── Ajv instance (bundled) ───────────────────────────────────────────────────
+//
+// strict: false silences "unknown format" warnings that flip into thrown
+// errors at compile time on Ajv 8. addFormats then registers the standard
+// JSON-Schema formats (date, date-time, email, uri, uuid, …) so plugin
+// schemas declaring `format: "date"` validate correctly AND let SchemaForm
+// render the matching native input type.
 
-const ajv = new Ajv({ allErrors: true, coerceTypes: false })
+const ajv = new Ajv({ allErrors: true, coerceTypes: false, strict: false })
+addFormats(ajv)
 
 // ─── JSON Schema types ────────────────────────────────────────────────────────
 

@@ -241,7 +241,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           position: 'fixed',
           bottom: 24,
           right: 24,
-          zIndex: 9999,
+          zIndex: 10010,
           display: 'flex',
           flexDirection: 'column-reverse',
           gap: 8,
