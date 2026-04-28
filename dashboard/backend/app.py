@@ -142,28 +142,35 @@ with app.app_context():
     # The executescript() blocks that used to live here have been removed (PG-Q6).
 
     # --- Migration: providers.json schema normalization ---
-    # If the file exists but is missing the canonical keys
-    # ({active_provider, providers: {...}}), copy providers.example.json
-    # over it. This recovers from broken state left by older versions of
-    # the onboarding wizard that naively wrote {<id>: {api_key, enabled}}.
+    # In SQLite mode: if providers.json exists but is missing the canonical keys
+    # ({active_provider, providers: {...}}), copy providers.example.json over it.
+    # In PG mode: if llm_providers table is empty and providers.json exists, seed
+    # the table from the JSON file (one-shot, idempotent).
     try:
-        _providers_file = WORKSPACE / "config" / "providers.json"
-        _providers_example = WORKSPACE / "config" / "providers.example.json"
-        if _providers_file.is_file():
-            try:
-                import json as _json
-                _data = _json.loads(_providers_file.read_text(encoding="utf-8"))
-                _ok = (
-                    isinstance(_data, dict)
-                    and "active_provider" in _data
-                    and isinstance(_data.get("providers"), dict)
-                )
-            except Exception:
-                _ok = False
-            if not _ok and _providers_example.is_file():
-                import shutil as _shutil
-                _shutil.copy2(_providers_example, _providers_file)
-                print("[migration] providers.json had invalid schema, restored from providers.example.json")
+        from config_store import get_dialect as _get_dialect
+        if _get_dialect() == "postgresql":
+            from provider_store import seed_providers_from_json as _seed_providers
+            _seeded = _seed_providers()
+            if _seeded:
+                print(f"[migration] Seeded {_seeded} provider(s) from providers.json into llm_providers table")
+        else:
+            _providers_file = WORKSPACE / "config" / "providers.json"
+            _providers_example = WORKSPACE / "config" / "providers.example.json"
+            if _providers_file.is_file():
+                try:
+                    import json as _json
+                    _data = _json.loads(_providers_file.read_text(encoding="utf-8"))
+                    _ok = (
+                        isinstance(_data, dict)
+                        and "active_provider" in _data
+                        and isinstance(_data.get("providers"), dict)
+                    )
+                except Exception:
+                    _ok = False
+                if not _ok and _providers_example.is_file():
+                    import shutil as _shutil
+                    _shutil.copy2(_providers_example, _providers_file)
+                    print("[migration] providers.json had invalid schema, restored from providers.example.json")
     except Exception as _mig_exc:
         print(f"[migration] providers.json normalization skipped: {_mig_exc}")
     # --- End providers.json migration ---
@@ -594,18 +601,11 @@ def serve_frontend(path):
 
 
 if __name__ == "__main__":
-    # Read port from workspace.yaml or env, fallback to 8080
+    # Port: EVONEXUS_PORT env var takes precedence; fallback to 8080.
+    # YAML-based port override (dashboard.port) was broken in SQLite mode
+    # (read cfg["port"] but YAML stored cfg["dashboard"]["port"]) and is
+    # a no-op in PG mode.  Env var is the canonical way to set the port.
     port = int(os.environ.get("EVONEXUS_PORT", 8080))
-    try:
-        import yaml
-        config_path = WORKSPACE / "config" / "workspace.yaml"
-        if config_path.is_file():
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            if cfg and cfg.get("port"):
-                port = int(cfg["port"])
-    except Exception:
-        pass
     # Scheduler runs as a standalone process (scheduler.py) started by start-services.sh.
     # A thread here would create a duplicate instance — all routines would fire 2-3x.
     # One-off scheduled tasks (ScheduledTask model) are checked by the standalone scheduler
