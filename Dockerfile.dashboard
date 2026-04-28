@@ -16,9 +16,9 @@ RUN npm run build
 # --- Stage 2: Python backend ---
 FROM python:3.12-slim AS runtime
 
-# System deps
+# System deps: curl for healthcheck + git for brain-repo restore/clone flow.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv

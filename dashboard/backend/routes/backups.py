@@ -102,7 +102,7 @@ def create_backup():
     if denied:
         return denied
 
-    if _running_jobs.get("backup"):
+    if _running_jobs.get("backup", {}).get("status") == "running":
         return jsonify({"error": "A backup is already running"}), 409
 
     target = request.get_json(silent=True) or {}
@@ -154,6 +154,9 @@ def restore_backup(filename):
     mode = data.get("mode", "merge")
     if mode not in ("merge", "replace"):
         return jsonify({"error": "Invalid mode. Use 'merge' or 'replace'"}), 400
+
+    if _running_jobs.get("restore", {}).get("status") == "running":
+        return jsonify({"error": "A restore is already running"}), 409
 
     def _run():
         try:

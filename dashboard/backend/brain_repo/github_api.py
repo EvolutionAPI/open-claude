@@ -101,12 +101,26 @@ def detect_brain_repos(token: str) -> list[dict]:
 
 
 def list_user_repos(token: str) -> list[dict]:
-    """List up to 100 private repos for the authenticated user."""
-    url = f"{_API_BASE}/user/repos?per_page=100&type=private"
-    status, body, _ = _get(url, token)
-    if status != 200 or not isinstance(body, list):
-        log.warning("list_user_repos: status %d", status)
-        return []
+    """List up to 300 repos for the authenticated user (owner + collaborator).
+
+    Paginates 3 pages of 100 (GitHub's max per_page). Returns both public and
+    private repos: a brain repo can legitimately be public (a .evo-brain file
+    is just a marker; the user may have intentionally created it in a public
+    repo to share state with collaborators). Filtering to private-only made
+    public brain repos invisible after a redeploy (#61).
+    """
+    results: list[dict] = []
+    for page in (1, 2, 3):
+        url = f"{_API_BASE}/user/repos?per_page=100&page={page}&affiliation=owner,collaborator"
+        status, body, _ = _get(url, token)
+        if status != 200 or not isinstance(body, list):
+            log.warning("list_user_repos: page %d status %d", page, status)
+            break
+        if not body:
+            break
+        results.extend(body)
+        if len(body) < 100:
+            break
     return [
         {
             "name": r.get("name", ""),
@@ -115,7 +129,7 @@ def list_user_repos(token: str) -> list[dict]:
             "private": r.get("private", False),
             "description": r.get("description", ""),
         }
-        for r in body
+        for r in results
     ]
 
 
