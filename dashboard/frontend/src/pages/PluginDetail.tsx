@@ -235,10 +235,10 @@ export default function PluginDetail() {
 
   async function handleToggle() {
     if (!plugin) return
-    const next = plugin.enabled !== 1
+    const next = !plugin.enabled
     try {
       await api.patch(`/plugins/${plugin.slug}`, { enabled: next })
-      setPlugin({ ...plugin, enabled: next ? 1 : 0 })
+      setPlugin({ ...plugin, enabled: next })
     } catch {
       // silent — refetch if needed
     }
@@ -427,7 +427,7 @@ export default function PluginDetail() {
     id: `plugin-${slug}-${mcp.name}`,
     label: `${mcp.name} (${mcp.command ?? '—'})`,
     type: 'mcp_servers',
-    enabled: plugin.enabled === 1,
+    enabled: Boolean(plugin.enabled),
   }))
 
   // Wave 2.2r — Integrations declared in the manifest (display-only; the
@@ -439,7 +439,7 @@ export default function PluginDetail() {
     id: `${slug}-${it.slug}`,
     label: `${it.label}${it.category ? ` · ${it.category}` : ''}`,
     type: 'integrations',
-    enabled: plugin.enabled === 1,
+    enabled: Boolean(plugin.enabled),
   }))
 
   const hasAnyCapabilities =
@@ -547,12 +547,12 @@ export default function PluginDetail() {
           <button
             onClick={handleToggle}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors border ${
-              plugin.enabled === 1
+              Boolean(plugin.enabled)
                 ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/20 hover:bg-[#00FFA7]/20'
                 : 'bg-[#21262d] text-[#667085] border-[#344054] hover:text-[#D0D5DD]'
             }`}
           >
-            {plugin.enabled === 1 ? t('common.enabled') : t('common.disabled')}
+            {Boolean(plugin.enabled) ? t('common.enabled') : t('common.disabled')}
           </button>
           <button
             onClick={() => setPreviewOpen(true)}

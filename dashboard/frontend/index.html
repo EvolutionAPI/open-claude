@@ -16,6 +16,20 @@
     <meta http-equiv="Content-Security-Policy"
       content="connect-src 'self' ws://localhost:5173 ws://localhost:8080" />
     <title>Evo Workspace</title>
+    <!--
+      Step 3 importmap: resolves bare-specifier 'react' and 'react/jsx-runtime' for
+      plugin page bundles loaded via dynamic import(). The shim files re-export from
+      window.React so all plugin pages share the host's React instance — required for
+      React context (useToast, usePluginNavigation, etc.) to cross bundle boundaries.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "/react-shim.js",
+          "react/jsx-runtime": "/react-jsx-runtime-shim.js"
+        }
+      }
+    </script>
   </head>
   <body class="bg-[#0C111D] text-[#F9FAFB]">
     <div id="root"></div>

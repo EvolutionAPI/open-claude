@@ -8,7 +8,9 @@ export interface Plugin {
   version: string
   tier: string
   status: 'active' | 'disabled' | 'broken' | 'installing' | 'uninstalling'
-  enabled: number
+  // Backend returns boolean on Postgres, number (0/1) on legacy SQLite —
+  // accept both shapes; UI normalises with Boolean().
+  enabled: boolean | number
   source_url: string
   installed_at: string
   manifest_json: string
@@ -46,7 +48,8 @@ function statusLabel(status: Plugin['status']): string {
 
 export default function PluginCard({ plugin, onClick, onToggle }: Props) {
   const { t } = useTranslation()
-  const isEnabled = plugin.enabled === 1
+  // Tolerate boolean (Postgres) and integer (legacy SQLite) — both shapes can arrive.
+  const isEnabled = Boolean(plugin.enabled)
   const busy = plugin.status === 'installing' || plugin.status === 'uninstalling'
   // Wave 2.0: track icon load error per card (useState prevents reset on re-render)
   const [iconError, setIconError] = useState(false)
