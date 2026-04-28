@@ -153,6 +153,59 @@ Plugin update:
 
 ---
 
+## Logs and history in PG mode
+
+In Postgres mode, all logs and history live in the database:
+
+| Subsystem            | SQLite mode (file)                              | Postgres mode (table)                            |
+|---------------------|-------------------------------------------------|--------------------------------------------------|
+| Agent chat          | `workspace/ADWs/logs/chat/*.jsonl`              | `agent_chat_sessions` + `agent_chat_messages`    |
+| Heartbeat prompts   | `prompt_preview` truncated to 1000 chars        | `heartbeat_run_prompts.prompt_full` (1:1, lazy)  |
+| Heartbeat backup    | `workspace/ADWs/logs/heartbeats/*.jsonl`        | (skipped — redundant with `heartbeat_runs`)      |
+| Daily outputs       | `workspace/daily-logs/*.{md,html}`              | `daily_outputs` table                            |
+| Meeting transcripts | `workspace/meetings/{raw,summaries,fathom}/`    | `meeting_transcripts` table                      |
+| Plugin hook logs    | `workspace/ADWs/logs/plugins/*.log`             | `plugin_hook_runs` table                         |
+| Brain repo mirror   | `memory/raw-transcripts/<project>/*.jsonl`      | `brain_repo_transcripts` table                   |
+| Workspace audit     | `workspace/ADWs/logs/workspace-mutations.jsonl` | `workspace_mutations` table                      |
+| Routine outputs     | `workspace/ADWs/logs/routines/*.log`            | `routine_runs` table                             |
+
+Chat is special: the JSONL file is kept as a **write-ahead buffer** — the
+Node.js `chat-logger.js` always appends to JSONL first (durable), then async-POSTs
+to the Flask API. If Flask is down, the queue persists locally and replays on
+reconnect via `.pending` and `.synced` sidecar files. No message is lost.
+
+### TTL retention
+
+A daily routine `make logs-cleanup` enforces retention:
+
+| Category               | Default | Override env var                                    |
+|-----------------------|---------|-----------------------------------------------------|
+| chat                  | 90d     | `EVONEXUS_LOGS_RETAIN_CHAT_DAYS`                    |
+| daily_outputs         | 180d    | `EVONEXUS_LOGS_RETAIN_DAILY_OUTPUTS_DAYS`           |
+| plugin_hook_runs      | 14d     | `EVONEXUS_LOGS_RETAIN_PLUGIN_HOOK_RUNS_DAYS`        |
+| heartbeat_run_prompts | 30d     | `EVONEXUS_LOGS_RETAIN_HEARTBEAT_RUN_PROMPTS_DAYS`   |
+| workspace_mutations   | 90d     | `EVONEXUS_LOGS_RETAIN_WORKSPACE_MUTATIONS_DAYS`     |
+| routine_runs          | 30d     | `EVONEXUS_LOGS_RETAIN_ROUTINE_RUNS_DAYS`            |
+| meeting_transcripts   | forever | (skipped)                                           |
+| audit_log             | forever | (skipped)                                           |
+| brain_repo_transcripts| forever | (skipped)                                           |
+
+Schedule via cron or scheduler. Recommended cadence: daily 03:00 BRT.
+
+### Backfill from existing files
+
+If you already had EvoNexus running on SQLite and migrated to PG, use:
+
+```bash
+DATABASE_URL=postgresql://... make import-logs
+```
+
+Reads chat JSONL, daily-logs, meeting transcripts, plugin hook logs, brain repo
+mirror, and workspace mutations from disk and populates the PG tables.
+Idempotent — safe to re-run.
+
+---
+
 ## Backup & restore
 
 In Postgres mode, `make backup` (or `python backup.py backup`) automatically
