@@ -81,6 +81,26 @@ not in YAML/JSON).
 - Backend-mismatch detection: restoring a Postgres ZIP onto a SQLite host
   (or vice versa) aborts with a clear error pointing to `evonexus-migrate`.
 
+### Added — pg-native-logs
+
+- **Conversations, daily outputs, meetings, plugin hooks, audit and routines
+  now persist in PG**. 9 new tables (migration 0011) capture what previously
+  lived in `workspace/ADWs/logs/`, `workspace/daily-logs/`, `workspace/meetings/`,
+  and `memory/raw-transcripts/`.
+- **Chat hybrid write path**: `chat-logger.js` (Node) appends to JSONL first
+  (durable WAL), then async-POSTs to Flask `POST /api/chat-messages`. Idempotent
+  via UUID PK. `.synced` and `.pending` sidecars provide replay on Flask outage.
+- **`heartbeat_run_prompts` table** stores full prompts (no longer truncated to
+  1000 chars). 1:1 lazy join with `heartbeat_runs` keeps listing queries fast.
+- **TTL job** `make logs-cleanup` applies retention defaults (chat 90d, daily 180d,
+  plugin hooks 14d, etc.) — env-overridable per category. Meetings, audit,
+  brain repo transcripts retained forever.
+- **`evonexus-import-logs` CLI** backfills file-based logs into PG. Idempotent;
+  `--dry-run` and `--force` flags.
+- **Greplint Guard 4** (CI + pre-commit) blocks new file-log writers outside
+  the allowlist.
+- **`docs/postgres-mode.md`** — new "Logs and history in PG mode" section.
+
 ### Deferred (PG-NC follow-ups, not blocking)
 
 - **Frontend cache invalidation** via SSE/WebSocket — backend caches
