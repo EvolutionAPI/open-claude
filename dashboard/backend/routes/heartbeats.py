@@ -26,8 +26,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _get_dialect() -> str:
+    """Return active SQLAlchemy dialect name."""
+    import sys
+    backend_dir = Path(__file__).resolve().parent.parent
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from db.engine import get_engine
+    return get_engine().dialect.name
+
+
 def _load_yaml_config():
-    """Load heartbeats from YAML source of truth."""
+    """Load heartbeats from YAML source of truth (SQLite mode only)."""
     import sys
     backend_dir = Path(__file__).resolve().parent.parent
     if str(backend_dir) not in sys.path:
@@ -37,7 +47,12 @@ def _load_yaml_config():
 
 
 def _save_yaml_config(data):
-    """Atomically save heartbeats to YAML."""
+    """Atomically save heartbeats to YAML (SQLite mode only).
+
+    In PG mode this is a no-op — DB is the source of truth.
+    """
+    if _get_dialect() == "postgresql":
+        return  # PG mode: do not write YAML, DB owns config.
     import sys
     backend_dir = Path(__file__).resolve().parent.parent
     if str(backend_dir) not in sys.path:
@@ -168,16 +183,19 @@ def create_heartbeat():
     except ValidationError as exc:
         return jsonify({"error": "Validation failed", "details": exc.errors()}), 422
 
-    # Write to YAML atomically
-    try:
-        yaml_cfg = _load_yaml_config()
-        yaml_cfg.heartbeats.append(hb_config)
-        _save_yaml_config(yaml_cfg)
-    except Exception as exc:
-        return jsonify({"error": f"Failed to write YAML: {exc}"}), 500
-
-    # Mirror to DB
-    _mirror_to_db(hb_config)
+    if _get_dialect() == "postgresql":
+        # PG mode: write directly to DB — YAML is never consulted.
+        # Trigger trg_heartbeats_notify fires automatically (migration 0008).
+        _mirror_to_db(hb_config)
+    else:
+        # SQLite mode: write YAML first, then mirror to DB.
+        try:
+            yaml_cfg = _load_yaml_config()
+            yaml_cfg.heartbeats.append(hb_config)
+            _save_yaml_config(yaml_cfg)
+        except Exception as exc:
+            return jsonify({"error": f"Failed to write YAML: {exc}"}), 500
+        _mirror_to_db(hb_config)
 
     audit(current_user, "create", "heartbeats", f"created heartbeat {hb_config.id}")
     return jsonify(Heartbeat.query.get(hb_config.id).to_dict()), 201
@@ -218,36 +236,38 @@ def update_heartbeat(heartbeat_id):
     hb.updated_at = datetime.now(timezone.utc)
     db.session.commit()
 
-    # Sync back to YAML
-    try:
-        yaml_cfg = _load_yaml_config()
-        from heartbeat_schema import HeartbeatConfig
-        from pydantic import ValidationError
+    # SQLite mode: sync back to YAML (best-effort; DB is live state).
+    # PG mode: DB is source of truth — _save_yaml_config is a no-op.
+    if _get_dialect() != "postgresql":
+        try:
+            yaml_cfg = _load_yaml_config()
+            from heartbeat_schema import HeartbeatConfig
+            from pydantic import ValidationError
 
-        # Rebuild YAML list with updated entry
-        updated = []
-        found = False
-        for entry in yaml_cfg.heartbeats:
-            if entry.id == heartbeat_id:
-                try:
-                    merged = entry.model_dump()
-                    for k, v in data.items():
-                        if k in merged:
-                            merged[k] = v
-                    updated.append(HeartbeatConfig.model_validate(merged))
-                    found = True
-                except ValidationError:
-                    updated.append(entry)  # keep original on validation failure
-            else:
-                updated.append(entry)
-        if not found:
-            pass  # DB-only entry, no YAML update needed
+            # Rebuild YAML list with updated entry
+            updated = []
+            found = False
+            for entry in yaml_cfg.heartbeats:
+                if entry.id == heartbeat_id:
+                    try:
+                        merged = entry.model_dump()
+                        for k, v in data.items():
+                            if k in merged:
+                                merged[k] = v
+                        updated.append(HeartbeatConfig.model_validate(merged))
+                        found = True
+                    except ValidationError:
+                        updated.append(entry)  # keep original on validation failure
+                else:
+                    updated.append(entry)
+            if not found:
+                pass  # DB-only entry, no YAML update needed
 
-        yaml_cfg.heartbeats = updated
-        _save_yaml_config(yaml_cfg)
-    except Exception as exc:
-        # Non-fatal: DB is the live state, YAML is best-effort
-        print(f"[heartbeats] WARNING: YAML sync failed after PATCH: {exc}", flush=True)
+            yaml_cfg.heartbeats = updated
+            _save_yaml_config(yaml_cfg)
+        except Exception as exc:
+            # Non-fatal: DB is the live state, YAML is best-effort
+            print(f"[heartbeats] WARNING: YAML sync failed after PATCH: {exc}", flush=True)
 
     # If dispatcher is running, re-register interval jobs to pick up changes
     if "interval_seconds" in data or "enabled" in data or "wake_triggers" in data:
@@ -284,13 +304,15 @@ def delete_heartbeat(heartbeat_id):
             "hint": "Use ?force=true to delete anyway (run will be orphaned)",
         }), 409
 
-    # Remove from YAML
-    try:
-        yaml_cfg = _load_yaml_config()
-        yaml_cfg.heartbeats = [h for h in yaml_cfg.heartbeats if h.id != heartbeat_id]
-        _save_yaml_config(yaml_cfg)
-    except Exception as exc:
-        print(f"[heartbeats] WARNING: YAML removal failed: {exc}", flush=True)
+    # SQLite mode: remove from YAML first (best-effort).
+    # PG mode: _save_yaml_config is a no-op; DB delete below is the authority.
+    if _get_dialect() != "postgresql":
+        try:
+            yaml_cfg = _load_yaml_config()
+            yaml_cfg.heartbeats = [h for h in yaml_cfg.heartbeats if h.id != heartbeat_id]
+            _save_yaml_config(yaml_cfg)
+        except Exception as exc:
+            print(f"[heartbeats] WARNING: YAML removal failed: {exc}", flush=True)
 
     # Remove from DB (cascade deletes runs + triggers)
     db.session.delete(hb)
@@ -382,6 +404,12 @@ def reindex_heartbeats():
     denied = _require("manage")
     if denied:
         return denied
+
+    if _get_dialect() == "postgresql":
+        # PG mode: DB is source of truth — reindex is a no-op.
+        # Return the current DB count as confirmation.
+        count = Heartbeat.query.count()
+        return jsonify({"reindexed": 0, "note": "PG mode: DB is source of truth; no YAML reindex needed", "total_in_db": count})
 
     try:
         yaml_cfg = _load_yaml_config()
