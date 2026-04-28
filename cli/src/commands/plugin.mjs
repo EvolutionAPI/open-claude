@@ -38,8 +38,8 @@ const __dir      = dirname(fileURLToPath(import.meta.url));
 const SKELETON   = resolve(__dir, "../../templates/plugin-skeleton");
 
 // Slug pattern mirrors the server's _SLUG_RE in plugin_schema.py:
-// ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$  (3-64 chars, no leading/trailing hyphen)
-const SLUG_RE    = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
+// ^[a-z][a-z0-9-]*$  (starts with letter, 3-64 chars, no leading/trailing hyphen)
+const SLUG_RE    = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -184,7 +184,7 @@ async function cmdInit(args) {
   const rawSlug = filteredArgs[0];
   if (!rawSlug) {
     console.error(`  ${RED}Usage: plugin init <slug> [--name "Display Name"]${RESET}\n`);
-    console.error(`  ${DIM}slug must match ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$${RESET}\n`);
+    console.error(`  ${DIM}slug must match ^[a-z][a-z0-9-]{1,62}[a-z0-9]$${RESET}\n`);
     process.exit(1);
   }
 
@@ -192,7 +192,7 @@ async function cmdInit(args) {
   if (!SLUG_RE.test(slug)) {
     console.error(
       `  ${RED}Invalid slug: "${slug}"${RESET}\n` +
-      `  ${DIM}Must match ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ (3-64 chars, kebab-case)${RESET}\n`
+      `  ${DIM}Must match ^[a-z][a-z0-9-]{1,62}[a-z0-9]$ (3-64 chars, starts with letter, kebab-case)${RESET}\n`
     );
     process.exit(1);
   }
@@ -231,7 +231,7 @@ async function cmdInit(args) {
   ${CYAN}5.${RESET} npx @evoapi/evo-nexus plugin dev      # watch + reload
 
   ${DIM}Tip: edit plugin.yaml to declare your capabilities, then implement${RESET}
-  ${DIM}     src/pages/ and src/widgets/ using @evonexus/ui primitives.${RESET}
+  ${DIM}     src/pages/ and src/widgets/ using @evoapi/evonexus-ui primitives.${RESET}
 `);
 }
 
@@ -384,7 +384,7 @@ async function notifyHostReload(hostUrl, slug) {
  *
  * Checks performed (mirrors the server-side gate in plugin_schema.py):
  *   1. schema_version is "2.0" (rejects v0 / v1.0 with clear message)
- *   2. id matches slug pattern ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$
+ *   2. id matches slug pattern ^[a-z][a-z0-9-]{1,62}[a-z0-9]$
  *   3. Required fields present (id, name, version, description, author, license)
  *   4. No legacy install.sql (v1.0 / v0 artefact)
  *   5. If sql_migrations in capabilities: both install.sqlite.sql AND install.postgres.sql exist
@@ -440,7 +440,7 @@ async function cmdValidate(args) {
   } else if (!SLUG_RE.test(slug)) {
     errors.push(
       `plugin.yaml: id "${slug}" does not match pattern ` +
-      "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ (3-64 chars, kebab-case)"
+      "^[a-z][a-z0-9-]{1,62}[a-z0-9]$ (3-64 chars, starts with letter, kebab-case)"
     );
   }
 

@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 
-# Slug: starts and ends with alphanum, interior may have hyphens, 3-64 chars
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
+# Slug: starts with letter, ends with alphanum, interior may have hyphens, 3-64 chars
+_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,62}[a-z0-9]$")
 
 # MCP server name: lowercase alphanum + hyphens, 1-50 chars, starts with alphanum
 _MCP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
