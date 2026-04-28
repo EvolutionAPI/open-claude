@@ -2445,6 +2445,11 @@ def plugin_ui_registry():
         except Exception:
             continue
 
+        # Gate: only v2 plugins (schema_version == "2.0") are surfaced in the UI registry.
+        # v0 plugins (missing or "1.0") continue to be installed but do not expose pages.
+        if plugin_manifest.get("schema_version") != "2.0":
+            continue
+
         ui_ep = plugin_manifest.get("ui_entry_points") or {}
         pages_raw: list[dict] = ui_ep.get("pages") or []
         sidebar_groups_raw: list[dict] = ui_ep.get("sidebar_groups") or []
