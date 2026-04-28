@@ -492,6 +492,75 @@ EVONEXUS_DB_MAX_OVERFLOW=4
 
 ---
 
+## Migrating with incompatible plugins still installed
+
+If you need to migrate core data to PostgreSQL before external plugin
+repositories have been updated to include `install.postgres.sql`, use the
+`--skip-incompatible-plugins` flag.
+
+### What the flag does
+
+- Plugins that lack `install.postgres.sql` are **warned about but do not abort
+  the migration**.
+- Plugin-specific tables (e.g. `pm_essentials_projects`, `nutri_patients`) are
+  **skipped** — they don't exist on the PG target because the plugin's PG schema
+  was never applied.
+- The plugin registry row in `plugins_installed` **is migrated** so the
+  dashboard continues to recognise the plugin as installed.
+- A warning summary is printed at the end listing every skipped plugin.
+- Verification reports skipped tables as `SKIP` (not `DIFF`) so `VERIFICATION
+  PASSED` is still achievable.
+
+### Recommended workflow
+
+1. **Run the migration with the flag:**
+
+   ```bash
+   make db-migrate-skip-plugins \
+     SOURCE=sqlite:///dashboard/data/evonexus.db \
+     TARGET=postgresql://postgres:pass@localhost:5432/evonexus
+   ```
+
+   The migration completes with warnings like:
+
+   ```
+   WARN Plugin pm-essentials skipped — install.postgres.sql missing. ...
+   SKIP table pm_essentials_projects (plugin pm-essentials skipped)
+   WARN 2 plugin(s) were skipped: ['pm-essentials', 'nutri']. Reinstall after upgrading.
+   === VERIFICATION PASSED ===
+   ```
+
+2. **Plugin data is preserved in SQLite** — the source database is never
+   modified.  No plugin data is lost; it just hasn't been migrated yet.
+
+3. **Upgrade the plugin** in its external repository by adding
+   `migrations/install.postgres.sql` (and `uninstall.postgres.sql`).  See the
+   translation reference above.
+
+4. **Reinstall on the PG-backed instance:**
+
+   ```bash
+   # With the PG instance running (DATABASE_URL pointing to Postgres)
+   make plugin-update PLUGIN=pm-essentials
+   ```
+
+   This runs `install.postgres.sql`, creating the plugin tables on Postgres.
+
+5. **Import plugin data manually if needed.**  If you need to carry existing
+   plugin rows (e.g. `pm_essentials_projects`) from SQLite to the now-created
+   PG tables, you can re-run the migrate tool targeting only those tables
+   (future: `--only-tables` flag) or export/import via CSV.
+
+### Limitations
+
+- Plugin-specific data is **not automatically migrated** when using
+  `--skip-incompatible-plugins`.  Only the `plugins_installed` registry row
+  is carried over.
+- If the plugin stores critical business data (e.g. `nutri` patient records),
+  plan the data import step before running in production.
+
+---
+
 ## Questions?
 
 Open an issue at https://github.com/EvolutionAPI/evonexus or reference ADR
