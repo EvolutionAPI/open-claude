@@ -403,7 +403,7 @@ def import_meetings(args: argparse.Namespace, stats: _Stats) -> None:
 
         imported += 1
         if args.verbose:
-            print(f"    meeting {fid}: {title}")
+            print(f"    meeting {fathom_id}: {title}")
 
     stats.add("meetings", imported)
 
@@ -598,10 +598,19 @@ def import_workspace_audit(args: argparse.Namespace, stats: _Stats) -> None:
                         continue
 
                     extra = entry.get("extra")
+                    raw_uid = entry.get("user_id")
+                    # Resolve user_id FK — use NULL if user not present in DB
+                    resolved_uid: int | None = None
+                    if raw_uid is not None:
+                        row = conn.execute(
+                            text("SELECT id FROM users WHERE id = :uid LIMIT 1"),
+                            {"uid": raw_uid},
+                        ).fetchone()
+                        resolved_uid = row[0] if row else None
                     conn.execute(text("""
                         INSERT INTO workspace_mutations
-                            (ts, role, op, path, result, extra)
-                        VALUES (CAST(:ts AS TIMESTAMPTZ), :role, :op, :path, :result, :extra)
+                            (ts, role, op, path, result, extra, user_id)
+                        VALUES (CAST(:ts AS TIMESTAMPTZ), :role, :op, :path, :result, :extra, :uid)
                     """), {
                         "ts": entry.get("ts"),
                         "role": entry.get("role"),
@@ -609,6 +618,7 @@ def import_workspace_audit(args: argparse.Namespace, stats: _Stats) -> None:
                         "path": entry.get("path", ""),
                         "result": entry.get("result", "ok"),
                         "extra": json.dumps(extra) if extra is not None else None,
+                        "uid": resolved_uid,
                     })
                     imported += 1
         except OSError as exc:
