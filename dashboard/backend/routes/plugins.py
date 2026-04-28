@@ -316,7 +316,7 @@ def list_plugins():
         rows = conn.execute(
             text("SELECT * FROM plugins_installed ORDER BY installed_at DESC")
         ).fetchall()
-        return jsonify([_plugin_to_dict(r._mapping) for r in rows])
+        return jsonify([_plugin_to_dict(r) for r in rows])
     except _SAOperationalError as exc:
         return jsonify({"error": str(exc)}), 500
     finally:
@@ -1006,8 +1006,9 @@ def install_plugin():
         save_state(slug, state)
 
         # --- Step: heartbeats union ---
-        # Heartbeat YAML stays in plugins/{slug}/heartbeats.yaml — union happens at load time
-        # Sync to DB if heartbeat dispatcher is running
+        # SQLite mode: sync YAML → DB via dispatcher (union at load time).
+        # PG mode: import plugin heartbeats/routines directly into DB tables
+        #   (source_plugin=slug, enabled=False by default — ADR pg-native-configs Fase 5).
         try:
             import sys
             backend_dir = Path(__file__).resolve().parent.parent
@@ -1017,6 +1018,16 @@ def install_plugin():
             _sync_heartbeats_to_db()
         except Exception as exc:
             logger.info("Heartbeat sync skipped (dispatcher not running): %s", exc)
+        # PG mode: populate heartbeats + routine_definitions with source_plugin tag
+        try:
+            from plugin_loader import (
+                _import_plugin_heartbeats_to_db,
+                _import_plugin_routines_to_db,
+            )
+            _import_plugin_heartbeats_to_db(slug)
+            _import_plugin_routines_to_db(slug)
+        except Exception as exc:
+            logger.warning("PG plugin configs import failed for %s: %s", slug, exc)
         state["completed_steps"].append({"step": "heartbeats_union"})
         save_state(slug, state)
 
@@ -1047,7 +1058,7 @@ def install_plugin():
             mount_counts: dict[str, int] = {}
             try:
                 rows_mp = conn.execute(
-                    text("SELECT manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active' AND slug != :slug"),
+                    text("SELECT manifest_json FROM plugins_installed WHERE enabled = TRUE AND status = 'active' AND slug != :slug"),
                     {"slug": slug},
                 ).fetchall()
                 for row_mp in rows_mp:
@@ -1501,6 +1512,20 @@ def uninstall_plugin(slug: str):
         except Exception as exc:
             logger.warning("rules index removal failed: %s", exc)
 
+        # PG mode: delete plugin-owned heartbeats and routine_definitions rows.
+        # Captured before deletion so IDs appear in the audit payload (AC5).
+        _deleted_heartbeat_ids: list = []
+        _deleted_routine_slugs: list = []
+        try:
+            from plugin_loader import (
+                _delete_plugin_heartbeats_from_db,
+                _delete_plugin_routines_from_db,
+            )
+            _deleted_heartbeat_ids = _delete_plugin_heartbeats_from_db(slug)
+            _deleted_routine_slugs = _delete_plugin_routines_from_db(slug)
+        except Exception as exc:
+            logger.warning("PG plugin configs delete failed for %s: %s", slug, exc)
+
         # Delete host rows this plugin seeded (goals/tasks/triggers capabilities).
         # DELETE WHERE source_plugin = ? leaves user-created rows untouched.
         # Order matters because of FKs: children → parents.
@@ -1654,6 +1679,8 @@ def uninstall_plugin(slug: str):
             "mcp_audit": _mcp_audit,
             "preserved_tables": _orphan_records,
             "force_uninstall": _force_uninstall,
+            "deleted_heartbeat_ids": _deleted_heartbeat_ids,
+            "deleted_routine_slugs": _deleted_routine_slugs,
         }, success=True)
         invalidate_agent_meta_cache()
         return jsonify({
@@ -2011,7 +2038,7 @@ def list_widgets():
     conn = _get_db()
     try:
         rows = conn.execute(
-            text("SELECT slug, capabilities_disabled FROM plugins_installed WHERE enabled = 1 AND status = 'active'")
+            text("SELECT slug, capabilities_disabled FROM plugins_installed WHERE enabled = TRUE AND status = 'active'")
         ).fetchall()
         # Map slug -> set of disabled widget ids (Wave 1.1 per-capability filter)
         active_slugs = {r.slug for r in rows}
@@ -2087,7 +2114,7 @@ def regenerate_markers():
     rebuilt: list[str] = []
     try:
         rows = conn.execute(
-            text("SELECT slug FROM plugins_installed WHERE enabled = 1 AND status = 'active'")
+            text("SELECT slug FROM plugins_installed WHERE enabled = TRUE AND status = 'active'")
         ).fetchall()
         active_slugs = [r.slug for r in rows]
     finally:
@@ -2148,7 +2175,7 @@ def readonly_data(slug: str, query_name: str):
     _rd_conn = _get_db()
     try:
         _pi_row = _rd_conn.execute(
-            text("SELECT capabilities_disabled FROM plugins_installed WHERE slug = :slug AND enabled = 1 AND status = 'active'"),
+            text("SELECT capabilities_disabled FROM plugins_installed WHERE slug = :slug AND enabled = TRUE AND status = 'active'"),
             {"slug": slug},
         ).fetchone()
         if _pi_row:
@@ -2261,7 +2288,7 @@ def writable_data(slug: str, resource_id: str):
     try:
         pi_row = conn.execute(
             text("SELECT capabilities_disabled FROM plugins_installed "
-                 "WHERE slug = :slug AND enabled = 1 AND status = 'active'"),
+                 "WHERE slug = :slug AND enabled = TRUE AND status = 'active'"),
             {"slug": slug},
         ).fetchone()
         if not pi_row:
@@ -2426,7 +2453,7 @@ def plugin_ui_registry():
     try:
         rows = conn.execute(
             text("SELECT slug, capabilities_disabled FROM plugins_installed "
-                 "WHERE enabled = 1 AND status = 'active'"),
+                 "WHERE enabled = TRUE AND status = 'active'"),
         ).fetchall()
     finally:
         conn.close()
@@ -3112,8 +3139,16 @@ def update_plugin(slug: str):
             logger.warning("MCP delta failed during update of '%s': %s", slug, exc)
             # Non-fatal: log warning but allow update to proceed
 
-        # 9. Heartbeats/routines union — re-reads on next dispatch cycle; trigger reload
+        # 9. Heartbeats/routines union — trigger reload; PG mode: re-import with enabled preservation
         _reload_scheduler()
+        # PG mode: DELETE existing plugin rows, INSERT new ones from updated YAML,
+        # preserving user-modified enabled flags (ADR pg-native-configs Fase 5 — Q9).
+        _pg_reimport_result: dict = {}
+        try:
+            from plugin_loader import _reimport_plugin_configs_preserving_enabled
+            _pg_reimport_result = _reimport_plugin_configs_preserving_enabled(slug)
+        except Exception as exc:
+            logger.warning("PG plugin configs re-import failed for %s: %s", slug, exc)
 
         # 10. Build updated manifest dict
         new_manifest_dict = new_manifest.model_dump()
@@ -3197,7 +3232,12 @@ def update_plugin(slug: str):
         conn.commit()
 
         # 13. Audit log
-        _audit(conn, slug, "update", {"from": installed_version, "to": new_version, "sql_sha_preserved": True})
+        _audit(conn, slug, "update", {
+            "from": installed_version,
+            "to": new_version,
+            "sql_sha_preserved": True,
+            "pg_reimport": _pg_reimport_result,
+        })
         invalidate_agent_meta_cache()
 
         return jsonify({
@@ -3271,7 +3311,7 @@ def _build_agent_meta_response() -> dict:
     try:
         _am_conn = get_engine().connect()
         rows = _am_conn.execute(
-            text("SELECT slug, manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active'")
+            text("SELECT slug, manifest_json FROM plugins_installed WHERE enabled = TRUE AND status = 'active'")
         ).fetchall()
         _am_conn.close()
     except Exception as exc:
