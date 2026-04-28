@@ -58,12 +58,15 @@ def _audit(conn, plugin_id: str, action: str, payload: Any = None, success: bool
     writes with SQLITE_BUSY.
     """
     try:
+        # Schema: slug, event, verdict, actor_user_id, actor_username, detail_json, created_at
+        # The legacy column names (plugin_id/action/payload/success) never matched the table.
         conn.execute(
-            text("INSERT INTO plugin_audit_log (plugin_id, action, payload, success, created_at) "
-                 "VALUES (:plugin_id, :action, :payload, :success, :created_at)"),
-            {"plugin_id": plugin_id, "action": action,
-             "payload": json.dumps(payload) if payload is not None else None,
-             "success": 1 if success else 0, "created_at": _now_iso()},
+            text("INSERT INTO plugin_audit_log (slug, event, verdict, detail_json, created_at) "
+                 "VALUES (:slug, :event, :verdict, :detail_json, :created_at)"),
+            {"slug": plugin_id, "event": action,
+             "verdict": "PASS" if success else "FAIL",
+             "detail_json": json.dumps(payload) if payload is not None else "{}",
+             "created_at": _now_iso()},
         )
         conn.commit()
     except Exception as exc:
@@ -351,17 +354,24 @@ def get_plugin(slug: str):
 def get_plugin_audit(slug: str):
     conn = _get_db()
     try:
-        # Table may not exist on fresh install; treat absence as empty list.
+        # Table is plugin_audit_log (not plugins_audit). Schema:
+        # id, slug, event, verdict, actor_user_id, actor_username, detail_json, created_at
         try:
             rows = conn.execute(
-                text("SELECT id, action, success, created_at, payload "
-                     "FROM plugins_audit WHERE plugin_id = :slug "
+                text("SELECT id, event AS action, verdict, created_at, detail_json AS payload "
+                     "FROM plugin_audit_log WHERE slug = :slug "
                      "ORDER BY created_at DESC LIMIT 100"),
                 {"slug": slug},
             ).fetchall()
         except _SAOperationalError:
             return jsonify([])
-        return jsonify([dict(r._mapping) for r in rows])
+        # Map verdict ('PASS'/'FAIL') to success bool for the frontend's existing shape.
+        out = []
+        for r in rows:
+            d = dict(r._mapping)
+            d["success"] = (d.get("verdict") == "PASS")
+            out.append(d)
+        return jsonify(out)
     finally:
         conn.close()
 
@@ -937,16 +947,22 @@ def install_plugin():
         # common `NNN_description.sql` convention (e.g. `001_create_tables.sql`)
         # don't have to rename — keeps friction low for community plugins.
         migrations_dir = plugin_dir / "migrations"
-        install_sql_path = migrations_dir / "install.sql"
-        if not install_sql_path.exists() and migrations_dir.is_dir():
-            candidates = sorted(migrations_dir.glob("*.sql"))
-            if candidates:
-                install_sql_path = candidates[0]
-        if install_sql_path.exists():
+        # Dialect-aware install SQL (plugin contract v1.0.0):
+        # install.{sqlite,postgres}.sql is preferred; legacy install.sql is
+        # accepted on SQLite under DeprecationWarning and rejected on Postgres.
+        from plugin_loader import resolve_plugin_sql, PluginCompatError
+        try:
+            install_sql_path = resolve_plugin_sql(migrations_dir, "install")
+        except FileNotFoundError:
+            install_sql_path = None
+        except PluginCompatError as exc:
+            raise RuntimeError(f"SQL migration failed: {exc}") from exc
+        if install_sql_path is not None:
             try:
-                conn2 = sqlite3.connect(str(DB_PATH))  # noqa — allowlisted: plugin install SQL DDL via plugin_migrator (SQLite DDL engine; PG migration deferred to Step 2)
-                install_plugin_sql(slug, install_sql_path, conn=conn2)
-                conn2.close()
+                # plugin_migrator dispatches by db.engine.dialect:
+                #   SQLite → opens its own sqlite3.Connection
+                #   Postgres → uses run_sql_transactional_pg via SQLAlchemy
+                install_plugin_sql(slug, install_sql_path)
             except MigrationError as exc:
                 raise RuntimeError(f"SQL migration failed: {exc}") from exc
         state["completed_steps"].append({"step": "sql_migrations"})
@@ -1182,7 +1198,7 @@ def install_plugin():
                    (id, slug, name, version, tier, source_type, source_url,
                     installed_at, enabled, manifest_json, install_sha256, status)
                    VALUES (:id, :slug, :name, :ver, :tier, 'local', :src_url,
-                           :installed_at, 1, :manifest_json, :sha, 'active')
+                           :installed_at, TRUE, :manifest_json, :sha, 'active')
                    ON CONFLICT(slug) DO NOTHING"""),
                 {"id": slug, "slug": slug, "name": manifest["name"], "ver": manifest["version"],
                  "tier": manifest.get("tier", "essential"), "src_url": source_url,
@@ -1533,17 +1549,22 @@ def uninstall_plugin(slug: str):
         _preserved_host_entities = _safe_uninstall_spec.get("preserved_host_entities") or {}
         for _tbl in ("triggers", "tickets", "goal_tasks", "goals", "projects", "missions"):
             try:
-                _where = "source_plugin = ?"
+                # SQLAlchemy named-parameter style works on both SQLite and Postgres.
+                _where = "source_plugin = :slug"
                 if _tbl in _preserved_host_entities and not _force_uninstall:
                     # Preserve rows matching the declared WHERE clause.
-                    # Only the base condition (source_plugin = ?) is parameterized;
+                    # Only the base condition (source_plugin = :slug) is parameterized;
                     # the preservation clause comes from the manifest (validated at install).
                     _preserve_clause = _preserved_host_entities[_tbl]
-                    _where = f"(source_plugin = ?) AND NOT ({_preserve_clause})"
+                    _where = f"(source_plugin = :slug) AND NOT ({_preserve_clause})"
                 conn.execute(text(f"DELETE FROM {_tbl} WHERE {_where}"), {"slug": slug})
                 conn.commit()
             except Exception as exc:
                 logger.warning("Uninstall: failed to clean %s: %s", _tbl, exc)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         # B3: Rename preserved tables to _orphan_{slug}_{tablename} BEFORE SQL uninstall.
         # This removes them from the plugin namespace (Vault B3.S4) and records them
@@ -1603,12 +1624,18 @@ def uninstall_plugin(slug: str):
                 _orphan_conn.close()
 
         # SQL uninstall (runs after preserved tables are renamed — DROP won't touch them)
-        uninstall_sql = plugin_dir / "migrations" / "uninstall.sql"
-        if uninstall_sql.exists():
+        # Dialect-aware: uninstall.{sqlite,postgres}.sql per plugin contract v1.0.0
+        from plugin_loader import resolve_plugin_sql as _resolve_uninstall
+        try:
+            uninstall_sql = _resolve_uninstall(plugin_dir / "migrations", "uninstall")
+        except FileNotFoundError:
+            uninstall_sql = None
+        except Exception as exc:
+            logger.warning("uninstall SQL resolve failed: %s", exc)
+            uninstall_sql = None
+        if uninstall_sql is not None:
             try:
-                conn2 = sqlite3.connect(str(DB_PATH))  # noqa — allowlisted: plugin uninstall SQL DDL via plugin_migrator (SQLite DDL engine; PG migration deferred to Step 2)
-                uninstall_plugin_sql(slug, uninstall_sql, conn=conn2)
-                conn2.close()
+                uninstall_plugin_sql(slug, uninstall_sql)
             except Exception as exc:
                 logger.warning("SQL uninstall failed: %s", exc)
 
@@ -1781,7 +1808,7 @@ def update_plugin_status(slug: str):
         status = "active" if enabled else "disabled"
         conn.execute(
             text("UPDATE plugins_installed SET enabled = :en, status = :status WHERE slug = :slug"),
-            {"en": 1 if enabled else 0, "status": status, "slug": slug},
+            {"en": bool(enabled), "status": status, "slug": slug},
         )
         conn.commit()
         _audit(conn, slug, "enable" if enabled else "disable")

@@ -17,7 +17,7 @@ which preserves the original YAML shape ({"time": "06:50"} etc.).
 
 Phase reference: pg-native-configs Fase 4
 ADR: PG-NC-8 (single-connection LISTEN direct, 1 dedicated PG conn per listener).
-     TODO(PG-NC-8): consolidate via multiplexer if connection budget becomes issue.
+     NOTE(PG-NC-8): multiplexer deferred — see workspace/development/features/pg-native-configs/[C]known-deferrals.md.
 
 Revision ID: 0009
 Revises: 0008

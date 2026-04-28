@@ -44,8 +44,15 @@ _WHITELISTED_DOMAINS: frozenset[str] = frozenset(
         "api.github.com",
         # Package registries
         "npmjs.com",
+        "registry.npmjs.org",
+        "yarnpkg.com",
+        "registry.yarnpkg.com",
         "pypi.org",
+        "files.pythonhosted.org",
         "crates.io",
+        # Open-source funding (commonly linked from package metadata)
+        "opencollective.com",
+        "github.com/sponsors",
         # Docs / specs commonly referenced
         "semver.org",
         "modelcontextprotocol.io",
@@ -507,19 +514,27 @@ def _scan_file(rel_path: str, content: str, pattern_defs: list[PatternDef]) -> l
                     continue
 
             # sql.dangerous_statement: DROP TABLE is legitimate inside
-            # uninstall.sql — the manifest contract requires plugins to clean
-            # up their own tables. Skip when the file is the uninstall migration.
+            # uninstall migrations — the manifest contract requires plugins to
+            # clean up their own tables. Covers the legacy single-dialect
+            # `uninstall.sql` and the v1.0.0 dialect-aware variants
+            # (`uninstall.sqlite.sql` / `uninstall.postgres.sql`).
             if pdef.category == "sql.dangerous_statement":
-                lower_path = rel_path.lower()
-                if lower_path.endswith("uninstall.sql") or lower_path.endswith("/uninstall.sql"):
+                basename = rel_path.lower().rsplit("/", 1)[-1]
+                if basename in ("uninstall.sql", "uninstall.sqlite.sql", "uninstall.postgres.sql"):
                     continue
 
-            # enc.base64_blob: 64-char hex on a `sha256:` key is a legitimate
-            # asset fingerprint, not an obfuscated payload. Skip when the
-            # surrounding line/key contains sha256/checksum tokens.
+            # enc.base64_blob: skip false positives.
+            #   * 64-char hex on a `sha256:` key is a legitimate asset
+            #     fingerprint, not an obfuscated payload.
+            #   * npm/yarn/pnpm lockfiles list SRI integrity hashes
+            #     (e.g. `sha512-...==`) on every entry — every line of the
+            #     file would otherwise be flagged.
             if pdef.category == "enc.base64_blob":
+                basename = rel_path.lower().rsplit("/", 1)[-1]
+                if basename in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml"):
+                    continue
                 snippet_lower = snippet.lower()
-                if "sha256" in snippet_lower or "sha-256" in snippet_lower or "checksum" in snippet_lower:
+                if "sha256" in snippet_lower or "sha-256" in snippet_lower or "sha512" in snippet_lower or "checksum" in snippet_lower or "integrity" in snippet_lower:
                     continue
 
             findings.append(
@@ -534,8 +549,12 @@ def _scan_file(rel_path: str, content: str, pattern_defs: list[PatternDef]) -> l
             )
 
     # Non-whitelisted URL check (separate pass — needs URL context)
+    # Skip npm/yarn/pnpm lockfiles: they list hundreds of registry tarball URLs
+    # that drown the real signal even with the registry domain whitelisted.
     if ext in _CODE_EXTS:
-        _scan_urls(rel_path, content, lines, findings)
+        basename_lower = rel_path.lower().rsplit("/", 1)[-1]
+        if basename_lower not in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml"):
+            _scan_urls(rel_path, content, lines, findings)
 
     return findings
 

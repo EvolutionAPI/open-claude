@@ -167,13 +167,20 @@ def _rollback_step(slug: str, step_name: str, step_data: dict, db_path: Path, lo
             log.append(f"WARN: rules_index rollback failed: {exc}")
 
     elif step_name == "sql_migrations":
-        uninstall_sql_path = PLUGINS_DIR / slug / "migrations" / "uninstall.sql"
-        if uninstall_sql_path.exists() and db_path.exists():
+        # Dialect-aware: pick uninstall.{sqlite,postgres}.sql via plugin contract v1.0.0
+        from plugin_loader import resolve_plugin_sql
+        from plugin_migrator import uninstall_plugin_sql
+        migrations_dir = PLUGINS_DIR / slug / "migrations"
+        try:
+            uninstall_sql_path = resolve_plugin_sql(migrations_dir, "uninstall")
+        except FileNotFoundError:
+            uninstall_sql_path = None
+        except Exception as exc:
+            log.append(f"WARN: sql_migrations rollback resolve failed: {exc}")
+            uninstall_sql_path = None
+        if uninstall_sql_path is not None:
             try:
-                conn = sqlite3.connect(str(db_path))  # noqa — allowlisted: rollback DDL via plugin_migrator (SQLite DDL engine; PG migration deferred to Step 2)
-                from plugin_migrator import run_sql_transactional
-                run_sql_transactional(conn, uninstall_sql_path.read_text(encoding="utf-8"))
-                conn.close()
+                uninstall_plugin_sql(slug, uninstall_sql_path)
                 log.append("Rolled back: sql_migrations")
             except Exception as exc:
                 log.append(f"WARN: sql_migrations rollback failed: {exc}")
@@ -286,7 +293,7 @@ def all_plugin_mcp_names(db_path: Path) -> set[str]:
         from db.engine import get_engine
         conn = get_engine().connect()
         rows = conn.execute(
-            text("SELECT manifest_json FROM plugins_installed WHERE enabled = 1 AND status = 'active'")
+            text("SELECT manifest_json FROM plugins_installed WHERE enabled = TRUE AND status = 'active'")
         ).fetchall()
         conn.close()
     except _SAOperationalError as exc:

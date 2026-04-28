@@ -424,10 +424,19 @@ def _recalculate_goal_value(goal_id: int):
 
 @bp.route("/api/goals/link-routine", methods=["POST"])
 def link_routine_to_goal():
-    """Write goal_id to a routine entry in config/routines.yaml."""
+    """Write goal_id to a routine entry in config/routines.yaml (SQLite mode).
+
+    In PG mode routines live in the DB; link the goal via the routines table instead.
+    """
     denied = _require("manage")
     if denied:
         return denied
+
+    from config_store import get_dialect
+    if get_dialect() == "postgresql":
+        # noqa: pg-native-configs — routines are DB-managed in PG mode; YAML write skipped
+        return jsonify({"error": "In PG mode use the routines API to link a goal_id"}), 400
+
     data = request.get_json() or {}
     routine_name = data.get("routine_name")
     goal_slug = data.get("goal_id")  # slug string
@@ -445,7 +454,7 @@ def link_routine_to_goal():
 
     import yaml  # type: ignore
     with open(routines_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+        config = yaml.safe_load(f) or {}  # noqa: pg-native-configs — SQLite-only path (PG returns 400 above)
 
     updated = False
     for section_key, section_val in config.items():

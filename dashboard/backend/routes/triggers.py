@@ -585,7 +585,14 @@ def _execute_trigger(trigger_id: int, execution_id: int, event_data: dict):
 
 def sync_triggers_from_yaml():
     """Load trigger definitions from config/triggers.yaml into DB.
-    Only creates new triggers; does not overwrite UI-edited ones."""
+    Only creates new triggers; does not overwrite UI-edited ones.
+
+    In PG mode triggers live in the DB — YAML sync is skipped.
+    """
+    from config_store import get_dialect
+    if get_dialect() == "postgresql":
+        return  # noqa: pg-native-configs — triggers are DB-managed in PG mode
+
     import yaml
 
     config_path = WORKSPACE / "config" / "triggers.yaml"
@@ -594,7 +601,7 @@ def sync_triggers_from_yaml():
 
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f)  # noqa: pg-native-configs — SQLite-only path (PG returns early above)
         if not config:
             return
     except Exception:

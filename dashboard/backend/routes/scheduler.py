@@ -3,6 +3,7 @@
 import re
 from flask import Blueprint, jsonify
 from routes._helpers import WORKSPACE, safe_read, get_script_agents, discover_routines
+from config_store import get_dialect
 
 bp = Blueprint("scheduler", __name__)
 
@@ -103,7 +104,13 @@ def get_schedule():
 
 
 def _load_yaml_routines(entries: list):
-    """Load custom routines from config/routines.yaml."""
+    """Load custom routines from config/routines.yaml.
+
+    In PG mode routines live in the DB — YAML file is ignored.
+    """
+    if get_dialect() == "postgresql":
+        return  # noqa: pg-native-configs — routines are DB-managed in PG mode
+
     import yaml
     config_path = WORKSPACE / "config" / "routines.yaml"
     if not config_path.exists():
@@ -111,7 +118,7 @@ def _load_yaml_routines(entries: list):
 
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f)  # noqa: pg-native-configs — SQLite-only path (PG returns early above)
         if not config:
             return
 

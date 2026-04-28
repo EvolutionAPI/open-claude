@@ -293,7 +293,8 @@ def _import_plugin_heartbeats_to_db_impl(
     import json as _json
 
     def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        """VARCHAR(30)-safe UTC timestamp: YYYY-MM-DDTHH:MM:SS.ffffffZ (27 chars)."""
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
     written: list[str] = []
     conn = _get_db()
@@ -693,7 +694,7 @@ class PluginInstaller:
             conn = _get_db()
             try:
                 row = conn.execute(
-                    text("SELECT id FROM plugins WHERE slug = :slug LIMIT 1"), {"slug": slug}
+                    text("SELECT id FROM plugins_installed WHERE slug = :slug LIMIT 1"), {"slug": slug}
                 ).fetchone()
                 if row:
                     raise ConflictError(
