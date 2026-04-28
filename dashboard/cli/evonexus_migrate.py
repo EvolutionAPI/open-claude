@@ -6,7 +6,8 @@ Usage
         --source sqlite:////path/to/dashboard.db \\
         --target 'postgresql://user:pass@host/db' \\
         [--dry-run] [--resume] [--allow-non-empty] \\
-        [--batch-size 1000] [--skip-verify] [--verbose]
+        [--batch-size 1000] [--skip-verify] [--verbose] \\
+        [--skip-incompatible-plugins]
 
 Pre-requisites
 --------------
@@ -34,6 +35,24 @@ Verification (``--verify``, default ON)
 ----------------------------------------
 After migration the tool counts rows in both backends per table and computes
 a canonical checksum (sorted primary-key hash).  Any diff → non-zero exit.
+
+Skipping incompatible plugins (``--skip-incompatible-plugins``)
+---------------------------------------------------------------
+When one or more installed plugins lack ``install.postgres.sql``, the default
+behaviour is to abort (fail-fast).  Pass ``--skip-incompatible-plugins`` to
+continue the migration while skipping plugin-specific tables:
+
+* Core data (users, goals, tickets, heartbeats, etc.) is migrated normally.
+* Plugin-owned tables (e.g. ``pm_essentials_projects``) are skipped because
+  they do not exist on the Postgres target (no ``install.postgres.sql`` was run).
+* The ``plugins_installed`` rows for skipped plugins ARE migrated so the
+  registry stays consistent; the plugin just won't have its custom tables.
+* A warning summary is printed at the end listing every skipped plugin.
+
+Recommended workflow after running with ``--skip-incompatible-plugins``:
+1. Upgrade the plugin in its external repository (add ``install.postgres.sql``).
+2. Run ``make plugin-update PLUGIN=<slug>`` on the Postgres-backed instance.
+3. Re-run any data-specific import if plugin data must be carried over.
 """
 
 from __future__ import annotations
@@ -531,6 +550,18 @@ def _migrate_table(
 # Plugin compatibility check (ADR PG-Q7 F8)
 # ---------------------------------------------------------------------------
 
+def _find_plugins_dir() -> Optional[str]:
+    """Walk up from this file's location to find the plugins/ directory."""
+    import os
+    here = __file__
+    for _ in range(5):
+        here = os.path.dirname(here)
+        plugins_dir = os.path.join(here, "plugins")
+        if os.path.isdir(plugins_dir):
+            return plugins_dir
+    return None
+
+
 def _check_plugin_compat(src_conn) -> list[str]:
     """Return slugs of plugins that lack a postgres migration file on the source."""
     from sqlalchemy import text
@@ -544,18 +575,8 @@ def _check_plugin_compat(src_conn) -> list[str]:
     ).fetchall()
 
     incompatible: list[str] = []
-    # We look relative to the repo root — heuristic based on typical layout.
-    # If plugins/ folder isn't accessible, we skip the check gracefully.
     try:
-        # Walk up from this file's location to find plugins/
-        here = __file__
-        for _ in range(5):
-            here = os.path.dirname(here)
-            plugins_dir = os.path.join(here, "plugins")
-            if os.path.isdir(plugins_dir):
-                break
-        else:
-            plugins_dir = None
+        plugins_dir = _find_plugins_dir()
 
         if plugins_dir:
             for (slug,) in rows:
@@ -569,6 +590,23 @@ def _check_plugin_compat(src_conn) -> list[str]:
     except Exception:  # noqa: BLE001
         pass
     return incompatible
+
+
+def _get_plugin_tables(src_conn, slug: str) -> list[str]:
+    """Return table names in source SQLite that belong to the given plugin slug.
+
+    Convention: plugin tables start with ``<slug_underscored>_`` where the
+    slug has hyphens converted to underscores (e.g. ``pm-essentials`` →
+    ``pm_essentials_``).
+    """
+    from sqlalchemy import text
+
+    prefix = slug.replace("-", "_") + "_"
+    rows = src_conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :pat"),
+        {"pat": f"{prefix}%"},
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -598,8 +636,22 @@ def _dry_run(src_engine, dst_engine) -> None:
 # Verification
 # ---------------------------------------------------------------------------
 
-def _verify(src_engine, dst_engine) -> bool:
+def _verify(
+    src_engine,
+    dst_engine,
+    skipped_tables: Optional[set[str]] = None,
+) -> bool:
+    """Verify row counts and checksums between source and target.
+
+    Parameters
+    ----------
+    skipped_tables:
+        Set of table names that were intentionally skipped (e.g. plugin tables
+        when ``--skip-incompatible-plugins`` was used).  These tables are
+        reported as SKIP rather than DIFF so they don't fail verification.
+    """
     log.info("=== VERIFICATION ===")
+    skipped_tables = skipped_tables or set()
     ok = True
     with src_engine.connect() as src_conn:
         with dst_engine.connect() as dst_conn:
@@ -611,6 +663,11 @@ def _verify(src_engine, dst_engine) -> bool:
             migrated_tables = [t for t in TABLES_IN_ORDER if _table_exists(src_conn, t)]
 
             for table in migrated_tables:
+                if table in skipped_tables:
+                    src_n = _row_count(src_conn, table)
+                    log.info("  %-40s rows=%d/-- [SKIP — plugin table]", table, src_n)
+                    continue
+
                 src_n = _row_count(src_conn, table)
                 dst_n = _row_count(dst_conn, table) if table in target_tables else -1
 
@@ -650,8 +707,20 @@ def migrate(
     batch_size: int = 1000,
     skip_verify: bool = False,
     verbose: bool = False,
+    skip_incompatible_plugins: bool = False,
 ) -> bool:
-    """Run the full migration.  Returns True on success."""
+    """Run the full migration.  Returns True on success.
+
+    Parameters
+    ----------
+    skip_incompatible_plugins:
+        When True, plugins that lack ``install.postgres.sql`` are warned about
+        but do not abort the migration.  Their plugin-specific tables are
+        skipped (they don't exist on the PG target), but their rows in
+        ``plugins_installed`` are still migrated.  Use this flag when external
+        plugin repositories have not yet been updated to support PostgreSQL and
+        you need to migrate core data immediately.
+    """
     if verbose:
         log.setLevel(logging.DEBUG)
 
@@ -685,22 +754,40 @@ def migrate(
         return False
 
     # Plugin compatibility check (PG target only)
+    skipped_plugins: list[str] = []
+    skipped_tables: set[str] = set()
+
     if is_pg_target:
         with src_engine.connect() as src_conn:
             incompatible = _check_plugin_compat(src_conn)
         if incompatible:
-            for slug in incompatible:
-                log.error(
-                    "Plugin %s does not support PostgreSQL. "
-                    "Either upgrade to v2 (add install.postgres.sql) or "
-                    "uninstall before migrating.", slug,
-                )
-            return False
+            if not skip_incompatible_plugins:
+                for slug in incompatible:
+                    log.error(
+                        "Plugin %s does not support PostgreSQL. "
+                        "Either upgrade to v2 (add install.postgres.sql) or "
+                        "uninstall before migrating.", slug,
+                    )
+                return False
+            # Soft path — collect plugin tables to skip
+            with src_engine.connect() as src_conn:
+                for slug in incompatible:
+                    plugin_tables = _get_plugin_tables(src_conn, slug)
+                    skipped_plugins.append(slug)
+                    skipped_tables.update(plugin_tables)
+                    log.warning(
+                        "WARN Plugin %s skipped — install.postgres.sql missing. "
+                        "Plugin data WILL be migrated but plugin SQL hooks will not run "
+                        "on target. Reinstall on target after upgrading the plugin.",
+                        slug,
+                    )
+                    for tbl in plugin_tables:
+                        log.warning("SKIP table %s (plugin %s skipped)", tbl, slug)
 
     # Non-empty target check
     if is_pg_target and not allow_non_empty:
         with dst_engine.connect() as dst_conn:
-            with dst_engine.connect() as c2:
+            with dst_engine.connect() as c2:  # noqa: F841
                 from sqlalchemy import inspect as sa_inspect
                 tbl_list = sa_inspect(dst_engine).get_table_names()
                 # Check a key table for existing data
@@ -728,6 +815,11 @@ def migrate(
                     _ensure_state_table(dst_conn)
 
                 for table in TABLES_IN_ORDER:
+                    # Skip tables that belong to incompatible plugins
+                    if table in skipped_tables:
+                        log.info("SKIP table %s (plugin skipped)", table)
+                        continue
+
                     # Disable trigger before goal_tasks, enable after
                     if table == _TRIGGER_TABLE and is_pg_target and not trigger_disabled:
                         _disable_trigger(dst_conn)
@@ -771,11 +863,20 @@ def migrate(
     if total_rows == 0:
         log.info("(All rows already present — migration was a no-op)")
 
+    # Skipped-plugins summary
+    if skipped_plugins:
+        log.warning(
+            "WARN %d plugin(s) were skipped: %s. "
+            "Reinstall after upgrading each plugin to add install.postgres.sql.",
+            len(skipped_plugins),
+            skipped_plugins,
+        )
+
     # -----------------------------------------------------------------------
     # Verification
     # -----------------------------------------------------------------------
     if not skip_verify:
-        ok = _verify(src_engine, dst_engine)
+        ok = _verify(src_engine, dst_engine, skipped_tables=skipped_tables)
         return ok
 
     return True
@@ -823,6 +924,17 @@ def main() -> None:
         "--verbose", "-v", action="store_true",
         help="Show per-batch progress.",
     )
+    parser.add_argument(
+        "--skip-incompatible-plugins", action="store_true",
+        help=(
+            "Continue migration even when installed plugins lack install.postgres.sql. "
+            "Plugin-specific tables are skipped (they don't exist on the PG target). "
+            "Core data (users, goals, tickets, etc.) is migrated normally. "
+            "Use this flag when external plugin repos haven't been updated yet and "
+            "you need to migrate immediately. After migration: upgrade each plugin, "
+            "run plugin-update on the PG instance, then reinstall."
+        ),
+    )
     args = parser.parse_args()
 
     success = migrate(
@@ -834,6 +946,7 @@ def main() -> None:
         batch_size=args.batch_size,
         skip_verify=args.skip_verify,
         verbose=args.verbose,
+        skip_incompatible_plugins=args.skip_incompatible_plugins,
     )
     sys.exit(0 if success else 1)
 
