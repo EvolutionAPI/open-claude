@@ -159,20 +159,28 @@ def _classify_document(content_sample: str) -> Optional[Dict[str, Any]]:
 # Queue operations (Postgres)
 # ---------------------------------------------------------------------------
 
-def _get_connections(sqlite_db_path: str) -> List[Dict[str, Any]]:
-    """Return all 'ready' Knowledge connections from SQLite."""
-    import sqlite3
-    conn = sqlite3.connect(sqlite_db_path)
+def _get_connections(_legacy_path: str | None = None) -> List[Dict[str, Any]]:
+    """Return all 'ready' Knowledge connections from the EvoNexus DB.
+
+    Uses the shared SQLAlchemy engine (works in both SQLite and Postgres).
+    The ``_legacy_path`` argument is kept for backwards-compat with callers
+    that still pass a SQLite file path; it is ignored.
+    """
     try:
-        cur = conn.execute(
-            "SELECT id, connection_string_encrypted FROM knowledge_connections WHERE status = 'ready'"
-        )
-        rows = cur.fetchall()
+        from db.engine import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, connection_string_encrypted "
+                    "FROM knowledge_connections WHERE status = 'ready'"
+                )
+            ).fetchall()
         return [{"id": row[0], "cs_enc": row[1]} for row in rows]
     except Exception:
         return []
-    finally:
-        conn.close()
 
 
 def _process_queue_for_connection(connection_id: str, dsn: str, worker_id: str) -> int:

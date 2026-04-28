@@ -220,10 +220,13 @@ with app.app_context():
         print(f"WARNING: knowledge usage janitor init failed: {_uj_exc}")
 
     # Start knowledge classify worker (async document classification — ADR-008)
+    # The worker now uses the shared SQLAlchemy engine; the path arg is legacy
+    # (kept positional for backwards-compat).
     try:
         from knowledge.classify_worker import start_classify_worker
-        _sqlite_db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
-        start_classify_worker(_sqlite_db_path)
+        _db_uri = app.config["SQLALCHEMY_DATABASE_URI"]
+        _legacy_path = _db_uri.replace("sqlite:///", "") if _db_uri.startswith("sqlite") else ""
+        start_classify_worker(_legacy_path)
     except Exception as _cw_exc:
         print(f"WARNING: knowledge classify worker init failed: {_cw_exc}")
 
