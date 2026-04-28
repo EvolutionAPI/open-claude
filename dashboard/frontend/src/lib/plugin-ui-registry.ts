@@ -17,9 +17,8 @@ export interface PluginPage {
   label: string
   /** Sub-path under /plugins-ui/<slug>/ */
   path: string
-  /** Relative bundle path, e.g. "ui/pages/projects.js" */
+  /** Relative bundle path, e.g. "dist/pages/home.js" (v2 ESM default export) */
   bundle: string
-  custom_element_name: string
   sidebar_group?: string | null
   icon?: string | null
   order?: number

@@ -7,6 +7,7 @@ import { initEvoNexusSdk } from './lib/evonexus-sdk'
 import { loadWorkspaceTimezone } from './lib/format'
 import PluginPageHost from './pages/PluginPageHost'
 import { NotificationProvider } from './context/NotificationContext'
+import { PluginNavigationProvider } from './context/PluginNavigationContext'
 import Sidebar from './components/Sidebar'
 import { FullPageLoader, SectionBoundary, SectionLoader } from './components/PageStates'
 import { lazyDefault, lazyNamed } from './lib/lazyImport'
@@ -214,6 +215,7 @@ function AppContent() {
   }
 
   return (
+    <PluginNavigationProvider>
     <NotificationProvider>
       <div className="flex min-h-screen bg-[#0C111D]">
         <Sidebar />
@@ -304,6 +306,7 @@ function AppContent() {
         </main>
       </div>
     </NotificationProvider>
+    </PluginNavigationProvider>
   )
 }
 

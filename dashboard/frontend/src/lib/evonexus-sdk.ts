@@ -1,16 +1,25 @@
 /**
- * evonexus-sdk.ts — Wave 2.1
+ * evonexus-sdk.ts — Step 2 (v2 host renderer)
  *
  * Global SDK exposed on window.EvoNexus for use by plugin page bundles.
  * Plugin bundles run in the main window scope (same-scope, no iframe).
  * They call dashboard APIs via this object rather than crafting fetch() calls.
  *
  * Initialised once in App.tsx alongside hydratePluginUiRegistry().
- * NavigatorBridge (PluginPageHost.tsx) adds window.EvoNexus.navigate().
  *
- * Usage in plugin bundle:
- *   const { data } = await window.EvoNexus.readonlyData('pm-essentials', 'open_projects')
- *   await window.EvoNexus.writableData('pm-essentials', 'projects', 'POST', { name: 'X' })
+ * NOTE: window.EvoNexus.navigate() is deprecated for v2 plugins.
+ * Use usePluginNavigation() from @evonexus/ui instead (React context-based,
+ * no globals).  The window.EvoNexus.navigate stub is kept for compatibility
+ * but falls back to window.location and is not wired to React Router.
+ *
+ * Usage in v2 plugin bundle (preferred):
+ *   import { usePluginNavigation } from '@evonexus/ui'
+ *   const { navigate } = usePluginNavigation()
+ *
+ * Usage for data APIs (still current):
+ *   const sdk = window.EvoNexus
+ *   const { rows } = await sdk.readonlyData('my-plugin', 'my_query')
+ *   await sdk.writableData('my-plugin', 'resource', 'POST', { name: 'X' })
  */
 
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8080' : ''
@@ -57,11 +66,15 @@ export interface EvoNexusSDK {
     body: Record<string, unknown>
   ): Promise<WritableDataResult>
 
-  /** Navigate to a dashboard route (wired by NavigatorBridge) */
+  /**
+   * Navigate to a dashboard route.
+   * @deprecated v2 plugins should use usePluginNavigation() from @evonexus/ui.
+   * Falls back to window.location — not wired to React Router.
+   */
   navigate(to: string): void
 }
 
-/** Build the SDK object (navigate is a stub until NavigatorBridge overwrites it). */
+/** Build the SDK object (navigate is a window.location fallback — use usePluginNavigation() for React context). */
 function buildSdk(): EvoNexusSDK {
   return {
     async getTickets(params = {}) {
@@ -97,8 +110,8 @@ function buildSdk(): EvoNexusSDK {
     },
 
     navigate(to) {
-      // Stub until NavigatorBridge wires the real React Router navigate().
-      // Falls back to window.location for pre-hydration calls.
+      // window.location fallback — v2 plugins should use usePluginNavigation()
+      // from @evonexus/ui for React Router-aware navigation.
       window.location.href = to
     },
   }
@@ -111,7 +124,7 @@ export function initEvoNexusSdk(): void {
   if (!w.EvoNexus) {
     w.EvoNexus = buildSdk()
   } else {
-    // Merge so NavigatorBridge additions aren't overwritten if called again
+    // Merge so that existing keys (if any) are preserved
     const sdk = buildSdk()
     w.EvoNexus = { ...sdk, ...w.EvoNexus }
   }
