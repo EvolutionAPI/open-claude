@@ -3183,6 +3183,23 @@ def update_plugin(slug: str):
                     "url": f"/plugins/{slug}/ui/widgets/{w.name}",
                 })
 
+        # React page bundles live inside plugins/{slug}/dist/. The previous
+        # implementation skipped this directory entirely, so a plugin update
+        # would bump the version in plugins_installed but keep serving the
+        # old dist/pages/*.js and dist/chunks/*.js — yielding a v1.1.5 tag
+        # over a v1.1.4 page bundle that still crashed in the browser.
+        # Vite library mode emits chunks with content-hashed names, so old
+        # chunks must be wiped before copy: otherwise dist/chunks/ accumulates
+        # both versions and the new manifest references the new hash while
+        # the old chunk's existence keeps it cached. shutil.rmtree + recopy
+        # gives a clean replacement.
+        dist_src = new_plugin_dir / "dist"
+        if dist_src.exists():
+            dist_dst = plugin_dir / "dist"
+            if dist_dst.exists():
+                shutil.rmtree(dist_dst)
+            shutil.copytree(dist_src, dist_dst)
+
         # Wave 2.3: apply MCP delta (tudo-ou-nada) for updated mcp_servers
         from plugin_install_state import get_plugin_mcp_servers as _get_plugin_mcp_servers
         mcp_delta_result: dict = {}
