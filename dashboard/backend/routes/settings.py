@@ -6,6 +6,7 @@ import os
 from flask import Blueprint, jsonify, request, abort
 from flask_login import login_required, current_user
 from routes._helpers import WORKSPACE, get_script_agents
+from config_store import get_config, set_config, list_configs, get_dialect
 
 bp = Blueprint("settings", __name__)
 
@@ -76,12 +77,31 @@ def _require_manage():
 @bp.route("/api/settings/workspace")
 @login_required
 def get_workspace():
-    """Return workspace section of workspace.yaml as JSON.
+    """Return workspace section as JSON.
 
+    In PG mode reads from runtime_configs; in SQLite mode reads workspace.yaml.
     Transparently normalizes legacy language codes ("ptBR" → "pt-BR") in
-    the response so the frontend always sees a canonical BCP-47 tag,
-    regardless of when the yaml was first written.
+    the response so the frontend always sees a canonical BCP-47 tag.
     """
+    if get_dialect() == "postgresql":
+        # Reconstruct nested shape from flat dotted keys.
+        flat = list_configs("workspace.")
+        workspace: dict = {}
+        for dotted_key, val in flat.items():
+            # dotted_key is e.g. "workspace.name" — strip leading "workspace."
+            leaf = dotted_key[len("workspace."):]
+            workspace[leaf] = val
+        if "language" in workspace:
+            workspace["language"] = _normalize_language(workspace["language"])
+        # dashboard section stored under "dashboard.*" keys.
+        flat_dash = list_configs("dashboard.")
+        dashboard: dict = {}
+        for dotted_key, val in flat_dash.items():
+            leaf = dotted_key[len("dashboard."):]
+            dashboard[leaf] = val
+        return jsonify({"workspace": workspace, "dashboard": dashboard})
+
+    # SQLite mode: read YAML directly (unchanged).
     config_path = WORKSPACE / "config" / "workspace.yaml"
     data = _load_yaml(config_path)
     workspace = dict(data.get("workspace") or {})
@@ -101,9 +121,26 @@ def update_workspace():
     _require_manage()
 
     body = request.get_json(force=True) or {}
-    config_path = WORKSPACE / "config" / "workspace.yaml"
+    actor = getattr(current_user, "id", None)
 
-    # Read-merge-write
+    if get_dialect() == "postgresql":
+        if "workspace" in body:
+            allowed_ws = {"name", "owner", "company", "language", "timezone"}
+            for k, v in body["workspace"].items():
+                if k in allowed_ws:
+                    if k == "language":
+                        v = _normalize_language(v)
+                    set_config(f"workspace.{k}", v, actor_id=actor)
+        if "dashboard" in body:
+            allowed_dash = {"port"}
+            for k, v in body["dashboard"].items():
+                if k in allowed_dash:
+                    set_config(f"dashboard.{k}", v, actor_id=actor)
+        audit(current_user, "workspace_updated", "config", "Updated workspace settings (PG)")
+        return jsonify({"status": "saved"})
+
+    # SQLite mode: read-merge-write to workspace.yaml (unchanged).
+    config_path = WORKSPACE / "config" / "workspace.yaml"
     data = _load_yaml(config_path)
 
     if "workspace" in body:
@@ -111,8 +148,6 @@ def update_workspace():
         ws = data.setdefault("workspace", {})
         for k, v in body["workspace"].items():
             if k in allowed_ws:
-                # Canonicalize language on write so legacy values don't
-                # pollute future reads.
                 if k == "language":
                     v = _normalize_language(v)
                 ws[k] = v
@@ -303,7 +338,11 @@ def delete_routine(frequency: str, slug: str):
 @bp.route("/api/settings/chat")
 @login_required
 def get_chat_settings():
-    """Return chat section of workspace.yaml as JSON."""
+    """Return chat.trustMode setting."""
+    if get_dialect() == "postgresql":
+        trust_mode = get_config("dashboard.chat.trustMode", False)
+        return jsonify({"trustMode": bool(trust_mode)})
+
     config_path = WORKSPACE / "config" / "workspace.yaml"
     data = _load_yaml(config_path)
     chat = data.get("chat") or {}
@@ -313,13 +352,21 @@ def get_chat_settings():
 @bp.route("/api/settings/chat", methods=["PATCH"])
 @login_required
 def update_chat_settings():
-    """Update chat.trustMode in workspace.yaml atomically."""
+    """Update chat.trustMode atomically."""
     from models import audit
     _require_manage()
 
     body = request.get_json(force=True) or {}
     if "trustMode" not in body or not isinstance(body["trustMode"], bool):
         abort(400, "Body must contain trustMode (bool)")
+
+    actor = getattr(current_user, "id", None)
+
+    if get_dialect() == "postgresql":
+        set_config("dashboard.chat.trustMode", body["trustMode"], actor_id=actor)
+        audit(current_user, "chat_settings_updated", "config",
+              f"trustMode set to {body['trustMode']}")
+        return jsonify({"trustMode": body["trustMode"]})
 
     config_path = WORKSPACE / "config" / "workspace.yaml"
     tmp_path = config_path.with_suffix(".yaml.tmp")
