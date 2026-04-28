@@ -63,6 +63,9 @@ _REQUIRED_TABLES = {
     "knowledge_connections",
     "knowledge_connection_events",
     "knowledge_api_keys",
+    # 0007 — PG-native configs (SQLite migration is a no-op; tables only on PG)
+    # These are intentionally omitted from the SQLite set and checked separately
+    # in the PG-specific test below.
 }
 
 _REQUIRED_VIEWS = {"goal_progress_v"}
@@ -156,7 +159,7 @@ def test_sqlite_fresh_upgrade_head(tmp_path):
         assert _REQUIRED_TRIGGERS <= triggers, f"Missing triggers: {_REQUIRED_TRIGGERS - triggers}"
 
         ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        assert ver[0] == "0006", f"Expected version 0006, got {ver[0]}"
+        assert ver[0] == "0007", f"Expected version 0007, got {ver[0]}"
 
 
 @pytest.mark.sqlite
@@ -307,7 +310,12 @@ def test_postgres_fresh_upgrade_head():
         assert _REQUIRED_TRIGGERS <= triggers, f"Missing triggers: {_REQUIRED_TRIGGERS - triggers}"
 
         ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        assert ver[0] == "0006", f"Expected version 0006, got {ver[0]}"
+        assert ver[0] == "0007", f"Expected version 0007, got {ver[0]}"
+
+        # 0007 tables must exist on Postgres (migration is PG-only).
+        pg_tables_0007 = {"runtime_configs", "llm_providers", "routine_definitions"}
+        missing_0007 = pg_tables_0007 - tables
+        assert not missing_0007, f"Missing PG-native config tables: {missing_0007}"
 
 
 @pytest.mark.postgres
