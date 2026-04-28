@@ -1,5 +1,10 @@
-import { StrictMode } from 'react'
+import React, { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+
+// Expose React globally so that out-of-bundle plugin pages (loaded via dynamic
+// import()) can access it via window.React without an importmap.
+// Step 3 will replace this with a proper importmap; this shim covers Step 2.
+;(window as Window & typeof globalThis & { React?: typeof React }).React ??= React
 import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import i18n from './i18n'

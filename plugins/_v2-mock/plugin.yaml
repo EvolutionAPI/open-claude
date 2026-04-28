@@ -1,5 +1,5 @@
 schema_version: "2.0"
-id: v2-mock
+id: _v2-mock
 name: v2 Mock Plugin
 version: 0.1.0
 description: Minimal v2 plugin for host renderer validation. Delete after Step 3.

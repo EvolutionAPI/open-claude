@@ -19,7 +19,7 @@ sys.path.insert(0, str(WORKSPACE / "dashboard" / "backend"))
 
 manifest = {
     "schema_version": "2.0",
-    "id": "v2-mock",
+    "id": "_v2-mock",
     "name": "v2 Mock Plugin",
     "version": "0.1.0",
     "description": "Minimal v2 plugin for host renderer validation.",
@@ -80,7 +80,7 @@ try:
                 """
             ),
             {
-                "slug": "v2-mock",
+                "slug": "_v2-mock",
                 "name": manifest["name"],
                 "version": manifest["version"],
                 "description": manifest["description"],
@@ -88,9 +88,9 @@ try:
             },
         )
         conn.commit()
-    print("Inserted v2-mock into plugins_installed (DB).")
+    print("Inserted _v2-mock into plugins_installed (DB).")
 except Exception as exc:
     print(f"DB insert skipped (tables may not exist yet): {exc}")
     print("The .install-manifest.json is written — that is enough for the registry.")
 
-print("\nDone. Navigate to /plugins-ui/v2-mock/home in the dashboard.")
+print("\nDone. Navigate to /plugins-ui/_v2-mock/home in the dashboard.")
