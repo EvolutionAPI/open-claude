@@ -464,6 +464,38 @@ class PluginAgentEntry(BaseModel):
         return v
 
 
+class PluginCapabilityFile(BaseModel):
+    """Reference to a capability file (skill / rule / command) declared in plugin.yaml.
+
+    Both ``name`` and ``src`` are accepted — backend persists both so the
+    frontend Capabilities panel can render the human-readable name while the
+    installer can locate the file on disk.
+    """
+
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    src: Annotated[str, Field(min_length=1, max_length=500)]
+
+    @field_validator("src")
+    @classmethod
+    def src_path_relative(cls, v: str) -> str:
+        if v.startswith("/"):
+            raise ValueError(f"capability src '{v}' must be relative.")
+        if "\\" in v:
+            raise ValueError(f"capability src '{v}' must use forward slashes.")
+        parts = Path(v).parts
+        depth = 0
+        for part in parts:
+            if part == "..":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError(
+                        f"capability src '{v}' contains path traversal sequence '..'."
+                    )
+            else:
+                depth += 1
+        return v
+
+
 class PluginPage(BaseModel):
     """A full-screen page declared in plugin.yaml under ui_entry_points.pages (v2).
 
@@ -885,6 +917,14 @@ class PluginManifest(BaseModel):
     # Both optional — existing plugins without these fields are unaffected.
     metadata: Optional[PluginMetadata] = None
     agents: Optional[List[PluginAgentEntry]] = None
+
+    # --- Capability listings (skills / rules / commands) ---
+    # Declared under skills:/rules:/commands: in plugin.yaml as
+    # [{name, src}] arrays. Persisted in manifest_json so the
+    # /plugins/<slug> Capabilities panel can render them.
+    skills: Optional[List[PluginCapabilityFile]] = None
+    rules: Optional[List[PluginCapabilityFile]] = None
+    commands: Optional[List[PluginCapabilityFile]] = None
 
     # --- Wave 2.3: MCP servers injected into ~/.claude.json on install ---
     # Effective name in ~/.claude.json: plugin-{slug}-{server.name}

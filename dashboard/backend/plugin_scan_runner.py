@@ -372,7 +372,7 @@ def _cache_store(db_path: Path, tarball_sha256: str, result: dict) -> None:
                 "verdict": result.get("verdict", "APPROVE"),
                 "findings_json": json.dumps(result.get("findings", [])),
                 "scanned_files": result.get("scanned_files", 0),
-                "llm_augmented": 1 if result.get("llm_augmented") else 0,
+                "llm_augmented": bool(result.get("llm_augmented")),
                 "now": now,
             },
         )
