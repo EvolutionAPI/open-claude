@@ -11,16 +11,33 @@
  *
  * This is the durable source of truth for chat history.
  * sessions.json is a fast-access cache; JSONL survives restarts and cleanups.
+ *
+ * PG mode (DATABASE_URL starts with "postgresql"):
+ *   After every synchronous JSONL write, the message is enqueued to ChatSyncQueue
+ *   for async delivery to POST /api/chat-messages.  JSONL is the Write-Ahead Log
+ *   (WAL) — messages are never lost even if PG is temporarily unreachable.
  */
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const ChatSyncQueue = require('./sync-queue');
 
 class ChatLogger {
-  constructor(workspaceRoot) {
+  /**
+   * @param {string} workspaceRoot
+   * @param {object} [opts]          - Passed through to ChatSyncQueue (retryIntervalMs, maxQueueSize)
+   */
+  constructor(workspaceRoot, opts = {}) {
     this.logsDir = path.join(workspaceRoot || process.cwd(), 'workspace', 'ADWs', 'logs', 'chat');
     this._ensureDir();
+
+    // Activate PG sync only when DATABASE_URL points to PostgreSQL
+    const dbUrl = process.env.DATABASE_URL || '';
+    this.syncEnabled = dbUrl.startsWith('postgresql') || dbUrl.startsWith('postgres://');
+    if (this.syncEnabled) {
+      this.syncQueue = new ChatSyncQueue(workspaceRoot, opts);
+    }
   }
 
   _ensureDir() {
@@ -39,6 +56,8 @@ class ChatLogger {
    * Append a message to the chat log.
    * Assigns a uuid if the message doesn't already have one.
    * Returns the (possibly assigned) uuid.
+   *
+   * Write order: JSONL first (synchronous, durable WAL), then async PG sync.
    */
   append(agentName, sessionId, message) {
     try {
@@ -47,7 +66,12 @@ class ChatLogger {
       }
       const logPath = this._logPath(agentName, sessionId);
       const line = JSON.stringify(message) + '\n';
+      // 1. ALWAYS write to JSONL first — durable WAL
       fs.appendFileSync(logPath, line, 'utf8');
+      // 2. If PG mode, enqueue for async sync to Flask
+      if (this.syncEnabled) {
+        this.syncQueue.enqueue(agentName, sessionId, message);
+      }
       return message.uuid;
     } catch (err) {
       console.error(`[chat-logger] Failed to append: ${err.message}`);
@@ -58,12 +82,18 @@ class ChatLogger {
   /**
    * Append a rewind marker to the JSONL log.
    * The marker records which message uuid was rewound from.
+   * In PG mode, also sends a best-effort POST /api/chat-messages/rewind.
    */
   appendRewindMarker(agentName, sessionId, atUuid) {
     try {
       const marker = { type: 'rewind', at: atUuid, ts: Date.now() };
       const logPath = this._logPath(agentName, sessionId);
+      // 1. ALWAYS write marker to JSONL
       fs.appendFileSync(logPath, JSON.stringify(marker) + '\n', 'utf8');
+      // 2. If PG mode, best-effort rewind via Flask (no retry)
+      if (this.syncEnabled && this.syncQueue) {
+        this.syncQueue._tryRewind(agentName, sessionId, atUuid).catch(() => {});
+      }
     } catch (err) {
       console.error(`[chat-logger] Failed to append rewind marker: ${err.message}`);
     }
