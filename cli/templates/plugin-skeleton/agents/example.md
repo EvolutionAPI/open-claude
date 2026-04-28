@@ -1,12 +1,11 @@
-# Example Agent
+# __SLUG__ Agent
 
-This agent is provided by the __SLUG__ plugin.
+An example agent shipped with the __NAME__ plugin.
 
-## Role
+## What it does
 
-Describe this agent's purpose and capabilities here.
+Describe what this agent does here.
 
-## Instructions
+## Usage
 
-1. Always greet the user.
-2. Provide helpful information related to this plugin's domain.
+Invoke via `/your-agent-slug` in the EvoNexus dashboard.

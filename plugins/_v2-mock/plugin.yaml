@@ -1,0 +1,25 @@
+schema_version: "2.0"
+id: v2-mock
+name: v2 Mock Plugin
+version: 0.1.0
+description: Minimal v2 plugin for host renderer validation. Delete after Step 3.
+author: EvoNexus Engineering
+license: MIT
+min_evonexus_version: 0.34.0
+tier: essential
+capabilities:
+  - ui_pages
+
+ui_entry_points:
+  pages:
+    - id: home
+      label: Home
+      path: home
+      bundle: dist/pages/home.js
+      icon: Home
+      order: 1
+  sidebar_groups:
+    - id: v2-mock-group
+      label: v2 Mock
+      order: 999
+      collapsible: true

@@ -1,33 +1,70 @@
+schema_version: "2.0"
+
 id: __SLUG__
-name: My Plugin
+name: __NAME__
 version: 0.1.0
 description: A short description of what this plugin does.
 author: Your Name
 license: MIT
 homepage: https://github.com/your-org/__SLUG__
 
-min_evonexus_version: 0.30.0
+min_evonexus_version: 0.34.0
 tier: essential
 
 capabilities:
   - agents
-  # - skills
-  # - rules
-  # - heartbeats
-  # - sql_migrations
-  # - widgets
-  # - claude_hooks
-  # - readonly_data
+  - sql_migrations
+  - ui_pages
+  - widgets
+  - readonly_data
+  - writable_data
+
+# UI pages — each entry points to a named export from dist/index.js
+ui_pages:
+  - id: __SLUG___items
+    title: Items
+    bundle: dist/index.js
+    export: ItemsPage
+    nav_label: Items
+    nav_icon: list
+
+# Home-screen widgets
+widgets:
+  - id: __SLUG___summary
+    title: Summary
+    bundle: dist/index.js
+    export: SummaryWidget
+    width: 1
+    height: 1
+
+# Writable data — table exposed to <SchemaForm> / <SchemaTable>
+writable_data:
+  - id: items
+    table: __SLUG_UNDER___items
+    label: Items
+    json_schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          title: Name
+          minLength: 1
+        description:
+          type: string
+          title: Description
+        active:
+          type: boolean
+          title: Active
+          default: true
+
+# Readonly data exposed to widgets
+readonly_data:
+  - id: item_count
+    label: Item Count
+    sql: "SELECT COUNT(*) AS count FROM __SLUG_UNDER___items"
+    columns: [count]
 
 env_vars_needed: []
-  # - MY_PLUGIN_API_KEY
-
 conflicts: {}
-
 dependencies: {}
-
-# claude_hooks: []
-
-# readonly_data: []
-
-# source_url: https://github.com/your-org/__SLUG__
