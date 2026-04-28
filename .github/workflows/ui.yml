@@ -1,0 +1,37 @@
+name: Publish UI to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Tag prefix "ui-v" disambiguates UI releases from CLI releases (which use "v" only).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'ui-v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        working-directory: ./dashboard
+        run: npm ci
+
+      - name: Build
+        working-directory: ./dashboard/packages/ui
+        run: npm run build
+
+      - name: Publish to npm
+        working-directory: ./dashboard/packages/ui
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
