@@ -28,6 +28,22 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
+
+
+# ---------------------------------------------------------------------------
+# Lazy DB helpers — thin wrappers so tests can patch at module scope
+# ---------------------------------------------------------------------------
+
+def _get_dialect_name() -> str:
+    """Return the SQLAlchemy dialect name ('postgresql' or 'sqlite')."""
+    from db.engine import dialect
+    return dialect.name
+
+
+def _get_db_engine():
+    """Return the shared SQLAlchemy engine."""
+    from db.engine import get_engine
+    return get_engine()
 PLUGIN_LOGS_DIR = WORKSPACE / "ADWs" / "logs" / "plugins"
 
 # Env vars always passed to lifecycle hooks (Vault R2/F9 scoping)
@@ -118,7 +134,7 @@ def _ensure_executable(script_path: Path) -> None:
         logger.debug("Added execute permission to %s", script_path)
 
 
-def _write_hook_log(
+def _write_hook_log_file(
     slug: str,
     hook_name: str,
     timestamp: str,
@@ -128,7 +144,7 @@ def _write_hook_log(
     exit_code: Optional[int],
     timed_out: bool,
 ) -> Path:
-    """Write hook execution log to ADWs/logs/plugins/.
+    """Write hook execution log to ADWs/logs/plugins/ (SQLite-mode fallback).
 
     Returns:
         Path to the written log file.
@@ -150,6 +166,87 @@ def _write_hook_log(
     ]
     log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return log_path
+
+
+# Maximum bytes stored per output stream (ADR pg-native-logs)
+_MAX_OUTPUT_BYTES = 1024 * 1024  # 1 MB
+
+
+def _persist_hook_run(
+    *,
+    slug: str,
+    hook_name: str,
+    timestamp: str,
+    script_sha256: str,
+    started_at: datetime,
+    ended_at: datetime,
+    exit_code: Optional[int],
+    stdout: str,
+    stderr: str,
+    timed_out: bool,
+    metadata: Optional[dict] = None,
+) -> Optional[Path]:
+    """Persist hook execution result.
+
+    PG mode: inserts a row in plugin_hook_runs, returns None (no file path).
+    SQLite mode: delegates to _write_hook_log_file, returns the Path.
+
+    Truncates stdout/stderr to 1 MB each; sets truncated=True on the row/log.
+    """
+    # ------------------------------------------------------------------
+    # Truncation (both modes — consistent behaviour)
+    # ------------------------------------------------------------------
+    truncated = False
+    if len(stdout) > _MAX_OUTPUT_BYTES:
+        stdout = stdout[:_MAX_OUTPUT_BYTES] + "\n... [TRUNCATED]"
+        truncated = True
+    if len(stderr) > _MAX_OUTPUT_BYTES:
+        stderr = stderr[:_MAX_OUTPUT_BYTES] + "\n... [TRUNCATED]"
+        truncated = True
+
+    duration_ms = int((ended_at - started_at).total_seconds() * 1000)
+
+    # Build metadata dict (merge caller-supplied + timed_out flag)
+    meta: dict = dict(metadata or {})
+    if timed_out:
+        meta["timed_out"] = True
+
+    if _get_dialect_name() == "postgresql":
+        import json as _json
+        from sqlalchemy import text as _text
+
+        engine = _get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                _text("""
+                    INSERT INTO plugin_hook_runs
+                        (slug, hook_name, sha256, started_at, ended_at, duration_ms,
+                         exit_code, stdout, stderr, truncated, metadata)
+                    VALUES
+                        (:slug, :hook, :sha, :start, :end, :dur,
+                         :exit, :out, :err, :trunc, :meta)
+                """),
+                {
+                    "slug": slug,
+                    "hook": hook_name,
+                    "sha": script_sha256,
+                    "start": started_at,
+                    "end": ended_at,
+                    "dur": duration_ms,
+                    "exit": exit_code,
+                    "out": stdout,
+                    "err": stderr,
+                    "trunc": truncated,
+                    "meta": _json.dumps(meta) if meta else None,
+                },
+            )
+        return None  # no file path in PG mode
+
+    # SQLite mode: write log file as before
+    return _write_hook_log_file(
+        slug, hook_name, timestamp, script_sha256,
+        stdout, stderr, exit_code, timed_out,
+    )
 
 
 def run_lifecycle_hook(
@@ -204,7 +301,8 @@ def run_lifecycle_hook(
     # Compute SHA256 of the script for audit
     script_sha256 = hashlib.sha256(script_path.read_bytes()).hexdigest()
 
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    started_at = datetime.utcnow()
+    timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
     env = _scoped_env(slug, plugin_dir, env_vars_needed)
 
     stdout = ""
@@ -230,6 +328,7 @@ def run_lifecycle_hook(
 
     except subprocess.TimeoutExpired as exc:
         timed_out = True
+        ended_at = datetime.utcnow()
         # Collect any partial output
         if exc.stdout:
             stdout = exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode(errors="replace")
@@ -239,18 +338,22 @@ def run_lifecycle_hook(
             "Lifecycle hook '%s' for plugin '%s' timed out after %ds — killed",
             hook_name, slug, timeout,
         )
-        log_path = _write_hook_log(
-            slug, hook_name, timestamp, script_sha256,
-            stdout, stderr, exit_code, timed_out=True,
+        log_path = _persist_hook_run(
+            slug=slug, hook_name=hook_name, timestamp=timestamp,
+            script_sha256=script_sha256, started_at=started_at, ended_at=ended_at,
+            exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=True,
+            metadata={"timeout_seconds": timeout},
         )
         raise subprocess.TimeoutExpired(
             cmd=exc.cmd, timeout=timeout,
             output=exc.stdout, stderr=exc.stderr,
         )
 
-    log_path = _write_hook_log(
-        slug, hook_name, timestamp, script_sha256,
-        stdout, stderr, exit_code, timed_out=False,
+    ended_at = datetime.utcnow()
+    log_path = _persist_hook_run(
+        slug=slug, hook_name=hook_name, timestamp=timestamp,
+        script_sha256=script_sha256, started_at=started_at, ended_at=ended_at,
+        exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=False,
     )
 
     if exit_code != 0:
@@ -275,6 +378,6 @@ def run_lifecycle_hook(
         "exit_code": exit_code,
         "stdout": stdout,
         "stderr": stderr,
-        "log_path": str(log_path),
+        "log_path": str(log_path) if log_path is not None else None,
         "script_sha256": script_sha256,
     }
