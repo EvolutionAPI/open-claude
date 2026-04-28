@@ -226,6 +226,398 @@ def _get_db():
     return get_engine().connect()
 
 
+def _get_dialect_name() -> str:
+    """Return active dialect name ('postgresql' or 'sqlite')."""
+    from db.engine import get_engine
+    return get_engine().dialect.name
+
+
+# ---------------------------------------------------------------------------
+# PG-mode plugin contract: auto-import heartbeats/routines on install/update
+# (ADR pg-native-configs Fase 5)
+# ---------------------------------------------------------------------------
+
+def _import_plugin_heartbeats_to_db(plugin_slug: str) -> list[str]:
+    """Insert/update plugin heartbeats rows in the ``heartbeats`` table (PG mode only).
+
+    In SQLite mode this is a no-op — the dispatcher unions YAMLs at load time.
+
+    Agent names are rewritten: bare ``agent`` → ``plugin-{slug}-{agent}``
+    (mirrors _merge_plugin_heartbeats in heartbeat_schema.py lines 210-213).
+
+    enabled=False is set on INSERT (user must explicitly enable).
+    On re-import (update path), the caller must preserve existing enabled state
+    separately before calling this — this function always resets enabled=False
+    on INSERT and preserves it on UPDATE via the ``enabled_overrides`` param.
+
+    Parameters
+    ----------
+    plugin_slug:
+        The plugin slug (e.g. ``evo-essentials``).
+    enabled_overrides:
+        Map of heartbeat_id → bool.  When provided, used instead of False for
+        INSERT and applied after UPDATE for known IDs.  This is the
+        enabled-preservation mechanism for the update path.
+
+    Returns the list of heartbeat IDs written.
+    """
+    return _import_plugin_heartbeats_to_db_impl(plugin_slug, enabled_overrides=None)
+
+
+def _import_plugin_heartbeats_to_db_impl(
+    plugin_slug: str,
+    enabled_overrides: dict[str, bool] | None = None,
+) -> list[str]:
+    """Internal impl — accepts optional enabled_overrides map."""
+    if _get_dialect_name() != "postgresql":
+        return []
+
+    heartbeats_yaml = PLUGINS_DIR / plugin_slug / "heartbeats.yaml"
+    if not heartbeats_yaml.exists():
+        return []
+
+    try:
+        import yaml
+    except ImportError:
+        logger.warning("PyYAML not available; skipping plugin heartbeats import for %s", plugin_slug)
+        return []
+
+    with open(heartbeats_yaml, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    hb_list = raw.get("heartbeats", []) or []
+    if not hb_list:
+        return []
+
+    from datetime import datetime, timezone
+    import json as _json
+
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    written: list[str] = []
+    conn = _get_db()
+    try:
+        for hb in hb_list:
+            hb_id = hb.get("id")
+            if not hb_id:
+                logger.warning("Plugin %s: heartbeat without 'id', skipping", plugin_slug)
+                continue
+
+            # Rewrite agent name (mirrors heartbeat_schema._merge_plugin_heartbeats)
+            agent = hb.get("agent", "")
+            if (
+                isinstance(agent, str)
+                and agent
+                and not agent.startswith(f"plugin-{plugin_slug}-")
+                and agent != "system"
+            ):
+                agent = f"plugin-{plugin_slug}-{agent}"
+
+            wake_triggers = _json.dumps(hb.get("wake_triggers", []) or [])
+            required_secrets = _json.dumps(hb.get("required_secrets", []) or [])
+
+            existing = conn.execute(
+                text("SELECT id, enabled FROM heartbeats WHERE id = :id AND source_plugin = :sp"),
+                {"id": hb_id, "sp": plugin_slug},
+            ).fetchone()
+
+            now = _now()
+            if existing:
+                # UPDATE — preserve enabled state (do NOT update enabled)
+                conn.execute(
+                    text("""
+                        UPDATE heartbeats SET
+                            agent = :agent,
+                            interval_seconds = :ivs,
+                            max_turns = :mt,
+                            timeout_seconds = :ts,
+                            lock_timeout_seconds = :lts,
+                            wake_triggers = :wt,
+                            goal_id = :gid,
+                            required_secrets = :rs,
+                            decision_prompt = :dp,
+                            source_plugin = :sp,
+                            updated_at = :uat
+                        WHERE id = :id
+                    """),
+                    {
+                        "agent": agent,
+                        "ivs": hb.get("interval_seconds", 3600),
+                        "mt": hb.get("max_turns", 10),
+                        "ts": hb.get("timeout_seconds", 600),
+                        "lts": hb.get("lock_timeout_seconds", 1800),
+                        "wt": wake_triggers,
+                        "gid": hb.get("goal_id"),
+                        "rs": required_secrets,
+                        "dp": hb.get("decision_prompt", ""),
+                        "sp": plugin_slug,
+                        "uat": now,
+                        "id": hb_id,
+                    },
+                )
+            else:
+                # INSERT — enabled=False by default (user must explicitly enable)
+                enabled_val = False
+                if enabled_overrides and hb_id in enabled_overrides:
+                    enabled_val = enabled_overrides[hb_id]
+                conn.execute(
+                    text("""
+                        INSERT INTO heartbeats
+                            (id, agent, interval_seconds, max_turns, timeout_seconds,
+                             lock_timeout_seconds, wake_triggers, enabled, goal_id,
+                             required_secrets, decision_prompt, source_plugin,
+                             created_at, updated_at)
+                        VALUES
+                            (:id, :agent, :ivs, :mt, :ts, :lts, :wt, :en, :gid,
+                             :rs, :dp, :sp, :cat, :uat)
+                    """),
+                    {
+                        "id": hb_id,
+                        "agent": agent,
+                        "ivs": hb.get("interval_seconds", 3600),
+                        "mt": hb.get("max_turns", 10),
+                        "ts": hb.get("timeout_seconds", 600),
+                        "lts": hb.get("lock_timeout_seconds", 1800),
+                        "wt": wake_triggers,
+                        "en": enabled_val,
+                        "gid": hb.get("goal_id"),
+                        "rs": required_secrets,
+                        "dp": hb.get("decision_prompt", ""),
+                        "sp": plugin_slug,
+                        "cat": now,
+                        "uat": now,
+                    },
+                )
+            written.append(hb_id)
+
+        conn.commit()
+        logger.info(
+            "Plugin %s: imported %d heartbeat(s) to DB (PG mode)", plugin_slug, len(written)
+        )
+    except Exception as exc:
+        logger.error("Plugin %s: heartbeats import failed: %s", plugin_slug, exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+    return written
+
+
+def _delete_plugin_heartbeats_from_db(plugin_slug: str) -> list[str]:
+    """Delete heartbeat rows owned by plugin_slug (PG mode only).
+
+    Returns the list of deleted heartbeat IDs (for audit payload).
+    """
+    if _get_dialect_name() != "postgresql":
+        return []
+
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            text("SELECT id FROM heartbeats WHERE source_plugin = :sp"),
+            {"sp": plugin_slug},
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if ids:
+            conn.execute(
+                text("DELETE FROM heartbeats WHERE source_plugin = :sp"),
+                {"sp": plugin_slug},
+            )
+            conn.commit()
+            logger.info(
+                "Plugin %s: deleted %d heartbeat row(s) from DB (PG mode)",
+                plugin_slug, len(ids),
+            )
+        return ids
+    except Exception as exc:
+        logger.error("Plugin %s: heartbeats delete failed: %s", plugin_slug, exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def _import_plugin_routines_to_db(plugin_slug: str) -> list[str]:
+    """Import plugin routines into ``routine_definitions`` (PG mode only).
+
+    Uses routine_store.upsert_routine with source_plugin=plugin_slug.
+    In SQLite mode this is a no-op — the scheduler reads YAMLs at load time.
+
+    Returns the list of routine slugs written.
+    """
+    return _import_plugin_routines_to_db_impl(plugin_slug, enabled_overrides=None)
+
+
+def _import_plugin_routines_to_db_impl(
+    plugin_slug: str,
+    enabled_overrides: dict[str, bool] | None = None,
+) -> list[str]:
+    """Internal impl — accepts optional enabled_overrides map for update path."""
+    if _get_dialect_name() != "postgresql":
+        return []
+
+    routines_yaml = PLUGINS_DIR / plugin_slug / "routines.yaml"
+    if not routines_yaml.exists():
+        return []
+
+    try:
+        import sys as _sys
+        backend_dir = Path(__file__).resolve().parent
+        if str(backend_dir) not in _sys.path:
+            _sys.path.insert(0, str(backend_dir))
+        from routine_store import upsert_routine
+        import re as _re
+        import yaml
+    except ImportError as exc:
+        logger.warning(
+            "Import error for plugin routines import (%s): %s", plugin_slug, exc
+        )
+        return []
+
+    with open(routines_yaml, encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    def _routine_slug(name: str) -> str:
+        return _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+    written: list[str] = []
+    for frequency in ("daily", "weekly", "monthly"):
+        for r in config.get(frequency, []) or []:
+            script = r.get("script", "")
+            name = r.get("name", script)
+            slug = _routine_slug(name)
+
+            cfg: dict = {}
+            for field in ("time", "interval", "day", "days", "args"):
+                if field in r:
+                    cfg[field] = r[field]
+
+            # enabled default: False for plugins (user must enable)
+            enabled_val = False
+            if enabled_overrides and slug in enabled_overrides:
+                enabled_val = enabled_overrides[slug]
+
+            try:
+                upsert_routine(
+                    slug=slug,
+                    name=name,
+                    script=script,
+                    frequency=frequency,
+                    config_json=cfg,
+                    agent=r.get("agent"),
+                    enabled=enabled_val,
+                    goal_id=None,
+                    source_plugin=plugin_slug,
+                )
+                written.append(slug)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin %s: failed to upsert routine '%s': %s", plugin_slug, slug, exc
+                )
+
+    logger.info(
+        "Plugin %s: imported %d routine(s) to DB (PG mode)", plugin_slug, len(written)
+    )
+    return written
+
+
+def _delete_plugin_routines_from_db(plugin_slug: str) -> list[str]:
+    """Delete routine_definitions rows owned by plugin_slug (PG mode only).
+
+    Returns the list of deleted routine slugs (for audit payload).
+    """
+    if _get_dialect_name() != "postgresql":
+        return []
+
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            text("SELECT slug FROM routine_definitions WHERE source_plugin = :sp"),
+            {"sp": plugin_slug},
+        ).fetchall()
+        slugs = [r[0] for r in rows]
+        if slugs:
+            conn.execute(
+                text("DELETE FROM routine_definitions WHERE source_plugin = :sp"),
+                {"sp": plugin_slug},
+            )
+            conn.commit()
+            logger.info(
+                "Plugin %s: deleted %d routine row(s) from DB (PG mode)",
+                plugin_slug, len(slugs),
+            )
+        return slugs
+    except Exception as exc:
+        logger.error("Plugin %s: routines delete failed: %s", plugin_slug, exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def _reimport_plugin_configs_preserving_enabled(plugin_slug: str) -> dict:
+    """Re-import plugin heartbeats+routines for the update path (PG mode only).
+
+    Captures existing enabled state → DELETE → INSERT with preserved enabled.
+    This ensures a plugin update does not reset user-modified enabled flags.
+
+    Returns a dict with keys 'heartbeats' and 'routines' listing written IDs.
+    """
+    if _get_dialect_name() != "postgresql":
+        return {"heartbeats": [], "routines": []}
+
+    conn = _get_db()
+    try:
+        # Capture existing enabled state before DELETE
+        hb_rows = conn.execute(
+            text("SELECT id, enabled FROM heartbeats WHERE source_plugin = :sp"),
+            {"sp": plugin_slug},
+        ).fetchall()
+        hb_enabled_map: dict[str, bool] = {r[0]: bool(r[1]) for r in hb_rows}
+
+        rt_rows = conn.execute(
+            text("SELECT slug, enabled FROM routine_definitions WHERE source_plugin = :sp"),
+            {"sp": plugin_slug},
+        ).fetchall()
+        rt_enabled_map: dict[str, bool] = {r[0]: bool(r[1]) for r in rt_rows}
+
+        # DELETE existing plugin rows
+        conn.execute(
+            text("DELETE FROM heartbeats WHERE source_plugin = :sp"), {"sp": plugin_slug}
+        )
+        conn.execute(
+            text("DELETE FROM routine_definitions WHERE source_plugin = :sp"), {"sp": plugin_slug}
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.error(
+            "Plugin %s: failed to capture/delete configs for update: %s", plugin_slug, exc
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+    # Re-import with preserved enabled state
+    written_hbs = _import_plugin_heartbeats_to_db_impl(plugin_slug, enabled_overrides=hb_enabled_map)
+    written_rts = _import_plugin_routines_to_db_impl(plugin_slug, enabled_overrides=rt_enabled_map)
+    return {"heartbeats": written_hbs, "routines": written_rts}
+
+
 class PluginInstaller:
     """Validates a plugin directory and previews what would be installed."""
 
