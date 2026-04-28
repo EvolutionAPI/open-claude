@@ -21,6 +21,8 @@ from flask import Blueprint, jsonify, redirect, request, session
 from flask_login import login_required
 
 from routes._helpers import WORKSPACE
+from config_store import get_dialect
+import provider_store as _pstore
 
 bp = Blueprint("providers", __name__)
 
@@ -176,7 +178,7 @@ def _save_codex_auth(tokens: dict):
 @login_required
 def list_providers():
     """List all providers with status info."""
-    config = _read_config()
+    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
     active = config.get("active_provider", "anthropic")
     providers = config.get("providers", {})
 
@@ -237,7 +239,7 @@ def list_providers():
 @login_required
 def get_active_provider():
     """Get the active provider."""
-    config = _read_config()
+    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
     active = config.get("active_provider", "anthropic")
     provider = config.get("providers", {}).get(active, {})
     return jsonify({
@@ -256,6 +258,13 @@ def set_active_provider():
     if provider_id is None:
         return jsonify({"error": "provider_id is required"}), 400
 
+    if get_dialect() == "postgresql":
+        try:
+            _pstore.set_active_provider(provider_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"status": "ok", "active_provider": provider_id})
+
     config = _read_config()
     # Allow "none" to disable all providers
     if provider_id != "none" and provider_id not in config.get("providers", {}):
@@ -271,7 +280,7 @@ def set_active_provider():
 @login_required
 def get_provider_config(provider_id):
     """Get a provider's config (env vars masked)."""
-    config = _read_config()
+    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
     provider = config.get("providers", {}).get(provider_id)
     if not provider:
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
@@ -299,26 +308,33 @@ def update_provider_config(provider_id):
     data = request.get_json(silent=True) or {}
     new_env_vars = data.get("env_vars", {})
 
-    config = _read_config()
+    # Build sanitised dict: allowlisted, not masked, no shell metacharacters.
+    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
     provider = config.get("providers", {}).get(provider_id)
     if not provider:
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
-    # Merge: only update allowlisted vars that are provided and not masked
     existing = provider.get("env_vars", {})
+    safe_updates: dict = {}
     for key, value in new_env_vars.items():
         if key not in ALLOWED_ENV_VARS:
             continue
         if key not in existing:
             continue
-        # Skip if value looks masked (contains ****)
         if "****" in str(value):
             continue
-        # Reject values with shell metacharacters
         if not isinstance(value, str) or re.search(r'[;&|`$\n\r]', value):
             continue
-        existing[key] = value
+        safe_updates[key] = value
 
+    if get_dialect() == "postgresql":
+        try:
+            _pstore.update_provider_config(provider_id, safe_updates)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"status": "ok", "provider_id": provider_id})
+
+    existing.update(safe_updates)
     provider["env_vars"] = existing
     _write_config(config)
 
@@ -425,12 +441,17 @@ def openai_auth_complete():
 
     _save_codex_auth(resp.json())
 
-    config = _read_config()
-    # Use dedicated codex_auth provider key when OAuth is used (falls back to
-    # openai for backward compatibility if codex_auth is not configured).
+    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
     providers = config.get("providers", {})
-    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
-    _write_config(config)
+    new_active = "codex_auth" if "codex_auth" in providers else "openai"
+    if get_dialect() == "postgresql":
+        try:
+            _pstore.set_active_provider(new_active)
+        except ValueError:
+            _pstore.set_active_provider("openai")
+    else:
+        config["active_provider"] = new_active
+        _write_config(config)
 
     return jsonify({"status": "ok", "message": "Autenticado com sucesso!"})
 
@@ -496,10 +517,17 @@ def openai_device_poll():
 
     _save_codex_auth(token_resp.json())
 
-    config = _read_config()
+    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
     providers = config.get("providers", {})
-    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
-    _write_config(config)
+    new_active = "codex_auth" if "codex_auth" in providers else "openai"
+    if get_dialect() == "postgresql":
+        try:
+            _pstore.set_active_provider(new_active)
+        except ValueError:
+            _pstore.set_active_provider("openai")
+    else:
+        config["active_provider"] = new_active
+        _write_config(config)
 
     session.pop("openai_device_auth_id", None)
     session.pop("openai_device_user_code", None)
@@ -684,7 +712,13 @@ def openai_logout():
     """Remove Codex auth.json and reset provider."""
     if CODEX_AUTH_FILE.is_file():
         CODEX_AUTH_FILE.unlink()
-    config = _read_config()
-    config["active_provider"] = "anthropic"
-    _write_config(config)
+    if get_dialect() == "postgresql":
+        try:
+            _pstore.set_active_provider("anthropic")
+        except ValueError:
+            pass
+    else:
+        config = _read_config()
+        config["active_provider"] = "anthropic"
+        _write_config(config)
     return jsonify({"status": "ok"})

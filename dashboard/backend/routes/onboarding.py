@@ -7,6 +7,8 @@ from flask_login import login_required, current_user
 from models import db, User, BrainRepoConfig
 
 from routes.providers import _read_config, _write_config, ALLOWED_ENV_VARS
+from config_store import get_dialect
+import provider_store as _pstore
 
 bp = Blueprint("onboarding", __name__)
 
@@ -135,8 +137,14 @@ def set_provider():
     # codex_auth provider is already configured, just mark it active.
     if provider in ("codex", "codex_auth"):
         if "codex_auth" in providers:
-            config["active_provider"] = "codex_auth"
-            _write_config(config)
+            if get_dialect() == "postgresql":
+                try:
+                    _pstore.set_active_provider("codex_auth")
+                except ValueError:
+                    pass
+            else:
+                config["active_provider"] = "codex_auth"
+                _write_config(config)
             return jsonify({
                 "ok": True,
                 "provider": "codex_auth",
@@ -159,8 +167,14 @@ def set_provider():
     # Anthropic: no env vars, no API key — user is expected to run `claude`
     # login from a terminal. Just flip active_provider.
     if provider == "anthropic":
-        config["active_provider"] = "anthropic"
-        _write_config(config)
+        if get_dialect() == "postgresql":
+            try:
+                _pstore.set_active_provider("anthropic")
+            except ValueError:
+                pass
+        else:
+            config["active_provider"] = "anthropic"
+            _write_config(config)
         return jsonify({
             "ok": True,
             "provider": "anthropic",
@@ -169,13 +183,24 @@ def set_provider():
 
     # OpenAI / OpenRouter: merge filtered env_vars into the provider block.
     incoming_env = _filter_env_vars(data.get("env_vars") or {})
-    existing_env = providers[provider].get("env_vars", {}) or {}
-    merged = dict(existing_env)
-    for k, v in incoming_env.items():
-        merged[k] = v
-    providers[provider]["env_vars"] = merged
-    config["active_provider"] = provider
-    _write_config(config)
+    if get_dialect() == "postgresql":
+        if incoming_env:
+            try:
+                _pstore.update_provider_config(provider, incoming_env)
+            except ValueError:
+                pass
+        try:
+            _pstore.set_active_provider(provider)
+        except ValueError:
+            abort(400, description=f"unknown provider: {provider}")
+    else:
+        existing_env = providers[provider].get("env_vars", {}) or {}
+        merged = dict(existing_env)
+        for k, v in incoming_env.items():
+            merged[k] = v
+        providers[provider]["env_vars"] = merged
+        config["active_provider"] = provider
+        _write_config(config)
 
     return jsonify({
         "ok": True,
