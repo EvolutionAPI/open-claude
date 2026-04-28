@@ -61,6 +61,8 @@ dashboard/backend/*.db-wal
 dashboard/frontend/node_modules/
 dashboard/terminal-server/node_modules/
 dashboard/frontend/dist/
+dashboard/packages/ui/dist/
+dashboard/packages/*/node_modules/
 
 # ── Evo Method (separate project) ────────
 _evo/
