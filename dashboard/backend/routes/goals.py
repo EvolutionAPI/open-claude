@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
 from flask_login import current_user
+from sqlalchemy import text
 from models import db, Mission, GoalProject, Goal, GoalTask, has_permission, audit
 
 bp = Blueprint("goals", __name__)
@@ -24,10 +24,6 @@ def _require(action: str, resource: str = "goals"):
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-def _db_path() -> str:
-    return str(WORKSPACE / "dashboard" / "data" / "evonexus.db")
 
 
 # --------------- Missions ---------------
@@ -297,11 +293,10 @@ def recalculate_goal(goal_id: int):
         return denied
     g = Goal.query.get_or_404(goal_id)
 
-    conn = sqlite3.connect(_db_path())
-    row = conn.execute(
-        "SELECT done_tasks, pct_complete FROM goal_progress_v WHERE goal_id = ?", (goal_id,)
+    row = db.session.execute(
+        text("SELECT done_tasks, pct_complete FROM goal_progress_v WHERE goal_id = :gid"),
+        {"gid": goal_id},
     ).fetchone()
-    conn.close()
 
     if row:
         g.current_value = float(row[0])
@@ -408,11 +403,10 @@ def delete_goal_task(task_id: int):
 
 def _recalculate_goal_value(goal_id: int):
     """Internal helper: sync goal.current_value with done tasks count."""
-    conn = sqlite3.connect(_db_path())
-    row = conn.execute(
-        "SELECT done_tasks FROM goal_progress_v WHERE goal_id = ?", (goal_id,)
+    row = db.session.execute(
+        text("SELECT done_tasks FROM goal_progress_v WHERE goal_id = :gid"),
+        {"gid": goal_id},
     ).fetchone()
-    conn.close()
 
     if row is None:
         return

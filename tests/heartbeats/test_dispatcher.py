@@ -100,9 +100,9 @@ def test_dispatch_allows_dispatch(tmp_db):
         dispatched_runs.append(kwargs)
 
     def _make_conn():
-        c = sqlite3.connect(str(tmp_db), check_same_thread=False)
-        c.row_factory = sqlite3.Row
-        return c
+        from sqlalchemy import create_engine
+        engine = create_engine(f"sqlite:///{tmp_db}", connect_args={"check_same_thread": False})
+        return engine.connect()
 
     with patch.object(dispatcher, "_get_db", _make_conn):
         with patch.object(dispatcher._executor, "submit", return_value=None):
@@ -121,10 +121,10 @@ def _now_iso():
 
 
 def _row_conn(db_path):
-    """Open a SQLite connection with Row factory (matches production _get_db)."""
-    c = sqlite3.connect(str(db_path), check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    return c
+    """Return a SQLAlchemy Connection backed by the given SQLite file (matches production _get_db)."""
+    from sqlalchemy import create_engine
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    return engine.connect()
 
 
 def test_debounce_coalesces_triggers(tmp_db):

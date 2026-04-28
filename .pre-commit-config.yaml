@@ -1,0 +1,44 @@
+repos:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Guard 1 — forbid raw sqlite3.connect() / import sqlite3 outside allowlist
+  # ──────────────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: no-raw-sqlite3
+        name: "Guard 1 — forbid raw sqlite3 outside allowlist"
+        language: system
+        entry: bash -c '
+          ALLOWLIST="dashboard/backend/db/|dashboard/alembic/env.py|dashboard/backend/knowledge/|tests/fixtures/";
+          VIOLATIONS=$(grep -rn "sqlite3\.connect\|^import sqlite3" dashboard/backend/
+            --include="*.py"
+            | grep -v __pycache__
+            | grep -vE "$ALLOWLIST"
+            | grep -vE "# noqa.*allowlisted"
+            | grep -v "\"\"\"" || true);
+          if [ -n "$VIOLATIONS" ]; then
+            echo "Forbidden raw sqlite3 usage outside the allowlist:";
+            echo "$VIOLATIONS";
+            exit 1;
+          fi'
+        pass_filenames: false
+        types: [python]
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Guard 2 — forbid raw UPDATE goal_tasks outside allowlist
+  # ──────────────────────────────────────────────────────────────────────────
+      - id: no-raw-update-goal-tasks
+        name: "Guard 2 — forbid raw UPDATE goal_tasks outside allowlist"
+        language: system
+        entry: bash -c '
+          ALLOWLIST="dashboard/alembic/versions/|dashboard/cli/evonexus_migrate\.py|tests/";
+          VIOLATIONS=$(grep -rEn "UPDATE\s+goal_tasks|text\(['"'"'\"'"'"'].*UPDATE.*goal_tasks" dashboard/
+            --include="*.py"
+            | grep -v __pycache__
+            | grep -vE "$ALLOWLIST" || true);
+          if [ -n "$VIOLATIONS" ]; then
+            echo "Forbidden raw UPDATE goal_tasks outside the allowlist:";
+            echo "$VIOLATIONS";
+            exit 1;
+          fi'
+        pass_filenames: false
+        types: [python]

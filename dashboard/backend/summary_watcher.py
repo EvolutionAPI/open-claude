@@ -1,27 +1,19 @@
-"""Summary Watcher — thread-areas heartbeat safety net (Passo 4c).
+"""Summary Watcher — background heartbeat (system heartbeat) that monitors ticket
+thread JSONL files and enqueues summary jobs when enough new turns accumulate.
 
-Invoked by the heartbeat runner for 'summary-watcher'. This is NOT a Claude
-session — it runs directly as a Python script. It:
-
-1. Queries active thread tickets (memory_md_path IS NOT NULL, status != 'archived')
-2. For each: counts JSONL lines (streaming) to get actual message_count
-3. Pre-filters by mtime to skip unchanged JSONLs (avoids O(N) scan on idle threads)
-4. If actual count != DB message_count: updates message_count (monotonic)
-5. If delta since last_summary_at_message >= SUMMARY_EVERY_N: enqueues summary job
-
-ADR reference: [C]architecture-summary-trigger.md — Option B (safety net component
-of the chosen Option E hybrid D+B approach).
+Invoked as a system heartbeat (agent=system, heartbeat_id=summary-watcher).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from sqlalchemy import text
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
 LOGS_DIR = WORKSPACE / "ADWs" / "logs" / "chat"
@@ -75,88 +67,83 @@ def _enqueue_summary(ticket_id: str, memory_md_path: str, up_to_turn: int) -> No
 
 def run_watcher() -> dict:
     """Main logic — returns stats dict."""
-    db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
-    if not db_path.exists():
-        return {"error": f"DB not found: {db_path}"}
+    from db.session import get_session
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
     stats = {"checked": 0, "updated": 0, "queued": 0, "skipped": 0}
 
     try:
-        rows = conn.execute(
-            "SELECT id, assignee_agent, thread_session_id, memory_md_path, "
-            "message_count, last_summary_at_message "
-            "FROM tickets "
-            "WHERE memory_md_path IS NOT NULL AND status != 'archived'"
-        ).fetchall()
+        with get_session() as session:
+            rows = session.execute(text(
+                "SELECT id, assignee_agent, thread_session_id, memory_md_path, "
+                "message_count, last_summary_at_message "
+                "FROM tickets "
+                "WHERE memory_md_path IS NOT NULL AND status != 'archived'"
+            )).fetchall()
 
-        now = _now_iso()
+            now = _now_iso()
 
-        for row in rows:
-            ticket_id = row["id"]
-            session_id = row["thread_session_id"]
-            agent_name = row["assignee_agent"]
-            memory_md_path = row["memory_md_path"]
-            db_count = row["message_count"]
-            last_summary = row["last_summary_at_message"]
+            for row in rows:
+                ticket_id = row.id
+                session_id = row.thread_session_id
+                agent_name = row.assignee_agent
+                memory_md_path = row.memory_md_path
+                db_count = row.message_count
+                last_summary = row.last_summary_at_message
 
-            stats["checked"] += 1
+                stats["checked"] += 1
 
-            if not session_id:
-                stats["skipped"] += 1
-                continue  # No session yet — nothing to count
+                if not session_id:
+                    stats["skipped"] += 1
+                    continue  # No session yet — nothing to count
 
-            jsonl = _find_jsonl(session_id, agent_name)
-            if jsonl is None:
-                stats["skipped"] += 1
-                continue
-
-            # mtime pre-filter: skip if file hasn't changed since DB was last updated
-            # We use last_summary_at_message as a rough proxy — if mtime older than
-            # 61s ago (heartbeat period), the file was likely already processed.
-            try:
-                mtime = jsonl.stat().st_mtime
-                import time
-                if time.time() - mtime > 70:  # heartbeat is 60s; 10s buffer
+                jsonl = _find_jsonl(session_id, agent_name)
+                if jsonl is None:
                     stats["skipped"] += 1
                     continue
-            except OSError:
-                stats["skipped"] += 1
-                continue
 
-            actual_count = _count_lines(jsonl)
-            if actual_count == db_count:
-                stats["skipped"] += 1
-                continue
+                # mtime pre-filter: skip if file hasn't changed recently
+                try:
+                    mtime = jsonl.stat().st_mtime
+                    import time
+                    if time.time() - mtime > 70:  # heartbeat is 60s; 10s buffer
+                        stats["skipped"] += 1
+                        continue
+                except OSError:
+                    stats["skipped"] += 1
+                    continue
 
-            # Update message_count monotonically
-            if actual_count > db_count:
-                conn.execute(
-                    "UPDATE tickets SET message_count = ?, updated_at = ? "
-                    "WHERE id = ? AND message_count < ?",
-                    (actual_count, now, ticket_id, actual_count),
-                )
-                conn.commit()
-                stats["updated"] += 1
-                new_count = actual_count
-            else:
-                new_count = db_count  # actual < db: trust DB (rewind scenario)
+                actual_count = _count_lines(jsonl)
+                if actual_count == db_count:
+                    stats["skipped"] += 1
+                    continue
 
-            delta = new_count - last_summary
-            if delta >= SUMMARY_EVERY_N:
-                updated = conn.execute(
-                    "UPDATE tickets SET last_summary_at_message = ?, updated_at = ? "
-                    "WHERE id = ? AND last_summary_at_message < ?",
-                    (new_count, now, ticket_id, new_count),
-                )
-                conn.commit()
-                if updated.rowcount > 0:
-                    _enqueue_summary(ticket_id, memory_md_path, new_count)
-                    stats["queued"] += 1
+                # Update message_count monotonically
+                if actual_count > db_count:
+                    session.execute(
+                        text("UPDATE tickets SET message_count = :mc, updated_at = :now "
+                             "WHERE id = :id AND message_count < :mc"),
+                        {"mc": actual_count, "now": now, "id": ticket_id},
+                    )
+                    session.commit()
+                    stats["updated"] += 1
+                    new_count = actual_count
+                else:
+                    new_count = db_count  # actual < db: trust DB (rewind scenario)
 
-    finally:
-        conn.close()
+                delta = new_count - last_summary
+                if delta >= SUMMARY_EVERY_N:
+                    result = session.execute(
+                        text("UPDATE tickets SET last_summary_at_message = :mc, updated_at = :now "
+                             "WHERE id = :id AND last_summary_at_message < :mc"),
+                        {"mc": new_count, "now": now, "id": ticket_id},
+                    )
+                    session.commit()
+                    if result.rowcount > 0:
+                        _enqueue_summary(ticket_id, memory_md_path, new_count)
+                        stats["queued"] += 1
+
+    except Exception as exc:
+        return {"error": str(exc)}
 
     return stats
 

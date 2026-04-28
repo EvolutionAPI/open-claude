@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import schedule
+from sqlalchemy import text
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 
@@ -35,14 +36,9 @@ def _now_iso() -> str:
 
 
 def _get_db():
-    import sqlite3
-    from pathlib import Path as _Path
-    db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
-    conn = sqlite3.connect(str(db_path), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    """Return a SQLAlchemy Connection (replaces raw sqlite3.connect)."""
+    from db.engine import get_engine
+    return get_engine().connect()
 
 
 def _is_debounced(heartbeat_id: str) -> tuple[bool, str | None]:
@@ -56,14 +52,14 @@ def _is_debounced(heartbeat_id: str) -> tuple[bool, str | None]:
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
         row = conn.execute(
-            """SELECT id FROM heartbeat_triggers
-               WHERE heartbeat_id = ? AND created_at > ? AND consumed_at IS NULL
+            text("""SELECT id FROM heartbeat_triggers
+               WHERE heartbeat_id = :hbid AND created_at > :cutoff AND consumed_at IS NULL
                AND coalesced_into IS NULL
-               ORDER BY created_at DESC LIMIT 1""",
-            (heartbeat_id, cutoff),
+               ORDER BY created_at DESC LIMIT 1"""),
+            {"hbid": heartbeat_id, "cutoff": cutoff},
         ).fetchone()
         if row:
-            return True, row["id"]
+            return True, row.id
         return False, None
     finally:
         conn.close()
@@ -76,10 +72,11 @@ def _record_trigger(heartbeat_id: str, trigger_type: str, payload: dict | None =
     conn = _get_db()
     try:
         conn.execute(
-            """INSERT INTO heartbeat_triggers
+            text("""INSERT INTO heartbeat_triggers
                (id, heartbeat_id, trigger_type, payload, created_at, coalesced_into)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (trigger_id, heartbeat_id, trigger_type, json.dumps(payload or {}), now, coalesced_into),
+               VALUES (:id, :hbid, :ttype, :payload, :now, :cinto)"""),
+            {"id": trigger_id, "hbid": heartbeat_id, "ttype": trigger_type,
+             "payload": json.dumps(payload or {}), "now": now, "cinto": coalesced_into},
         )
         conn.commit()
         return trigger_id
@@ -92,8 +89,8 @@ def _mark_trigger_consumed(trigger_id: str):
     conn = _get_db()
     try:
         conn.execute(
-            "UPDATE heartbeat_triggers SET consumed_at = ? WHERE id = ?",
-            (_now_iso(), trigger_id),
+            text("UPDATE heartbeat_triggers SET consumed_at = :now WHERE id = :id"),
+            {"now": _now_iso(), "id": trigger_id},
         )
         conn.commit()
     finally:
@@ -109,8 +106,11 @@ def dispatch(heartbeat_id: str, trigger_type: str, payload: dict | None = None) 
     # Check if heartbeat is enabled in DB
     conn = _get_db()
     try:
-        row = conn.execute("SELECT enabled FROM heartbeats WHERE id = ?", (heartbeat_id,)).fetchone()
-        if not row or not row["enabled"]:
+        row = conn.execute(
+            text("SELECT enabled FROM heartbeats WHERE id = :id"),
+            {"id": heartbeat_id},
+        ).fetchone()
+        if not row or not row.enabled:
             print(f"[dispatcher] heartbeat {heartbeat_id} is disabled, skipping", flush=True)
             return False, None
     finally:
@@ -154,8 +154,8 @@ def _load_enabled_heartbeats() -> list[dict]:
     """Load all heartbeats from DB (synced from YAML at startup)."""
     conn = _get_db()
     try:
-        rows = conn.execute("SELECT * FROM heartbeats").fetchall()
-        return [dict(r) for r in rows]
+        rows = conn.execute(text("SELECT * FROM heartbeats")).fetchall()
+        return [dict(r._mapping) for r in rows]
     finally:
         conn.close()
 
@@ -182,41 +182,46 @@ def _sync_heartbeats_to_db():
     try:
         for hb in cfg.heartbeats:
             existing = conn.execute(
-                "SELECT id FROM heartbeats WHERE id = ?", (hb.id,)
+                text("SELECT id FROM heartbeats WHERE id = :id"),
+                {"id": hb.id},
             ).fetchone()
             if not existing:
                 conn.execute(
-                    """INSERT INTO heartbeats
+                    text("""INSERT INTO heartbeats
                        (id, agent, interval_seconds, max_turns, timeout_seconds,
                         lock_timeout_seconds, wake_triggers, enabled, goal_id,
                         required_secrets, decision_prompt, source_plugin,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        hb.id, hb.agent, hb.interval_seconds, hb.max_turns,
-                        hb.timeout_seconds, hb.lock_timeout_seconds,
-                        json.dumps(hb.wake_triggers), int(hb.enabled), hb.goal_id,
-                        json.dumps(hb.required_secrets), hb.decision_prompt,
-                        hb.source_plugin,
-                        now, now,
-                    ),
+                       VALUES (:id, :agent, :ivs, :mt, :ts, :lts, :wt, :en, :gid,
+                               :rs, :dp, :sp, :cat, :uat)"""),
+                    {
+                        "id": hb.id, "agent": hb.agent, "ivs": hb.interval_seconds,
+                        "mt": hb.max_turns, "ts": hb.timeout_seconds,
+                        "lts": hb.lock_timeout_seconds,
+                        "wt": json.dumps(hb.wake_triggers), "en": int(hb.enabled),
+                        "gid": hb.goal_id, "rs": json.dumps(hb.required_secrets),
+                        "dp": hb.decision_prompt, "sp": hb.source_plugin,
+                        "cat": now, "uat": now,
+                    },
                 )
             else:
                 # Update mutable fields but preserve enabled state set via UI
                 conn.execute(
-                    """UPDATE heartbeats SET
-                       agent=?, interval_seconds=?, max_turns=?, timeout_seconds=?,
-                       lock_timeout_seconds=?, wake_triggers=?, goal_id=?,
-                       required_secrets=?, decision_prompt=?, source_plugin=?,
-                       updated_at=?
-                       WHERE id=?""",
-                    (
-                        hb.agent, hb.interval_seconds, hb.max_turns, hb.timeout_seconds,
-                        hb.lock_timeout_seconds, json.dumps(hb.wake_triggers), hb.goal_id,
-                        json.dumps(hb.required_secrets), hb.decision_prompt,
-                        hb.source_plugin, now,
-                        hb.id,
-                    ),
+                    text("""UPDATE heartbeats SET
+                       agent=:agent, interval_seconds=:ivs, max_turns=:mt,
+                       timeout_seconds=:ts, lock_timeout_seconds=:lts,
+                       wake_triggers=:wt, goal_id=:gid,
+                       required_secrets=:rs, decision_prompt=:dp,
+                       source_plugin=:sp, updated_at=:uat
+                       WHERE id=:id"""),
+                    {
+                        "agent": hb.agent, "ivs": hb.interval_seconds, "mt": hb.max_turns,
+                        "ts": hb.timeout_seconds, "lts": hb.lock_timeout_seconds,
+                        "wt": json.dumps(hb.wake_triggers), "gid": hb.goal_id,
+                        "rs": json.dumps(hb.required_secrets), "dp": hb.decision_prompt,
+                        "sp": hb.source_plugin, "uat": now,
+                        "id": hb.id,
+                    },
                 )
         conn.commit()
         print(f"[dispatcher] synced {len(cfg.heartbeats)} heartbeats from YAML to DB", flush=True)

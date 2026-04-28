@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import sqlite3
+import sqlite3  # noqa — allowlisted: plugin DDL engine uses sqlite3 Connection API for transactional SQL execution
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -193,12 +193,15 @@ def run_sql_transactional(
 # Public API: install / uninstall
 # ---------------------------------------------------------------------------
 
-def _get_db() -> sqlite3.Connection:
-    db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+def _get_db():
+    """Return a SQLAlchemy Connection (replaces raw sqlite3.connect).
+
+    Note: install_plugin_sql / uninstall_plugin_sql pass this to
+    run_sql_transactional which executes plugin-shipped SQLite DDL; that
+    function and its callers are allowlisted for sqlite3 use.
+    """
+    from db.engine import get_engine
+    return get_engine().connect()
 
 
 def install_plugin_sql(

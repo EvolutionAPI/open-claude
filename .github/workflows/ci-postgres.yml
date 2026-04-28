@@ -1,0 +1,147 @@
+name: CI — Postgres compatibility matrix
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "dashboard/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci-postgres.yml"
+  push:
+    branches: [develop, main]
+    paths:
+      - "dashboard/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci-postgres.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Guard 1 — forbid raw sqlite3.connect() outside the allowlist
+  # Guard 2 — forbid raw UPDATE goal_tasks outside the allowlist
+  # ──────────────────────────────────────────────────────────────────────────
+  grep-guards:
+    name: Grep guards (raw sqlite3 + UPDATE goal_tasks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guard 1 — Forbid raw sqlite3 in dashboard scope (outside allowlist)
+        run: |
+          ALLOWLIST="dashboard/backend/db/|dashboard/alembic/env.py|dashboard/backend/knowledge/|tests/fixtures/"
+          VIOLATIONS=$(grep -rn "sqlite3\.connect\|^import sqlite3" dashboard/backend/ \
+                       --include="*.py" \
+                       | grep -v __pycache__ \
+                       | grep -vE "$ALLOWLIST" \
+                       | grep -vE "# noqa.*allowlisted" \
+                       | grep -v '"""' \
+                       || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Forbidden raw sqlite3 usage outside the allowlist:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "Guard 1 passed — no raw sqlite3 outside allowlist."
+
+      - name: Guard 2 — Forbid raw UPDATE goal_tasks outside allowlist
+        run: |
+          ALLOWLIST="dashboard/alembic/versions/|dashboard/cli/evonexus_migrate\.py|tests/"
+          VIOLATIONS=$(grep -rEn "UPDATE\s+goal_tasks|text\(['\"].*UPDATE.*goal_tasks" dashboard/ \
+                       --include="*.py" \
+                       | grep -v __pycache__ \
+                       | grep -vE "$ALLOWLIST" \
+                       || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Forbidden raw UPDATE goal_tasks outside the allowlist:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "Guard 2 passed — no raw UPDATE goal_tasks outside allowlist."
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SQLite backend — always runs, must match existing test suite behaviour
+  # ──────────────────────────────────────────────────────────────────────────
+  backend-sqlite:
+    name: Backend tests (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: grep-guards
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync Python dependencies
+        run: uv sync --frozen --dev
+
+      - name: Run backend tests (SQLite)
+        run: uv run python -m pytest tests/backend/ -m "not postgres" --tb=short -q
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # PostgreSQL backend — uses official postgres:16 service container
+  # ──────────────────────────────────────────────────────────────────────────
+  backend-postgres:
+    name: Backend tests (Postgres 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: grep-guards
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: evonexus_test
+          POSTGRES_USER: evonexus
+          POSTGRES_PASSWORD: evonexus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U evonexus"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://evonexus:evonexus_test@localhost:5432/evonexus_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync Python dependencies
+        run: uv sync --frozen --dev
+
+      - name: Run Alembic migrations
+        working-directory: dashboard/alembic
+        run: uv run alembic upgrade head
+
+      - name: Run backend tests (Postgres)
+        run: uv run python -m pytest tests/backend/ -m "not sqlite" --tb=short -q
+
+      - name: Check pool health endpoint
+        run: |
+          echo "Pool/dialect checks would run here post-Step-2 when the app is fully PG-capable."

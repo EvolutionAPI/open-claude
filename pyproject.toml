@@ -35,6 +35,7 @@ dependencies = [
 
 [project.scripts]
 evonexus = "dashboard.backend.knowledge.cli:main"
+evonexus-migrate = "dashboard.cli.evonexus_migrate:main"
 
 [tool.uv]
 dev-dependencies = [

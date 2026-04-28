@@ -10,18 +10,16 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, jsonify
 from flask_login import login_required
+from sqlalchemy import text
 
 from plugin_claude_config import CLAUDE_JSON, WORKSPACE
 
 bp = Blueprint("mcp_servers", __name__)
-
-DB_PATH = WORKSPACE / "dashboard" / "data" / "evonexus.db"
 
 
 def _plugin_mcp_ownership() -> dict[str, str]:
@@ -29,27 +27,23 @@ def _plugin_mcp_ownership() -> dict[str, str]:
     that tracks MCPs in its manifest_json.
     """
     ownership: dict[str, str] = {}
-    if not DB_PATH.exists():
-        return ownership
     try:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT slug, manifest_json FROM plugins_installed WHERE enabled = 1"
+        from models import db
+        rows = db.session.execute(
+            text("SELECT slug, manifest_json FROM plugins_installed WHERE enabled IS TRUE")
         ).fetchall()
-        conn.close()
-    except sqlite3.Error:
+    except Exception:
         return ownership
     for row in rows:
         try:
-            manifest = json.loads(row["manifest_json"] or "{}")
+            manifest = json.loads(row.manifest_json or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
         installed = manifest.get("mcp_servers_installed") or []
         for entry in installed:
             name = entry.get("effective_name") if isinstance(entry, dict) else None
             if name:
-                ownership[name] = row["slug"]
+                ownership[name] = row.slug
     return ownership
 
 

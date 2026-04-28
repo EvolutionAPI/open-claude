@@ -23,11 +23,13 @@ import logging
 import logging.handlers
 import os
 import subprocess
-import sqlite3
 import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError as _SAOperationalError
 
 import yaml
 
@@ -101,36 +103,34 @@ def _log_event(slug: str, record: dict) -> None:
         pass  # logging failures must never crash the dispatcher
 
 
-def _get_db() -> sqlite3.Connection:
-    """Open the shared EvoNexus SQLite DB in WAL mode."""
-    conn = sqlite3.connect(str(DB_PATH), timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+def _get_db():
+    """Return a SQLAlchemy Connection (replaces raw sqlite3.connect)."""
+    from db.engine import get_engine
+    return get_engine().connect()
 
 
-def _cb_should_skip(conn: sqlite3.Connection, slug: str, handler_path: str) -> bool:
+def _cb_should_skip(conn, slug: str, handler_path: str) -> bool:
     """Check if the circuit breaker is open for this handler.
 
-    C1 (Vault F1): state persisted in SQLite (not threading.local which resets per-process).
+    C1 (Vault F1): state persisted in DB (not threading.local which resets per-process).
     """
     try:
         row = conn.execute(
-            "SELECT disabled_until FROM plugin_hook_circuit_state "
-            "WHERE plugin_slug=? AND handler_path=?",
-            (slug, handler_path),
+            text("SELECT disabled_until FROM plugin_hook_circuit_state "
+                 "WHERE plugin_slug=:slug AND handler_path=:hp"),
+            {"slug": slug, "hp": handler_path},
         ).fetchone()
-    except sqlite3.OperationalError:
+    except (_SAOperationalError, Exception):
         # Table doesn't exist yet (migration in app.py) — treat as CB open=False
         return False
 
-    if not row or not row["disabled_until"]:
+    if not row or not row.disabled_until:
         return False
-    disabled_until = datetime.fromisoformat(row["disabled_until"])
+    disabled_until = datetime.fromisoformat(row.disabled_until)
     return datetime.now(timezone.utc) < disabled_until
 
 
-def _cb_record_failure(conn: sqlite3.Connection, slug: str, handler_path: str) -> None:
+def _cb_record_failure(conn, slug: str, handler_path: str) -> None:
     """Record a handler failure and open CB if threshold reached.
 
     C1 (Vault F1): only counts failures within CB_WINDOW_SECONDS.
@@ -140,14 +140,14 @@ def _cb_record_failure(conn: sqlite3.Connection, slug: str, handler_path: str) -
 
     try:
         row = conn.execute(
-            "SELECT failures_json FROM plugin_hook_circuit_state "
-            "WHERE plugin_slug=? AND handler_path=?",
-            (slug, handler_path),
+            text("SELECT failures_json FROM plugin_hook_circuit_state "
+                 "WHERE plugin_slug=:slug AND handler_path=:hp"),
+            {"slug": slug, "hp": handler_path},
         ).fetchone()
-    except sqlite3.OperationalError:
+    except (_SAOperationalError, Exception):
         return
 
-    failures = json.loads(row["failures_json"]) if row else []
+    failures = json.loads(row.failures_json) if row else []
     # Prune failures outside the sliding window
     failures = [f for f in failures if f > cutoff]
     failures.append(now.isoformat())
@@ -158,36 +158,37 @@ def _cb_record_failure(conn: sqlite3.Connection, slug: str, handler_path: str) -
 
     try:
         conn.execute(
-            """INSERT INTO plugin_hook_circuit_state
+            text("""INSERT INTO plugin_hook_circuit_state
                (plugin_slug, handler_path, failures_json, disabled_until,
                 total_invocations, total_failures, last_failure_at)
-               VALUES (?, ?, ?, ?, 1, 1, ?)
+               VALUES (:slug, :hp, :fj, :du, 1, 1, :lfa)
                ON CONFLICT(plugin_slug, handler_path) DO UPDATE SET
                  failures_json = excluded.failures_json,
                  disabled_until = excluded.disabled_until,
                  total_invocations = total_invocations + 1,
                  total_failures = total_failures + 1,
-                 last_failure_at = excluded.last_failure_at""",
-            (slug, handler_path, json.dumps(failures), disabled_until, now.isoformat()),
+                 last_failure_at = excluded.last_failure_at"""),
+            {"slug": slug, "hp": handler_path, "fj": json.dumps(failures),
+             "du": disabled_until, "lfa": now.isoformat()},
         )
         conn.commit()
-    except sqlite3.OperationalError:
+    except (_SAOperationalError, Exception):
         pass  # table may not exist yet
 
 
-def _cb_record_success(conn: sqlite3.Connection, slug: str, handler_path: str) -> None:
+def _cb_record_success(conn, slug: str, handler_path: str) -> None:
     """Record a successful handler invocation (increments total_invocations only)."""
     try:
         conn.execute(
-            """INSERT INTO plugin_hook_circuit_state
+            text("""INSERT INTO plugin_hook_circuit_state
                (plugin_slug, handler_path, failures_json, total_invocations)
-               VALUES (?, ?, '[]', 1)
+               VALUES (:slug, :hp, '[]', 1)
                ON CONFLICT(plugin_slug, handler_path) DO UPDATE SET
-                 total_invocations = total_invocations + 1""",
-            (slug, handler_path),
+                 total_invocations = total_invocations + 1"""),
+            {"slug": slug, "hp": handler_path},
         )
         conn.commit()
-    except sqlite3.OperationalError:
+    except (_SAOperationalError, Exception):
         pass
 
 
@@ -260,19 +261,19 @@ def _load_disabled_hooks() -> dict[str, set]:
     """
     result: dict[str, set] = {}
     try:
-        conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        conn.row_factory = sqlite3.Row
+        from db.engine import get_engine
+        conn = get_engine().connect()
         rows = conn.execute(
-            "SELECT slug, capabilities_disabled FROM plugins_installed "
-            "WHERE enabled = 1 AND status = 'active'"
+            text("SELECT slug, capabilities_disabled FROM plugins_installed "
+                 "WHERE enabled IS TRUE AND status = 'active'")
         ).fetchall()
         conn.close()
         for row in rows:
             try:
-                caps = json.loads(row["capabilities_disabled"] or "{}")
+                caps = json.loads(row.capabilities_disabled or "{}")
                 disabled = caps.get("claude_hooks", [])
                 if disabled:
-                    result[row["slug"]] = set(disabled)
+                    result[row.slug] = set(disabled)
             except (json.JSONDecodeError, TypeError):
                 pass
     except Exception:
@@ -358,7 +359,7 @@ def _run_handler(
     payload: dict,
     payload_bytes: bytes,
     event_name: str,
-    conn: sqlite3.Connection,
+    conn,
 ) -> None:
     """Execute a single handler with timeout, CB check, and structured logging."""
     slug = handler["slug"]

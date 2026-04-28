@@ -28,6 +28,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import text
+
 # Workspace root
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,12 +44,18 @@ def _now_iso() -> str:
 
 
 def _get_db():
-    import sqlite3
-    conn = sqlite3.connect(str(DB_PATH), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    """Return a SQLAlchemy Connection (replaces raw sqlite3.connect)."""
+    from db.engine import get_engine
+    engine = get_engine()
+    conn = engine.connect()
     return conn
+
+
+def _row_to_dict(row) -> dict:
+    """Convert a SQLAlchemy Row to a plain dict."""
+    if row is None:
+        return {}
+    return dict(row._mapping)
 
 
 def _load_heartbeat(heartbeat_id: str) -> dict | None:
@@ -55,11 +63,11 @@ def _load_heartbeat(heartbeat_id: str) -> dict | None:
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT * FROM heartbeats WHERE id = ?", (heartbeat_id,)
+            text("SELECT * FROM heartbeats WHERE id = :hid"), {"hid": heartbeat_id}
         ).fetchone()
         if not row:
             return None
-        return dict(row)
+        return dict(row._mapping)
     finally:
         conn.close()
 
@@ -77,18 +85,25 @@ def _upsert_heartbeat_from_yaml(heartbeat_id: str) -> dict | None:
     conn = _get_db()
     try:
         conn.execute(
-            """INSERT OR REPLACE INTO heartbeats
+            text("""INSERT INTO heartbeats
                (id, agent, interval_seconds, max_turns, timeout_seconds,
                 lock_timeout_seconds, wake_triggers, enabled, goal_id,
                 required_secrets, decision_prompt, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                hb.id, hb.agent, hb.interval_seconds, hb.max_turns,
-                hb.timeout_seconds, hb.lock_timeout_seconds,
-                json.dumps(hb.wake_triggers), int(hb.enabled), hb.goal_id,
-                json.dumps(hb.required_secrets), hb.decision_prompt,
-                now, now,
-            ),
+               VALUES (:id, :agent, :ivs, :mt, :ts, :lts, :wt, :en, :gid, :rs, :dp, :cat, :uat)
+               ON CONFLICT(id) DO UPDATE SET
+                   agent=excluded.agent, interval_seconds=excluded.interval_seconds,
+                   max_turns=excluded.max_turns, timeout_seconds=excluded.timeout_seconds,
+                   lock_timeout_seconds=excluded.lock_timeout_seconds,
+                   wake_triggers=excluded.wake_triggers, enabled=excluded.enabled,
+                   goal_id=excluded.goal_id, required_secrets=excluded.required_secrets,
+                   decision_prompt=excluded.decision_prompt, updated_at=excluded.updated_at"""),
+            {
+                "id": hb.id, "agent": hb.agent, "ivs": hb.interval_seconds, "mt": hb.max_turns,
+                "ts": hb.timeout_seconds, "lts": hb.lock_timeout_seconds,
+                "wt": json.dumps(hb.wake_triggers), "en": int(hb.enabled), "gid": hb.goal_id,
+                "rs": json.dumps(hb.required_secrets), "dp": hb.decision_prompt,
+                "cat": now, "uat": now,
+            },
         )
         conn.commit()
         return _load_heartbeat(heartbeat_id)
@@ -112,10 +127,10 @@ def step2_check_approvals(agent: str, conn) -> list:
     """Query pending approvals for this agent. Stub in F1.1."""
     try:
         rows = conn.execute(
-            "SELECT * FROM approvals WHERE assignee_agent = ? AND status = 'pending' LIMIT 10",
-            (agent,),
+            text("SELECT * FROM approvals WHERE assignee_agent = :agent AND status = 'pending' LIMIT 10"),
+            {"agent": agent},
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r._mapping) for r in rows]
     except Exception:
         # approvals table may not exist yet
         return []
@@ -127,9 +142,9 @@ def step3_query_inbox(agent: str, conn) -> list:
     """Query tickets assigned to agent from the tickets table (F1.3)."""
     try:
         rows = conn.execute(
-            """SELECT id, title, description, priority, status, goal_id, project_id, created_at
+            text("""SELECT id, title, description, priority, status, goal_id, project_id, created_at
                FROM tickets
-               WHERE assignee_agent = ? AND status IN ('open','in_progress')
+               WHERE assignee_agent = :agent AND status IN ('open','in_progress')
                AND locked_at IS NULL
                ORDER BY
                  CASE priority
@@ -140,10 +155,10 @@ def step3_query_inbox(agent: str, conn) -> list:
                    ELSE 0
                  END DESC,
                  created_at ASC
-               LIMIT 10""",
-            (agent,),
+               LIMIT 10"""),
+            {"agent": agent},
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r._mapping) for r in rows]
     except Exception:
         # tickets table may not exist yet (F1.3 not merged)
         return []
@@ -303,33 +318,34 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
 
     # Upsert run (idempotent: if run_id already exists with status != running, skip)
     existing = conn.execute(
-        "SELECT run_id, status FROM heartbeat_runs WHERE run_id = ?", (run_id,)
+        text("SELECT run_id, status FROM heartbeat_runs WHERE run_id = :rid"), {"rid": run_id}
     ).fetchone()
 
-    if existing and existing["status"] != "running":
-        print(f"[heartbeat_runner] run_id={run_id} already finalized ({existing['status']}), skipping duplicate persist", flush=True)
+    if existing and existing.status != "running":
+        print(f"[heartbeat_runner] run_id={run_id} already finalized ({existing.status}), skipping duplicate persist", flush=True)
         return
 
     conn.execute(
-        """INSERT INTO heartbeat_runs
+        text("""INSERT INTO heartbeat_runs
            (run_id, heartbeat_id, trigger_id, started_at, ended_at, duration_ms,
             tokens_in, tokens_out, cost_usd, status, prompt_preview, error, triggered_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (:rid, :hbid, :trid, :sat, :eat, :dms, :ti, :to, :cu, :st, :pp, :err, :tby)
            ON CONFLICT(run_id) DO UPDATE SET
                ended_at=excluded.ended_at,
                duration_ms=excluded.duration_ms,
                status=excluded.status,
-               error=excluded.error""",
-        (
-            run_id, heartbeat_id, trigger_id,
-            result.get("started_at", now), now,
-            result.get("duration_ms"),
-            result.get("tokens_in"), result.get("tokens_out"), result.get("cost_usd"),
-            result["status"],
-            prompt_preview[:1000] if prompt_preview else None,
-            result.get("error"),
-            triggered_by,
-        ),
+               error=excluded.error"""),
+        {
+            "rid": run_id, "hbid": heartbeat_id, "trid": trigger_id,
+            "sat": result.get("started_at", now), "eat": now,
+            "dms": result.get("duration_ms"),
+            "ti": result.get("tokens_in"), "to": result.get("tokens_out"),
+            "cu": result.get("cost_usd"),
+            "st": result["status"],
+            "pp": prompt_preview[:1000] if prompt_preview else None,
+            "err": result.get("error"),
+            "tby": triggered_by,
+        },
     )
     conn.commit()
 
@@ -360,9 +376,9 @@ def step9_release_checkout(task_id: str | None, run_id: str, conn):
         return
     try:
         conn.execute(
-            """UPDATE tasks SET locked_at = NULL, locked_by = NULL
-               WHERE id = ? AND locked_by = ?""",
-            (task_id, run_id),
+            text("""UPDATE tasks SET locked_at = NULL, locked_by = NULL
+               WHERE id = :tid AND locked_by = :rid"""),
+            {"tid": task_id, "rid": run_id},
         )
         conn.commit()
     except Exception:
@@ -442,19 +458,20 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
     try:
         # Idempotence check: abort if this run_id already exists in a final state
         existing = conn.execute(
-            "SELECT run_id, status FROM heartbeat_runs WHERE run_id = ?", (run_id,)
+            text("SELECT run_id, status FROM heartbeat_runs WHERE run_id = :rid"), {"rid": run_id}
         ).fetchone()
-        if existing and existing["status"] != "running":
+        if existing and existing.status != "running":
             print(f"[heartbeat_runner] run_id={run_id} already finalized, aborting", flush=True)
             return
 
         # Insert initial row (so we can track "running" state)
         try:
             conn.execute(
-                """INSERT OR IGNORE INTO heartbeat_runs
+                text("""INSERT INTO heartbeat_runs
                    (run_id, heartbeat_id, trigger_id, started_at, status, triggered_by)
-                   VALUES (?, ?, ?, ?, 'running', ?)""",
-                (run_id, heartbeat_id, trigger_id, started_at, triggered_by),
+                   VALUES (:rid, :hbid, :trid, :sat, 'running', :tby)
+                   ON CONFLICT(run_id) DO NOTHING"""),
+                {"rid": run_id, "hbid": heartbeat_id, "trid": trigger_id, "sat": started_at, "tby": triggered_by},
             )
             conn.commit()
         except Exception as e:

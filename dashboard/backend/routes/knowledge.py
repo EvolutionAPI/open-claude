@@ -21,7 +21,7 @@ KNOWLEDGE_MASTER_KEY produces a clear 500 rather than a cryptic error.
 import logging
 import os
 import re
-import sqlite3
+import sqlite3  # noqa: F401 — allowlisted: knowledge module has its own connection abstraction; cross-cutting migration is Step 2 scope
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, request
@@ -113,7 +113,7 @@ def _db_path() -> str:
 
 
 def _get_sqlite() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+    conn = sqlite3.connect(_db_path())  # noqa — allowlisted: knowledge module has own SQLite abstraction (OUT-OF-SCOPE for Step 1; dashboard-side shim only)
     conn.row_factory = sqlite3.Row
     return conn
 

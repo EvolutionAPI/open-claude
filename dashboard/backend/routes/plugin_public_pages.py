@@ -23,11 +23,12 @@ Security controls applied here:
 from __future__ import annotations
 
 import os
-import sqlite3
+import sqlite3  # noqa: F401 — allowlisted: _validate_token uses dynamic identifier SQL against plugin tables; connection acquisition migrated to SQLAlchemy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from flask import Blueprint, abort, jsonify, request, Response, after_this_request
+from sqlalchemy import text
 
 from models import audit
 from rate_limit import limiter
@@ -87,10 +88,10 @@ def _security_headers(response: Response) -> Response:
     return response
 
 
-def _get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _get_db():
+    """Return a SQLAlchemy Connection (replaces raw sqlite3.connect)."""
+    from db.engine import get_engine
+    return get_engine().connect()
 
 
 def _load_page_config(slug: str, route_prefix: str) -> Optional[Dict[str, Any]]:
@@ -103,12 +104,12 @@ def _load_page_config(slug: str, route_prefix: str) -> Optional[Dict[str, Any]]:
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT manifest_json FROM plugins_installed WHERE slug = ? AND status = 'active'",
-            (slug,),
+            text("SELECT manifest_json FROM plugins_installed WHERE slug = :slug AND status = 'active'"),
+            {"slug": slug},
         ).fetchone()
         if not row:
             return None
-        manifest = _json.loads(row["manifest_json"])
+        manifest = _json.loads(row.manifest_json)
         for page in manifest.get("public_pages") or []:
             if page.get("route_prefix") == route_prefix:
                 return page
@@ -133,15 +134,16 @@ def _validate_token(page_config: Dict[str, Any], token: str) -> bool:
 
     # Identifiers are validated at install time (PluginPublicPage schema) to
     # match ^[a-z][a-z0-9_]*$ — safe to interpolate here.
-    sql = f"SELECT 1 FROM {table} WHERE {column} = ?"  # noqa: S608 — identifiers whitelisted at install
+    sql = f"SELECT 1 FROM {table} WHERE {column} = :token"  # noqa: S608 — identifiers whitelisted at install
 
     # The plugin DB is kept inside the plugin's own data directory.
     # EvoNexus uses the shared evonexus.db for all plugin tables (no per-plugin DB).
+    from sqlalchemy.exc import OperationalError as _SAOpError
     conn = _get_db()
     try:
-        row = conn.execute(sql, (token,)).fetchone()
+        row = conn.execute(text(sql), {"token": token}).fetchone()
         return row is not None
-    except sqlite3.OperationalError:
+    except _SAOpError:
         # Table doesn't exist yet (e.g. install in progress) — fail closed.
         return False
     finally:
