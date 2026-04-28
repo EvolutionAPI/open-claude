@@ -11,12 +11,20 @@ bp = Blueprint("config", __name__)
 
 @bp.route("/api/config/workspace-status")
 def workspace_status():
-    """Check if workspace.yaml exists AND has owner configured."""
-    config_path = WORKSPACE / "config" / "workspace.yaml"
-    if not config_path.is_file():
-        return jsonify({"configured": False})
-    # File exists but check if owner is actually filled in
+    """Check if workspace is configured (has owner set).
+
+    In PG mode: queries runtime_configs for workspace.owner.
+    In SQLite mode: checks workspace.yaml presence + owner field.
+    """
     try:
+        from config_store import get_config, get_dialect
+        if get_dialect() == "postgresql":
+            owner = (get_config("workspace.owner") or "").strip()
+            return jsonify({"configured": bool(owner)})
+
+        config_path = WORKSPACE / "config" / "workspace.yaml"
+        if not config_path.is_file():
+            return jsonify({"configured": False})
         content = config_path.read_text(encoding="utf-8")
         import yaml
         data = yaml.safe_load(content) or {}

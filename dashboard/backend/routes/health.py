@@ -25,6 +25,8 @@ from flask_login import login_required, current_user
 
 from models import db
 from routes._helpers import WORKSPACE
+from config_store import get_dialect
+import provider_store as _pstore
 
 bp = Blueprint("health", __name__)
 
@@ -71,20 +73,25 @@ def _check_secret_key() -> dict:
 
 
 def _check_provider_config() -> dict:
-    config_path = WORKSPACE / "config" / "providers.json"
-    if not config_path.exists():
-        return {"status": "warning", "detail": "providers.json is missing"}
-
     try:
+        if get_dialect() == "postgresql":
+            active = _pstore.get_active_provider()
+            if not active or active == "none":
+                return {"status": "warning", "detail": "No active provider configured"}
+            return {"status": "ok", "active": active}
+
+        config_path = WORKSPACE / "config" / "providers.json"
+        if not config_path.exists():
+            return {"status": "warning", "detail": "providers.json is missing"}
+
         raw = json.loads(config_path.read_text(encoding="utf-8"))
+        active = raw.get("active_provider") if isinstance(raw, dict) else None
+        if not active or active == "none":
+            return {"status": "warning", "detail": "No active provider configured"}
+
+        return {"status": "ok", "active": active}
     except Exception as exc:
-        return {"status": "error", "detail": f"Invalid providers.json: {str(exc)[:150]}"}
-
-    active = raw.get("active") if isinstance(raw, dict) else None
-    if not active or active == "none":
-        return {"status": "warning", "detail": "No active provider configured"}
-
-    return {"status": "ok", "active": active}
+        return {"status": "error", "detail": f"Provider config error: {str(exc)[:150]}"}
 
 
 def _overall_status(checks: dict) -> str:

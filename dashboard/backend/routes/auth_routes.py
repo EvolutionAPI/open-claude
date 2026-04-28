@@ -111,34 +111,48 @@ def setup():
 
 
 def _save_workspace_config(ws: dict):
-    """Generate workspace.yaml and CLAUDE.md from setup data."""
-    import yaml
+    """Generate workspace config from setup data.
+
+    In PG mode: writes directly into runtime_configs via set_config.
+    In SQLite mode: writes workspace.yaml (unchanged from v0.33.x).
+    """
     from pathlib import Path
     from routes._helpers import WORKSPACE
+    from config_store import get_dialect, set_config
 
-    config_dir = WORKSPACE / "config"
-    config_dir.mkdir(exist_ok=True)
-
-    # Build workspace.yaml
-    config = {
-        "workspace": {
-            "name": f"{ws.get('company_name', '')} Workspace".strip(),
-            "owner": ws.get("owner_name", ""),
-            "company": ws.get("company_name", ""),
-            "timezone": ws.get("timezone", "UTC"),
-            "language": ws.get("language", "pt-BR"),
-        },
-        "agents": {a: True for a in ws.get("agents", [])},
-        "integrations": {i: True for i in ws.get("integrations", [])},
-        "dashboard": {"port": 8080},
+    ws_data = {
+        "name": f"{ws.get('company_name', '')} Workspace".strip(),
+        "owner": ws.get("owner_name", ""),
+        "company": ws.get("company_name", ""),
+        "timezone": ws.get("timezone", "UTC"),
+        "language": ws.get("language", "pt-BR"),
     }
 
-    yaml_path = config_dir / "workspace.yaml"
-    # encoding="utf-8" is required — otherwise on Windows Python defaults to
-    # cp1252 and mangles accented characters in owner/company names
-    # (e.g. "João" becomes "Jo?o" on read).
-    with open(yaml_path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+    if get_dialect() == "postgresql":
+        # PG mode: write into DB, never touch workspace.yaml.
+        for k, v in ws_data.items():
+            set_config(f"workspace.{k}", v)
+        # Agents / integrations stored as JSON config keys.
+        set_config("workspace.agents", {a: True for a in ws.get("agents", [])})
+        set_config("workspace.integrations", {i: True for i in ws.get("integrations", [])})
+    else:
+        import yaml
+        config_dir = WORKSPACE / "config"
+        config_dir.mkdir(exist_ok=True)
+
+        config = {
+            "workspace": ws_data,
+            "agents": {a: True for a in ws.get("agents", [])},
+            "integrations": {i: True for i in ws.get("integrations", [])},
+            "dashboard": {"port": 8080},
+        }
+
+        yaml_path = config_dir / "workspace.yaml"
+        # encoding="utf-8" is required — otherwise on Windows Python defaults to
+        # cp1252 and mangles accented characters in owner/company names
+        # (e.g. "João" becomes "Jo?o" on read).
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     # Generate CLAUDE.md inline (no template needed)
     claude_md_path = WORKSPACE / "CLAUDE.md"
