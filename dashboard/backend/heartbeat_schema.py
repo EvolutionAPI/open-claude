@@ -1,7 +1,19 @@
-"""Pydantic schema for heartbeat configuration validation."""
+"""Pydantic schema for heartbeat configuration validation.
+
+Public entry point:
+    load_heartbeats(include_plugins=True) -> HeartbeatsFile
+        PG mode:  reads from the `heartbeats` DB table.
+        SQLite:   reads from config/heartbeats.yaml (legacy path, unchanged).
+
+The legacy YAML functions remain available for SQLite path and internal use:
+    load_heartbeats_yaml(path, include_plugins) -> HeartbeatsFile
+    save_heartbeats_yaml(data, path)            -> None
+"""
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Annotated, List, Literal, Optional
 
@@ -228,7 +240,10 @@ def _merge_plugin_heartbeats(core: "HeartbeatsFile", logger: "logging.Logger") -
 
 
 def save_heartbeats_yaml(data: HeartbeatsFile, path: Path | None = None) -> None:
-    """Atomically write heartbeats to config/heartbeats.yaml (temp + rename)."""
+    """Atomically write heartbeats to config/heartbeats.yaml (temp + rename).
+
+    SQLite path only — in PG mode, use DB writes directly (CRUD endpoints).
+    """
     import os
     import yaml
 
@@ -247,3 +262,101 @@ def save_heartbeats_yaml(data: HeartbeatsFile, path: Path | None = None) -> None
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     os.rename(tmp_path, path)
+
+
+# ---------------------------------------------------------------------------
+# Public dialect-aware entry point
+# ---------------------------------------------------------------------------
+
+def load_heartbeats(include_plugins: bool = True) -> HeartbeatsFile:
+    """Load heartbeat definitions — dialect-bifurcated public entry point.
+
+    PostgreSQL: reads from the ``heartbeats`` DB table.  The ``include_plugins``
+    flag filters by ``source_plugin IS NULL`` when False (user-created only).
+
+    SQLite: delegates to :func:`load_heartbeats_yaml` (unchanged legacy path).
+
+    Args:
+        include_plugins: When False, exclude plugin-contributed heartbeats.
+
+    Returns:
+        :class:`HeartbeatsFile` with all valid heartbeats.
+    """
+    try:
+        from db.engine import get_engine
+        dialect = get_engine().dialect.name
+    except Exception:
+        dialect = "sqlite"  # safe fallback if engine not yet initialised
+
+    if dialect == "postgresql":
+        return _load_heartbeats_from_db(include_plugins)
+    return load_heartbeats_yaml(include_plugins=include_plugins)
+
+
+def _load_heartbeats_from_db(include_plugins: bool) -> HeartbeatsFile:
+    """Read heartbeat definitions directly from the ``heartbeats`` DB table.
+
+    Each row is mapped to a :class:`HeartbeatConfig` using the column names
+    that match the Pydantic model.  Unknown/extra DB columns are ignored.
+
+    Rows that fail Pydantic validation are logged as ERROR and skipped so
+    that a single corrupt row does not prevent other heartbeats from loading
+    (same fail-isolation policy as YAML plugin loading).
+
+    Args:
+        include_plugins: When False, only rows where source_plugin IS NULL
+                         are returned (user-created heartbeats only).
+
+    Returns:
+        :class:`HeartbeatsFile` containing all valid DB heartbeats.
+    """
+    from db.engine import get_engine
+    from sqlalchemy import text as sa_text
+
+    logger = logging.getLogger(__name__)
+
+    query = (
+        "SELECT * FROM heartbeats WHERE source_plugin IS NULL"
+        if not include_plugins
+        else "SELECT * FROM heartbeats"
+    )
+
+    heartbeats: list[HeartbeatConfig] = []
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(sa_text(query)).fetchall()
+    except Exception as exc:
+        logger.error("load_heartbeats_from_db: DB read failed: %s", exc)
+        return HeartbeatsFile(heartbeats=[])
+
+    for row in rows:
+        row_dict = dict(row._mapping)
+        # wake_triggers and required_secrets are stored as JSON TEXT in the DB.
+        for json_col in ("wake_triggers", "required_secrets"):
+            raw_val = row_dict.get(json_col)
+            if isinstance(raw_val, str):
+                try:
+                    row_dict[json_col] = json.loads(raw_val)
+                except (ValueError, TypeError):
+                    row_dict[json_col] = []
+            elif raw_val is None:
+                row_dict[json_col] = []
+
+        # decision_prompt may be NULL in DB (handler-based heartbeats).
+        if row_dict.get("decision_prompt") is None:
+            row_dict["decision_prompt"] = ""
+
+        # handler column may not exist in older schema (0002) — tolerate absence.
+        row_dict.setdefault("handler", None)
+
+        try:
+            hb = HeartbeatConfig.model_validate(row_dict)
+            heartbeats.append(hb)
+        except Exception as exc:
+            logger.error(
+                "load_heartbeats_from_db: row id=%r failed validation — skipping: %s",
+                row_dict.get("id"),
+                exc,
+            )
+
+    return HeartbeatsFile(heartbeats=heartbeats)
