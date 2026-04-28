@@ -276,11 +276,45 @@ print(f'OK — {len(cfg.heartbeats)} heartbeat(s) validated'); \
 heartbeat-run:      ## ▶️  Run a heartbeat manually: make heartbeat-run ID=atlas-4h
 	@cd dashboard/backend && $(PYTHON) heartbeat_runner.py --heartbeat-id $(ID)
 
-migrate-dryrun:     ## 🔍 Dry-run migration (SOURCE and TARGET env vars required)
-	@python -m dashboard.cli.evonexus_migrate --source "$(SOURCE)" --target "$(TARGET)" --dry-run
+migrate-dryrun:     ## 🔍 Dry-run SQLite→PG data migration (SOURCE, TARGET required)
+	@if [ -z "$(SOURCE)" ] || [ -z "$(TARGET)" ]; then \
+		echo "❌ SOURCE and TARGET are required."; \
+		echo "   Example: make migrate-dryrun SOURCE=sqlite:///workspace/.evonexus/evonexus.db TARGET=postgresql://user:pw@host/db"; \
+		exit 1; \
+	fi
+	@$(PYTHON) -m dashboard.cli.evonexus_migrate --source "$(SOURCE)" --target "$(TARGET)" --dry-run
+
+db-migrate:         ## 🚚 SQLite→PG data migration (SOURCE, TARGET required)
+	@if [ -z "$(SOURCE)" ] || [ -z "$(TARGET)" ]; then \
+		echo "❌ SOURCE and TARGET are required."; \
+		echo "   Example: make db-migrate SOURCE=sqlite:///workspace/.evonexus/evonexus.db TARGET=postgresql://user:pw@host/db"; \
+		echo "   Tip: run 'make migrate-dryrun' first to preview without writing."; \
+		exit 1; \
+	fi
+	@$(PYTHON) -m dashboard.cli.evonexus_migrate --source "$(SOURCE)" --target "$(TARGET)"
+
+db-migrate-skip-plugins:  ## 🚚 Migrate skipping incompatible plugins (SOURCE, TARGET required)
+	@if [ -z "$(SOURCE)" ] || [ -z "$(TARGET)" ]; then \
+		echo "❌ SOURCE and TARGET are required."; \
+		echo "   Example: make db-migrate-skip-plugins SOURCE=sqlite:///... TARGET=postgresql://..."; \
+		exit 1; \
+	fi
+	@$(PYTHON) -m dashboard.cli.evonexus_migrate --source "$(SOURCE)" --target "$(TARGET)" --skip-incompatible-plugins
+
+db-upgrade:         ## ⬆️  Apply pending Alembic migrations (uses DATABASE_URL)
+	@cd dashboard/alembic && $(PYTHON) -m alembic upgrade head
+
+db-downgrade:       ## ⬇️  Revert one Alembic migration (uses DATABASE_URL)
+	@cd dashboard/alembic && $(PYTHON) -m alembic downgrade -1
+
+db-current:         ## 🔖 Show current Alembic revision (uses DATABASE_URL)
+	@cd dashboard/alembic && $(PYTHON) -m alembic current
+
+db-history:         ## 📜 List Alembic migration history
+	@cd dashboard/alembic && $(PYTHON) -m alembic history
 
 help:               ## 📖 Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: morning eod memory memory-lint weekly run list-routines daily scheduler dashboard-app terminal-logs terminal-stop telegram telegram-stop telegram-attach discord-channel discord-channel-stop discord-channel-attach imessage imessage-stop imessage-attach backup backup-s3 restore backup-list backup-daily logs logs-detail logs-tail metrics clean-logs docker-dashboard docker-telegram docker-down docker-logs docker-run docker-build help docs-build setup team-strategy team-dashboard team-weekly learn-weekly heartbeat-lint heartbeat-run migrate-dryrun
+.PHONY: morning eod memory memory-lint weekly run list-routines daily scheduler dashboard-app terminal-logs terminal-stop telegram telegram-stop telegram-attach discord-channel discord-channel-stop discord-channel-attach imessage imessage-stop imessage-attach backup backup-s3 restore backup-list backup-daily logs logs-detail logs-tail metrics clean-logs docker-dashboard docker-telegram docker-down docker-logs docker-run docker-build help docs-build setup team-strategy team-dashboard team-weekly learn-weekly heartbeat-lint heartbeat-run migrate-dryrun db-migrate db-migrate-skip-plugins db-upgrade db-downgrade db-current db-history
 .DEFAULT_GOAL := help
