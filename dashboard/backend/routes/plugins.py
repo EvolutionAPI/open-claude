@@ -463,7 +463,13 @@ def upload_plugin_archive():
 def scan_plugin():
     """Run a hybrid regex+LLM security scan on a plugin source URL.
 
-    Request body: {source_url: str, auth_token?: str}
+    Request body:
+      {source_url: str, auth_token?: str, is_update?: bool}
+
+    ``is_update``: when true, "plugin already installed" / "namespace collision"
+    / "already registered in DB" conflicts for the same slug are tolerated —
+    those are expected when scanning an update candidate. Other conflicts
+    (e.g. version_incompatible) still return 409.
 
     Returns ADR §5 verdict envelope:
     {verdict, severity, scan_duration_ms, scanners_used, cache_hit,
@@ -475,6 +481,7 @@ def scan_plugin():
     data = request.get_json(force=True, silent=True) or {}
     source_url = data.get("source_url", "")
     auth_token = data.get("auth_token") or None
+    is_update = bool(data.get("is_update", False))
     if not source_url:
         return jsonify({"error": "source_url required"}), 400
 
@@ -487,8 +494,27 @@ def scan_plugin():
     except Exception as exc:
         return jsonify({"error": f"preview failed: {exc}"}), 400
 
-    if preview.get("conflicts"):
-        return jsonify({"error": "conflict", "details": preview["conflicts"]}), 409
+    raw_conflicts = preview.get("conflicts") or []
+    if raw_conflicts:
+        if is_update:
+            # Strip benign "already exists" conflicts that update flow expects.
+            # Keep anything else (e.g. version_incompatible) so the user is
+            # warned about real problems.
+            _BENIGN_TOKENS = (
+                "Plugin directory already exists",
+                "Plugin namespace collision",
+                "is already registered in the database",
+            )
+            real_conflicts = [
+                c for c in raw_conflicts
+                if not any(token in str(c) for token in _BENIGN_TOKENS)
+            ]
+            if real_conflicts:
+                return jsonify({"error": "conflict", "details": real_conflicts}), 409
+            # All conflicts were benign — proceed with the scan against the
+            # staged copy. Fall through to the scan logic below.
+        else:
+            return jsonify({"error": "conflict", "details": raw_conflicts}), 409
 
     staged_path = preview.get("staged_path")
     if staged_path is None:

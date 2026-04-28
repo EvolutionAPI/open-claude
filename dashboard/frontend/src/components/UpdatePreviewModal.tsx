@@ -349,6 +349,7 @@ export default function UpdatePreviewModal({
           {!loading && !previewError && preview && !preview.up_to_date && (
             <SecurityScanSection
               sourceUrl={sourceUrl}
+              isUpdate
               onVerdict={handleScanVerdict}
               onOverride={handleOverride}
             />

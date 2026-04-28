@@ -60,6 +60,12 @@ export interface ScanResult {
 interface Props {
   sourceUrl: string
   authToken?: string
+  /**
+   * True when this scan is part of an update flow (plugin already installed).
+   * Tells the backend to ignore "already installed" / "namespace collision"
+   * conflicts that would otherwise return 409 and break the update modal.
+   */
+  isUpdate?: boolean
   /** Called when a scan result is available (or when scan is skipped). */
   onVerdict: (verdict: ScanVerdict | null, result: ScanResult | null) => void
   /** Called when admin overrides a BLOCK. */
@@ -128,7 +134,7 @@ function verdictColors(v: ScanVerdict) {
 // Main component
 // ---------------------------------------------------------------------------
 
-export default function SecurityScanSection({ sourceUrl, authToken, onVerdict, onOverride, onSkipReason }: Props) {
+export default function SecurityScanSection({ sourceUrl, authToken, isUpdate, onVerdict, onOverride, onSkipReason }: Props) {
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
 
@@ -151,7 +157,7 @@ export default function SecurityScanSection({ sourceUrl, authToken, onVerdict, o
     setError(null)
 
     api
-      .post('/plugins/scan', { source_url: sourceUrl, auth_token: authToken || undefined })
+      .post('/plugins/scan', { source_url: sourceUrl, auth_token: authToken || undefined, is_update: isUpdate || undefined })
       .then((res: unknown) => {
         const r = res as ScanResult
         setResult(r)
@@ -168,7 +174,7 @@ export default function SecurityScanSection({ sourceUrl, authToken, onVerdict, o
       .finally(() => {
         setScanning(false)
       })
-  }, [sourceUrl, authToken, onVerdict])
+  }, [sourceUrl, authToken, isUpdate, onVerdict])
 
   // Handle skip checkbox.
   // Skipping the scan is an explicit admin decision — it passes the gate
@@ -189,7 +195,7 @@ export default function SecurityScanSection({ sourceUrl, authToken, onVerdict, o
       hasRun.current = false
       setScanning(true)
       api
-        .post('/plugins/scan', { source_url: sourceUrl, auth_token: authToken || undefined })
+        .post('/plugins/scan', { source_url: sourceUrl, auth_token: authToken || undefined, is_update: isUpdate || undefined })
         .then((res: unknown) => {
           const r = res as ScanResult
           setResult(r)
