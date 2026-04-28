@@ -1,5 +1,5 @@
-import { Button, Card, CardHeader, CardBody } from '@evonexus/ui'
-import { usePluginNavigation } from '@evonexus/ui'
+import { Button, Card, CardHeader, CardBody } from '@evoapi/evonexus-ui'
+import { usePluginNavigation } from '@evoapi/evonexus-ui'
 
 export default function HomePage({ slug }: { slug: string }) {
   const { navigate } = usePluginNavigation()

@@ -19,7 +19,7 @@ import {
   SchemaTable,
   type JsonSchema,
   type TableColumn,
-} from '@evonexus/ui'
+} from '@evoapi/evonexus-ui'
 
 // ─── Representative evo-essentials schema (PRD §6.6) ─────────────────────────
 

@@ -11,7 +11,7 @@
 
 import { useMemo, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { PluginNavigationContext } from '@evonexus/ui'
+import { PluginNavigationContext } from '@evoapi/evonexus-ui'
 
 interface PluginNavigationProviderProps {
   children: ReactNode

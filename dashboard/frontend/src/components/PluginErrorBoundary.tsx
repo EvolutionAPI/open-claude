@@ -14,7 +14,7 @@
  *   - a link to /plugins/<slug> for diagnosis / uninstall
  */
 
-import { ErrorBoundary } from '@evonexus/ui'
+import { ErrorBoundary } from '@evoapi/evonexus-ui'
 import type { ReactNode } from 'react'
 
 interface PluginErrorBoundaryProps {
