@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@evoapi/evonexus-ui/tokens.css";
+@import "@evonexus/ui/tokens.css";
 
 :root {
   --evo-green: #00FFA7;
