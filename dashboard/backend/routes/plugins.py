@@ -628,22 +628,23 @@ def _audit_scan_event(
     conn = None
     try:
         conn = _get_db()
+        # Schema (current): id, slug, event, verdict, actor_user_id,
+        # actor_username, detail_json, created_at. Older deployments may still
+        # have plugin_id/action columns — they are ignored here.
         conn.execute(
             text("""INSERT INTO plugin_audit_log
-               (plugin_id, slug, event, verdict, actor_user_id, actor_username,
-                detail_json, action, created_at)
-               VALUES (:plugin_id, :slug, :event, :verdict, :auid, :auname,
-                       :detail_json, :action, :created_at)"""),
+               (slug, event, verdict, actor_user_id, actor_username,
+                detail_json, created_at)
+               VALUES (:slug, :event, :verdict, :auid, :auname,
+                       :detail_json, :created_at)"""),
             {
-                "plugin_id": slug,                          # plugin_id (legacy NOT NULL)
-                "slug": slug,                               # slug (Wave 2.5)
+                "slug": slug,
                 "event": event,
                 "verdict": verdict,
                 "auid": actor_user_id,
                 "auname": actor_username,
                 "detail_json": json.dumps(detail or {}),
-                "action": event,                            # action (legacy NOT NULL)
-                "created_at": _now_iso(),                   # created_at (legacy NOT NULL)
+                "created_at": _now_iso(),
             },
         )
         conn.commit()
@@ -1660,6 +1661,10 @@ def uninstall_plugin(slug: str):
             _health_cache_removed = _health_rows
         except Exception as exc:
             logger.warning("Uninstall: health cache cleanup failed for '%s': %s", slug, exc)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         # Post-uninstall hook
         post_hook = plugin_dir / "hooks" / "post-uninstall.sh"
@@ -2111,11 +2116,17 @@ def list_widgets():
                 filename = installed_files[0].get("name") if isinstance(installed_files[0], dict) else None
             if not filename:
                 continue
+            # Cache-buster: mirrors what /api/plugin-ui-registry does for
+            # pages. Without ?v=, the browser keeps the old widget bundle
+            # for an hour due to the immutable Cache-Control header on
+            # /plugins/<slug>/ui/<path>, so a plugin update silently keeps
+            # serving the previous JS until the cache expires.
+            _widget_version = plugin_manifest.get("version", "0")
             widgets.append({
                 "slug": slug,
                 "widget_id": widget_id,
                 "custom_element_name": wspec.get("custom_element_name") or widget_id,
-                "bundle_url": f"/plugins/{slug}/ui/widgets/{filename}",
+                "bundle_url": f"/plugins/{slug}/ui/widgets/{filename}?v={_widget_version}",
                 "mount_point": wspec.get("mount_point"),
                 "label": wspec.get("label"),
             })
