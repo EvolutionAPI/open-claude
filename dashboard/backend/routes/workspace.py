@@ -3,7 +3,6 @@
 import mimetypes
 import os
 import json
-import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +29,6 @@ TRASH_DIR = WORKSPACE_DIR / ".trash"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 MAX_CONTENT_SIZE = 2 * 1024 * 1024  # 2MB
 
-_audit_lock = threading.Lock()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -105,39 +103,26 @@ def _is_relative_to(path: Path, base: Path) -> bool:
 
 
 def _audit(op: str, path: str, *, result: str = "ok", **extra):
-    """Append an audit entry to ADWs/logs/workspace-mutations.jsonl.
+    """Record a workspace mutation — delegates to workspace_audit.audit_mutation.
 
     Fail-safe: errors never propagate.
     """
     try:
-        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         try:
-            user = current_user.username if current_user.is_authenticated else "anonymous"
             user_id = current_user.id if current_user.is_authenticated else None
             role = current_user.role if current_user.is_authenticated else "anonymous"
         except Exception:
-            user, user_id, role = "anonymous", None, "anonymous"
+            user_id, role = None, "anonymous"
 
-        entry = {
-            "ts": ts,
-            "user": user,
-            "user_id": user_id,
-            "role": role,
-            "op": op,
-            "path": path.replace("\\", "/"),
-            "result": result,
-            "ip": getattr(request, "remote_addr", "-") or "-",
-            "ua": (getattr(request, "headers", {}).get("User-Agent", "-") or "-")[:200],
-            **extra,
-        }
-
-        log_dir = REPO_ROOT / "ADWs" / "logs"
-        log_file = log_dir / "workspace-mutations.jsonl"
-
-        with _audit_lock:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        from workspace_audit import audit_mutation
+        audit_mutation(
+            user_id=user_id,
+            role=role,
+            op=op,
+            path=path.replace("\\", "/"),
+            result=result,
+            extra=extra if extra else None,
+        )
     except Exception as exc:
         try:
             current_app.logger.error(f"[workspace audit] failed to write: {exc}")
