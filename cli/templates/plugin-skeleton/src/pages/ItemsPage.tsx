@@ -1,4 +1,4 @@
-import { SchemaForm, SchemaTable } from '@evonexus/ui'
+import { SchemaForm, SchemaTable } from '@evoapi/evonexus-ui'
 
 const RESOURCE_ID = '__SLUG___items'
 

@@ -1,4 +1,4 @@
-import { Card, CardBody } from '@evonexus/ui'
+import { Card, CardBody } from '@evoapi/evonexus-ui'
 import { useEffect, useState } from 'react'
 
 interface CountRow { count: number }

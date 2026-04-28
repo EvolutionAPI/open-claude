@@ -12,8 +12,10 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
+  "dependencies": {
+    "@evoapi/evonexus-ui": "^0.1.0"
+  },
   "devDependencies": {
-    "@evonexus/ui": "*",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.0",

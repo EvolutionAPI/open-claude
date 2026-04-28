@@ -8,8 +8,8 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "@evonexus/ui": ["../../dashboard/packages/ui/src/index.ts"],
-      "@evonexus/ui/tokens.css": ["../../dashboard/packages/ui/src/tokens.css"]
+      "@evoapi/evonexus-ui": ["../../dashboard/packages/ui/src/index.ts"],
+      "@evoapi/evonexus-ui/tokens.css": ["../../dashboard/packages/ui/src/tokens.css"]
     }
   },
   "include": ["src"]

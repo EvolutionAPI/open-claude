@@ -8,7 +8,7 @@ import { resolve } from 'path'
  * React is EXTERNALIZED: the host provides react/react-dom at runtime.
  * Bundling React here breaks hooks and ErrorBoundary across the host boundary.
  *
- * @evonexus/ui is BUNDLED into the plugin output so the tarball is self-contained.
+ * @evoapi/evonexus-ui is BUNDLED into the plugin output so the tarball is self-contained.
  * This means tokens.css is not auto-injected — the host injects it once for all plugins.
  *
  * Distribution: build output (dist/) + plugin.yaml + migrations/ + README.md -> tarball.
