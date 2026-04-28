@@ -405,21 +405,34 @@ def parser_status():
 def parser_install():
     """Trigger Marker model download (ADR-002).
 
-    Downloads Surya models (~500 MB) to ~/.cache/huggingface/.
-    Creates sentinel ~/.cache/evonexus/marker_installed.ok on completion.
-    Idempotent — returns "already_installed" if sentinel exists.
+    Spawns a background thread that downloads Surya models
+    (~500 MB) to ~/.cache/huggingface/ and creates the sentinel
+    ~/.cache/evonexus/marker_installed.ok on completion.
+
+    Returns immediately with 202 Accepted — the UI polls
+    GET /api/knowledge/parsers/status to track progress. Doing the
+    download in-process synchronously regularly exceeded the gunicorn
+    worker timeout on small VPS, which killed the worker mid-download
+    and made the UI re-render the "Install" button as if nothing had
+    happened (#44).
+
+    Idempotent — returns ``already_installed`` if the sentinel exists,
+    or ``in_progress`` if another install is already running.
     """
     _assert_key()
-    from knowledge.parser_install import download_marker_models
-    from knowledge.parsers.marker_parser import MarkerNotInstalledError
+    from knowledge.parser_install import start_marker_install
 
     try:
-        result = download_marker_models()
-        return jsonify(result)
-    except MarkerNotInstalledError as exc:
-        return jsonify({"error": str(exc)}), 422
-    except Exception as exc:
+        result = start_marker_install()
+    except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
+
+    status = result.get("status")
+    if status == "already_installed":
+        return jsonify(result), 200
+    if status == "in_progress":
+        return jsonify(result), 200
+    return jsonify(result), 202
 
 
 # ---------------------------------------------------------------------------
