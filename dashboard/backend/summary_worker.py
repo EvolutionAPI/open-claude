@@ -140,7 +140,7 @@ def main():
     memory_path = WORKSPACE / args.memory_path
     try:
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(memory_path, "a", encoding="utf-8") as f:
+        with open(memory_path, "a", encoding="utf-8") as f:  # noqa: pg-native-logs — markdown memory append, not a session/chat log
             timestamp = _now_iso()
             f.write(f"\n\n## Summary — turns up to {args.up_to_turn} (generated {timestamp})\n\n")
             f.write(summary + "\n")

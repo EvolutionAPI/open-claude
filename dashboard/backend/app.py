@@ -631,7 +631,7 @@ if __name__ == "__main__":
 
             for task in pending:
                 log_path = WORKSPACE / "ADWs" / "logs" / "scheduler.log"
-                with open(log_path, "a") as log:
+                with open(log_path, "a") as log:  # noqa: pg-native-logs — scheduler runtime log; per-routine outputs go through routine_run_store
                     log.write(f"  [{_dt.now().strftime('%H:%M')}] Running scheduled task #{task.id}: {task.name}\n")
 
                 t = threading.Thread(target=_execute_task_with_context, args=(task.id,), daemon=True)

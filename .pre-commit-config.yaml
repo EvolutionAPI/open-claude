@@ -48,6 +48,24 @@ repos:
         types: [python]
 
   # ──────────────────────────────────────────────────────────────────────────
+  # Guard 4 — file-log writers outside pg-native-logs allowlist
+  # ──────────────────────────────────────────────────────────────────────────
+      - id: no-new-file-logs-pg-leak
+        name: "Guard 4 — file-log writers outside pg-native-logs allowlist"
+        language: system
+        entry: bash -c '
+          ALLOWLIST="heartbeat_runner\.py|daily_output_store\.py|meeting_store\.py|plugin_hook_runner\.py|workspace_audit\.py|routine_run_store\.py|brain_repo/transcripts_mirror\.py|ADWs/runner\.py|cli/|tests/|scripts/|alembic/|setup\.py|backup\.py";
+          PY_VIOL=$(grep -rE "with open\([^)]*[\"'"'"']a[\"'"'"']" dashboard/ ADWs/ scheduler.py --include="*.py" 2>/dev/null | grep -vE "$ALLOWLIST" | grep -v "# noqa: pg-native-logs" || true);
+          JS_ALLOW="chat-logger\.js|sync-queue\.js|sync-marker\.js";
+          JS_VIOL=$(grep -rE "fs\.appendFile" dashboard/terminal-server/ --include="*.js" --exclude-dir=node_modules 2>/dev/null | grep -vE "$JS_ALLOW" | grep -v "// noqa: pg-native-logs" || true);
+          if [ -n "$PY_VIOL" ] || [ -n "$JS_VIOL" ]; then
+            echo "Python: $PY_VIOL";
+            echo "JS: $JS_VIOL";
+            exit 1;
+          fi'
+        pass_filenames: false
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Guard 2 — forbid raw UPDATE goal_tasks outside allowlist
   # ──────────────────────────────────────────────────────────────────────────
       - id: no-raw-update-goal-tasks

@@ -1,0 +1,62 @@
+name: greplint pg-native-logs
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  log-leak-detection:
+    name: Block new file-log writers outside allowlist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block Python `with open(... "a")` outside allowlist
+        run: |
+          # Files allowed to append to disk in pg-native-logs scope:
+          #   - heartbeat_runner.py      — bifurcates by dialect; JSONL only on SQLite
+          #   - daily_output_store.py    — SQLite path; PG path writes to daily_outputs table
+          #   - meeting_store.py         — SQLite path; PG path writes to meeting_transcripts table
+          #   - plugin_hook_runner.py    — SQLite path; PG path writes to plugin_hook_runs table
+          #   - workspace_audit.py       — SQLite path; PG path writes to workspace_mutations table
+          #   - routine_run_store.py     — SQLite path; PG path writes to routine_runs table
+          #   - brain_repo/transcripts_mirror.py — bifurcates; PG path writes to brain_repo_transcripts table
+          #   - ADWs/runner.py           — dev-tooling ADW runner, intentionally file-based (not the Flask scheduler)
+          #   - cli/, tests/, scripts/, alembic/, setup.py, backup.py — bootstrap/test paths
+          ALLOWLIST='heartbeat_runner\.py|daily_output_store\.py|meeting_store\.py|plugin_hook_runner\.py|workspace_audit\.py|routine_run_store\.py|brain_repo/transcripts_mirror\.py|ADWs/runner\.py|cli/|tests/|scripts/|alembic/|setup\.py|backup\.py'
+          violations=$(grep -rE 'with open\([^)]*["'"'"']a["'"'"']' dashboard/ ADWs/ scheduler.py 2>/dev/null \
+            --include='*.py' \
+            | grep -vE "$ALLOWLIST" \
+            | grep -v '# noqa: pg-native-logs' \
+            || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Python file-append found outside pg-native-logs allowlist."
+            echo "Logs in PG mode must go through DB writers (workspace_audit, routine_run_store, etc.)."
+            echo "If the write is legitimate (SQLite-only fallback or WAL), add # noqa: pg-native-logs."
+            echo
+            echo "$violations"
+            exit 1
+          fi
+          echo "Python guard passed"
+
+      - name: Block JS `fs.appendFile*` outside allowlist
+        run: |
+          # Files allowed to call fs.appendFile in JS:
+          #   - chat-logger.js   — hybrid write-ahead buffer (JSONL WAL + async PG sync)
+          #   - sync-queue.js    — pending/synced sidecars for chat WAL replay
+          #   - sync-marker.js   — WAL sidecar helper
+          JS_ALLOW='chat-logger\.js|sync-queue\.js|sync-marker\.js'
+          violations=$(grep -rE 'fs\.appendFile' dashboard/terminal-server/ 2>/dev/null \
+            --include='*.js' \
+            --exclude-dir=node_modules \
+            | grep -vE "$JS_ALLOW" \
+            | grep -v '// noqa: pg-native-logs' \
+            || true)
+          if [ -n "$violations" ]; then
+            echo "::error::JS file-append found outside pg-native-logs allowlist."
+            echo "$violations"
+            exit 1
+          fi
+          echo "JS guard passed"
