@@ -37,7 +37,6 @@ export type {
 export { SchemaTable } from './SchemaTable.js'
 export type { SchemaTableProps, TableColumn, ColumnType } from './SchemaTable.js'
 
-// ─── Reserved hook names (Step 2) ────────────────────────────────────────────
-// usePluginNavigation is implemented in Step 2 (host renderer rewrite).
-// Name reserved here to prevent collision.
-// export { usePluginNavigation } from './navigation.js'
+// ─── Plugin navigation (Step 2) ──────────────────────────────────────────────
+export { usePluginNavigation, PluginNavigationContext } from './navigation.js'
+export type { PluginNavigationContextValue } from './navigation.js'
