@@ -80,18 +80,24 @@ def release_lock():
     PID_FILE.unlink(missing_ok=True)
 
 
-def run_adw(name: str, script: str, args: str = ""):
-    """Execute a routine as subprocess."""
+def run_adw(name: str, script: str, args: str = "", triggered_by: str = "scheduler"):
+    """Execute a routine as subprocess and persist stdout/stderr."""
+    from datetime import timezone as _tz
     now = datetime.now().strftime("%H:%M")
     script_path = ROUTINES_DIR / script
     if not script_path.exists():
         print(f"  {now} ✗ {name} — script not found: {script}")
         return
 
+    # Derive slug from script filename (strip .py)
+    routine_slug = Path(script).stem
+
     try:
         cmd = f"{PYTHON} {script_path}"
         if args:
             cmd += f" {args}"
+
+        started_at = datetime.now(_tz.utc)
         result = subprocess.run(
             cmd,
             shell=True,
@@ -100,8 +106,25 @@ def run_adw(name: str, script: str, args: str = ""):
             capture_output=True,
             text=True,
         )
+        ended_at = datetime.now(_tz.utc)
+
         status = "✓" if result.returncode == 0 else "✗"
         print(f"  {now} {status} {name}")
+
+        try:
+            from routine_run_store import persist_routine_run
+            persist_routine_run(
+                routine_slug=routine_slug,
+                started_at=started_at,
+                ended_at=ended_at,
+                exit_code=result.returncode,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+                triggered_by=triggered_by,
+            )
+        except Exception as _pe:
+            print(f"  {now} ⚠ {name} — run persist failed: {_pe}")
+
     except subprocess.TimeoutExpired:
         print(f"  {now} ✗ {name} timeout (15min)")
     except Exception as e:
