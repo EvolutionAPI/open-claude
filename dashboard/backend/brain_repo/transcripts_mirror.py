@@ -8,7 +8,42 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sqlalchemy import text
+
 log = logging.getLogger(__name__)
+
+
+def _mirror_to_db(jsonl_path: Path, project_slug: str) -> None:
+    """PG mode: upsert transcript content into brain_repo_transcripts."""
+    from config_store import get_dialect
+    from db.engine import get_engine
+
+    content = jsonl_path.read_text(encoding="utf-8")
+    session_id = jsonl_path.stem
+    mtime = datetime.fromtimestamp(jsonl_path.stat().st_mtime, tz=timezone.utc)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO brain_repo_transcripts
+                    (project_slug, session_id, source_path, content, mtime, mirrored_at)
+                VALUES (:slug, :sid, :src, :content, :mtime, NOW())
+                ON CONFLICT ON CONSTRAINT uq_brain_repo_project_session DO UPDATE SET
+                    content = EXCLUDED.content,
+                    mtime = EXCLUDED.mtime,
+                    mirrored_at = NOW()
+                """
+            ),
+            {
+                "slug": project_slug,
+                "sid": session_id,
+                "src": str(jsonl_path),
+                "content": content,
+                "mtime": mtime,
+            },
+        )
 
 
 def _slugify(text: str) -> str:
@@ -68,13 +103,15 @@ def mirror_transcripts(
 ) -> int:
     """Mirror recent Claude Code CLI transcript files to brain_repo.
 
-    Copies .jsonl files modified in the last `days` days from the Claude
-    projects directory to memory/raw-transcripts/<project-slug>/<session>.jsonl.
+    PostgreSQL mode: upserts rows into brain_repo_transcripts table.
+    SQLite mode:     copies .jsonl files to memory/raw-transcripts/<project-slug>/<session>.jsonl.
 
-    Also prunes files in brain_repo older than `days` days (rolling window).
+    Also prunes file-based copies older than `days` days when in SQLite mode.
 
-    Returns count of files copied/updated.
+    Returns count of files mirrored/updated.
     """
+    from config_store import get_dialect
+
     service_user = _detect_service_user(install_dir)
     projects_dir = find_claude_projects_dir(service_user)
 
@@ -82,8 +119,13 @@ def mirror_transcripts(
         log.info("mirror_transcripts: Claude projects dir not found, skipping")
         return 0
 
-    dest_root = brain_repo_dir / "memory" / "raw-transcripts"
-    dest_root.mkdir(parents=True, exist_ok=True)
+    use_db = get_dialect() == "postgresql"
+
+    # SQLite mode only: prepare dest root
+    dest_root: Path | None = None
+    if not use_db:
+        dest_root = brain_repo_dir / "memory" / "raw-transcripts"
+        dest_root.mkdir(parents=True, exist_ok=True)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     copied = 0
@@ -93,8 +135,10 @@ def mirror_transcripts(
             continue
 
         project_slug = _slugify(project_dir.name)
-        dest_project = dest_root / project_slug
-        dest_project.mkdir(parents=True, exist_ok=True)
+
+        if not use_db:
+            dest_project = dest_root / project_slug  # type: ignore[operator]
+            dest_project.mkdir(parents=True, exist_ok=True)
 
         for jsonl_file in project_dir.glob("*.jsonl"):
             try:
@@ -102,31 +146,37 @@ def mirror_transcripts(
                 if mtime < cutoff:
                     continue
 
-                dest_file = dest_project / jsonl_file.name
-                # Copy if dest doesn't exist or source is newer
-                if not dest_file.exists() or mtime > datetime.fromtimestamp(
-                    dest_file.stat().st_mtime, tz=timezone.utc
-                ):
-                    shutil.copy2(str(jsonl_file), str(dest_file))
+                if use_db:
+                    _mirror_to_db(jsonl_file, project_slug)
                     copied += 1
-                    log.debug("mirror_transcripts: copied %s", jsonl_file.name)
+                    log.debug("mirror_transcripts: upserted %s", jsonl_file.name)
+                else:
+                    dest_file = dest_project / jsonl_file.name  # type: ignore[possibly-undefined]
+                    # Copy if dest doesn't exist or source is newer
+                    if not dest_file.exists() or mtime > datetime.fromtimestamp(
+                        dest_file.stat().st_mtime, tz=timezone.utc
+                    ):
+                        shutil.copy2(str(jsonl_file), str(dest_file))
+                        copied += 1
+                        log.debug("mirror_transcripts: copied %s", jsonl_file.name)
 
             except Exception as exc:
-                log.warning("mirror_transcripts: error copying %s: %s", jsonl_file, exc)
+                log.warning("mirror_transcripts: error mirroring %s: %s", jsonl_file, exc)
 
-    # Pruning: remove files older than `days` days from brain_repo
-    pruned = 0
-    for old_file in dest_root.rglob("*.jsonl"):
-        try:
-            mtime = datetime.fromtimestamp(old_file.stat().st_mtime, tz=timezone.utc)
-            if mtime < cutoff:
-                old_file.unlink(missing_ok=True)
-                pruned += 1
-        except Exception as exc:
-            log.debug("mirror_transcripts: could not prune %s: %s", old_file, exc)
+    # Pruning: SQLite mode only — remove files older than `days` days from brain_repo
+    if not use_db and dest_root is not None:
+        pruned = 0
+        for old_file in dest_root.rglob("*.jsonl"):
+            try:
+                mtime = datetime.fromtimestamp(old_file.stat().st_mtime, tz=timezone.utc)
+                if mtime < cutoff:
+                    old_file.unlink(missing_ok=True)
+                    pruned += 1
+            except Exception as exc:
+                log.debug("mirror_transcripts: could not prune %s: %s", old_file, exc)
 
-    if pruned:
-        log.info("mirror_transcripts: pruned %d old transcript files", pruned)
+        if pruned:
+            log.info("mirror_transcripts: pruned %d old transcript files", pruned)
 
     log.info("mirror_transcripts: copied/updated %d files", copied)
     return copied
