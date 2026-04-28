@@ -313,7 +313,14 @@ def step7_invoke_claude(
 # ── Step 8: Persist status ────────────────────────────────────────────────────
 
 def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str | None, triggered_by: str, prompt_preview: str, conn):
-    """Write heartbeat_runs row and append JSONL log."""
+    """Write heartbeat_runs row; in PG mode also write prompt_full to heartbeat_run_prompts.
+
+    ``prompt_preview`` is actually the full prompt text — truncation to 1000 chars
+    happens here for the ``heartbeat_runs.prompt_preview`` column only.  The full
+    text is stored in ``heartbeat_run_prompts`` (PG mode only).
+    """
+    from config_store import get_dialect
+
     now = _now_iso()
 
     # Upsert run (idempotent: if run_id already exists with status != running, skip)
@@ -347,25 +354,39 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
             "tby": triggered_by,
         },
     )
+
+    # PG mode: store the full prompt (no truncation) in the companion table.
+    # Both writes share the same transaction for atomicity.
+    if get_dialect() == "postgresql" and prompt_preview:
+        conn.execute(
+            text("""
+                INSERT INTO heartbeat_run_prompts (run_id, prompt_full, created_at)
+                VALUES (:rid, :pf, :now)
+                ON CONFLICT (run_id) DO UPDATE SET prompt_full = EXCLUDED.prompt_full
+            """),
+            {"rid": run_id, "pf": prompt_preview, "now": now},
+        )
+
     conn.commit()
 
-    # Append JSONL log
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    log_file = LOGS_DIR / f"{heartbeat_id}-{today}.jsonl"
-    log_entry = {
-        "run_id": run_id,
-        "heartbeat_id": heartbeat_id,
-        "agent": result.get("agent", ""),
-        "status": result["status"],
-        "duration_ms": result.get("duration_ms"),
-        "cost_usd": result.get("cost_usd"),
-        "triggered_by": triggered_by,
-        "ts": now,
-        "error": result.get("error"),
-    }
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    # SQLite mode: append JSONL log (redundant in PG — heartbeat_runs is the record).
+    if get_dialect() != "postgresql":
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_file = LOGS_DIR / f"{heartbeat_id}-{today}.jsonl"
+        log_entry = {
+            "run_id": run_id,
+            "heartbeat_id": heartbeat_id,
+            "agent": result.get("agent", ""),
+            "status": result["status"],
+            "duration_ms": result.get("duration_ms"),
+            "cost_usd": result.get("cost_usd"),
+            "triggered_by": triggered_by,
+            "ts": now,
+            "error": result.get("error"),
+        }
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
 
 # ── Step 9: Release checkout ──────────────────────────────────────────────────
