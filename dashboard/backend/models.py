@@ -59,7 +59,7 @@ class AuditLog(db.Model):
     username = db.Column(db.String(80))
     action = db.Column(db.String(50), nullable=False)
     resource = db.Column(db.String(100))
-    detail = db.Column(db.Text)
+    detail = db.Column("details", db.Text)  # DB col: details; Python attr: detail
     ip_address = db.Column(db.String(45))
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -85,11 +85,11 @@ class LoginThrottle(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dimension = db.Column(db.String(20), nullable=False)  # username | ip
     lookup_key = db.Column(db.String(191), nullable=False, index=True)
-    failed_attempts = db.Column(db.Integer, nullable=False, default=0)
+    failed_attempts = db.Column("fail_count", db.Integer, nullable=False, default=0)  # DB col: fail_count
     first_failed_at = db.Column(db.DateTime, nullable=True)
-    last_failed_at = db.Column(db.DateTime, nullable=True)
+    last_failed_at = db.Column("last_attempt_at", db.DateTime, nullable=True)  # DB col: last_attempt_at
     locked_until = db.Column(db.DateTime, nullable=True)
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    # updated_at: Python-only onupdate tracking; not in DB schema (omitted from mapping)
 
 
 # All available resources and their possible actions
@@ -401,8 +401,8 @@ class FileShare(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     token = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    path = db.Column(db.String(500), nullable=False)       # repo-relative path
-    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    path = db.Column("file_path", db.String(500), nullable=False)       # DB col: file_path; Python attr: path
+    created_by_id = db.Column("created_by_user_id", db.Integer, db.ForeignKey("users.id"), nullable=False)  # DB col: created_by_user_id
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     expires_at = db.Column(db.DateTime, nullable=True)      # null = no expiration
     view_count = db.Column(db.Integer, default=0)
@@ -662,6 +662,7 @@ class GoalProject(db.Model):
     description = db.Column(db.Text)
     workspace_folder_path = db.Column(db.String(500))
     status = db.Column(db.String(20), nullable=False, default="active")
+    source_plugin = db.Column(db.String, nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -698,6 +699,7 @@ class Goal(db.Model):
     current_value = db.Column(db.Float, nullable=False, default=0.0)
     due_date = db.Column(db.String(20))
     status = db.Column(db.String(20), nullable=False, default="active")
+    source_plugin = db.Column(db.String, nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -737,6 +739,7 @@ class GoalTask(db.Model):
     locked_at = db.Column(db.String(30))
     locked_by = db.Column(db.String(100))
     due_date = db.Column(db.String(20))
+    source_plugin = db.Column(db.String, nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -799,6 +802,7 @@ class Ticket(db.Model):
     created_by = db.Column(db.String(100), nullable=False, default="davidson")
     source_agent = db.Column(db.String(100), nullable=True)
     source_session_id = db.Column(db.String(36), nullable=True)
+    source_plugin = db.Column(db.String, nullable=True)
     # thread-areas columns
     workspace_path = db.Column(db.Text, nullable=True)
     memory_md_path = db.Column(db.Text, nullable=True)
