@@ -18,8 +18,7 @@ decision is made by reading ``config_json``, which preserves the original YAML
 shape verbatim ({"time": "06:50"}, {"interval": 30}, {"day": "friday", "time": "09:00"}).
 This ensures full compatibility with the current scheduler without inventing cron.
 
-TODO(PG-NC-8): consolidate LISTEN connections via multiplexer if connection
-budget becomes issue.
+NOTE(PG-NC-8): LISTEN multiplexer deferred — see workspace/development/features/pg-native-configs/[C]known-deferrals.md.
 """
 
 from __future__ import annotations

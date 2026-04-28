@@ -268,8 +268,7 @@ def _start_listen_thread() -> None:
         This implements a *per-dispatcher* LISTEN connection (1 extra PG conn).
         ADR PG-NC-8 v2 specifies a single Redis-backed multiplexer as the
         target architecture to cap PG connections at 1 across all processes.
-        TODO(PG-NC-8): migrate this to Redis pub-sub subscriber once
-        config_multiplexer.py is built (Phase roadmap).
+        NOTE(PG-NC-8): Redis pub-sub multiplexer deferred — see workspace/development/features/pg-native-configs/[C]known-deferrals.md.
 
     SQLite: no-op — YAML file changes are not watched here.
     """

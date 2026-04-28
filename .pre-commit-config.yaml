@@ -24,6 +24,30 @@ repos:
         types: [python]
 
   # ──────────────────────────────────────────────────────────────────────────
+  # Guard 3 — yaml.safe_load outside PG-native-configs allowlist (AC10)
+  # ──────────────────────────────────────────────────────────────────────────
+      - id: no-yaml-safe-load-pg-leak
+        name: "Guard 3 — yaml.safe_load outside PG-native-configs allowlist (AC10)"
+        language: system
+        entry: bash -c '
+          ALLOWLIST="config_store\.py|heartbeat_schema\.py|plugin_loader\.py|plugin_schema\.py|plugin_integration_health\.py|brain_repo/manifest\.py|routes/plugins\.py|routes/integrations\.py|routes/_helpers\.py|routes/config\.py|routes/settings\.py|alembic/versions/|claude_hook_dispatcher\.py|routine_store\.py|dashboard/cli/|tests/";
+          VIOLATIONS=$(grep -rn "yaml.safe_load" dashboard/
+            --include="*.py"
+            | grep -v __pycache__
+            | grep -vE "$ALLOWLIST"
+            | grep -v "# noqa: pg-native-configs"
+            || true);
+          if [ -n "$VIOLATIONS" ]; then
+            echo "yaml.safe_load found outside PG-native-configs allowlist (AC10):";
+            echo "$VIOLATIONS";
+            echo "";
+            echo "Fix: add dialect guard or # noqa: pg-native-configs with reason.";
+            exit 1;
+          fi'
+        pass_filenames: false
+        types: [python]
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Guard 2 — forbid raw UPDATE goal_tasks outside allowlist
   # ──────────────────────────────────────────────────────────────────────────
       - id: no-raw-update-goal-tasks

@@ -66,6 +66,44 @@ jobs:
           fi
           echo "Guard 2 passed — no raw UPDATE goal_tasks outside allowlist."
 
+      - name: Guard 3 — yaml.safe_load outside PG-native-configs allowlist (AC10)
+        run: |
+          # Files that legitimately call yaml.safe_load (see ALLOWLIST.md §PG-Native-Configs):
+          #   config_store.py          — private _get/_set/_list_from_yaml (SQLite-only privates)
+          #   heartbeat_schema.py      — load_heartbeats_yaml (SQLite-only)
+          #   plugin_loader.py         — import plugin YAML to DB (already PG-guarded)
+          #   plugin_schema.py         — plugin manifest metadata reader
+          #   plugin_integration_health.py — plugin manifest health check
+          #   brain_repo/manifest.py   — brain repo manifest metadata
+          #   routes/plugins.py        — plugin manifest metadata reader
+          #   routes/integrations.py   — plugin manifest metadata readers
+          #   routes/_helpers.py       — plugin routines discovery (metadata)
+          #   routes/config.py         — guarded by get_dialect() == "postgresql" check
+          #   routes/settings.py       — _load_yaml called only in SQLite branch
+          #   routes/goals.py          — marked noqa: pg-native-configs (SQLite-only path)
+          #   routes/triggers.py       — marked noqa: pg-native-configs (SQLite-only path)
+          #   routes/scheduler.py      — marked noqa: pg-native-configs (SQLite-only path)
+          #   alembic/versions/        — migration seeds (not runtime)
+          #   claude_hook_dispatcher.py — plugin.yaml metadata only
+          #   routine_store.py         — import_from_yaml (CLI migration tool only)
+          #   tests/                   — test suite
+          ALLOWLIST="config_store\.py|heartbeat_schema\.py|plugin_loader\.py|plugin_schema\.py|plugin_integration_health\.py|brain_repo/manifest\.py|routes/plugins\.py|routes/integrations\.py|routes/_helpers\.py|routes/config\.py|routes/settings\.py|alembic/versions/|claude_hook_dispatcher\.py|routine_store\.py|dashboard/cli/|tests/"
+          VIOLATIONS=$(grep -rn "yaml.safe_load" dashboard/ \
+                       --include="*.py" \
+                       | grep -v __pycache__ \
+                       | grep -vE "$ALLOWLIST" \
+                       | grep -v "# noqa: pg-native-configs" \
+                       || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::yaml.safe_load found outside PG-native-configs allowlist (AC10):"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "Fix: add a dialect guard (if get_dialect() != 'postgresql') OR add"
+            echo "     '# noqa: pg-native-configs' with a comment explaining why it is safe."
+            exit 1
+          fi
+          echo "Guard 3 passed — no yaml.safe_load outside allowlist."
+
   # ──────────────────────────────────────────────────────────────────────────
   # SQLite backend — always runs, must match existing test suite behaviour
   # ──────────────────────────────────────────────────────────────────────────
