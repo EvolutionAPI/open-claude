@@ -304,6 +304,9 @@ db-migrate-skip-plugins:  ## 🚚 Migrate skipping incompatible plugins (SOURCE,
 import-configs:     ## 📥 Import file configs to Postgres (one-shot migration, idempotent)
 	@$(PYTHON) -m dashboard.cli.evonexus_import_configs $(ARGS)
 
+import-logs:        ## 📥 Import file-based logs to Postgres (one-shot backfill, idempotent)
+	@$(PYTHON) -m dashboard.cli.evonexus_import_logs $(ARGS)
+
 db-upgrade:         ## ⬆️  Apply pending Alembic migrations (uses DATABASE_URL)
 	@cd dashboard/alembic && $(PYTHON) -m alembic upgrade head
 
@@ -322,5 +325,5 @@ logs-cleanup:       ## 🧹 Apply TTL retention to native logs (PG only)
 help:               ## 📖 Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: morning eod memory memory-lint weekly run list-routines daily scheduler dashboard-app terminal-logs terminal-stop telegram telegram-stop telegram-attach discord-channel discord-channel-stop discord-channel-attach imessage imessage-stop imessage-attach backup backup-s3 restore backup-list backup-daily logs logs-detail logs-tail metrics clean-logs docker-dashboard docker-telegram docker-down docker-logs docker-run docker-build help docs-build setup team-strategy team-dashboard team-weekly learn-weekly heartbeat-lint heartbeat-run migrate-dryrun db-migrate db-migrate-skip-plugins import-configs db-upgrade db-downgrade db-current db-history logs-cleanup
+.PHONY: morning eod memory memory-lint weekly run list-routines daily scheduler dashboard-app terminal-logs terminal-stop telegram telegram-stop telegram-attach discord-channel discord-channel-stop discord-channel-attach imessage imessage-stop imessage-attach backup backup-s3 restore backup-list backup-daily logs logs-detail logs-tail metrics clean-logs docker-dashboard docker-telegram docker-down docker-logs docker-run docker-build help docs-build setup team-strategy team-dashboard team-weekly learn-weekly heartbeat-lint heartbeat-run migrate-dryrun db-migrate db-migrate-skip-plugins import-configs import-logs db-upgrade db-downgrade db-current db-history logs-cleanup
 .DEFAULT_GOAL := help
