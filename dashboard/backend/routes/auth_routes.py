@@ -157,15 +157,15 @@ def _save_workspace_config(ws: dict):
     # Generate CLAUDE.md inline (no template needed)
     claude_md_path = WORKSPACE / "CLAUDE.md"
     if not claude_md_path.exists():
-        ws = config["workspace"]
+        # ws_data is always defined regardless of dialect; use it directly.
         claude_md_path.write_text(
-            f"# {ws['name']} — Claude Context File\n\n"
+            f"# {ws_data['name']} — Claude Context File\n\n"
             f"Claude reads this file at the start of every session.\n\n"
             f"## Who I Am\n\n"
-            f"**Name:** {ws['owner']}\n"
-            f"**Company:** {ws['company']}\n"
-            f"**Timezone:** {ws['timezone']}\n\n"
-            f"## Language\n\nAlways respond in **{ws['language']}**.\n",
+            f"**Name:** {ws_data['owner']}\n"
+            f"**Company:** {ws_data['company']}\n"
+            f"**Timezone:** {ws_data['timezone']}\n\n"
+            f"## Language\n\nAlways respond in **{ws_data['language']}**.\n",
             encoding="utf-8",
         )
 

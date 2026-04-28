@@ -1922,20 +1922,54 @@ def main():
 
     print(f"  {BOLD}{T('creating_workspace')}{RESET}")
 
-    # workspace.yaml
-    config_dir = WORKSPACE / "config"
-    config_dir.mkdir(exist_ok=True)
-    (config_dir / "workspace.yaml").write_text(generate_workspace_yaml(config), encoding="utf-8")
-    print(f"  {GREEN}✓{RESET} {T('generated_workspace_yaml')}")
+    # Detect PG mode from DATABASE_URL in env or .env file.
+    _database_url = os.environ.get("DATABASE_URL", "")
+    if not _database_url:
+        # Try reading from existing .env
+        _env_path = WORKSPACE / ".env"
+        if _env_path.exists():
+            for _line in _env_path.read_text(encoding="utf-8").splitlines():
+                _line = _line.strip()
+                if _line.startswith("DATABASE_URL="):
+                    _database_url = _line[len("DATABASE_URL="):].strip().strip('"').strip("'")
+                    break
 
-    # .env
+    _pg_mode = _database_url.startswith("postgresql") or _database_url.startswith("postgres://")
+
+    if _pg_mode:
+        # PG mode: write workspace config directly to the database.
+        # Ensure the backend path is importable.
+        _backend_path = str(WORKSPACE / "dashboard" / "backend")
+        if _backend_path not in sys.path:
+            sys.path.insert(0, _backend_path)
+        try:
+            from config_store import set_config as _set_config  # type: ignore[import]
+            _set_config("workspace.name", config["workspace_name"])
+            _set_config("workspace.owner", config["owner_name"])
+            _set_config("workspace.company", config["company_name"])
+            _set_config("workspace.timezone", config["timezone"])
+            _set_config("workspace.language", config["language"])
+            _set_config("workspace.dashboard.port", config["dashboard_port"])
+            print(f"  {GREEN}✓{RESET} Workspace config saved to PostgreSQL")
+        except Exception as _exc:
+            print(f"  {YELLOW}!{RESET} Could not write workspace config to DB: {_exc}")
+            print(f"    {DIM}Run `make db-upgrade` then retry setup.{RESET}")
+    else:
+        # SQLite mode: write workspace.yaml as before.
+        config_dir = WORKSPACE / "config"
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / "workspace.yaml").write_text(generate_workspace_yaml(config), encoding="utf-8")
+        print(f"  {GREEN}✓{RESET} {T('generated_workspace_yaml')}")
+
+    # .env — always written (contains DATABASE_URL, API keys, DASHBOARD_PORT)
     copy_env_example(config)
 
     # KNOWLEDGE_MASTER_KEY (idempotent; generated on first setup)
     ensure_knowledge_master_key(config)
 
-    # routines.yaml
-    copy_routines_config(config)
+    # routines.yaml — SQLite mode only; PG mode uses routine_definitions table.
+    if not _pg_mode:
+        copy_routines_config(config)
 
     # CLAUDE.md
     claude_md = generate_claude_md(config)
