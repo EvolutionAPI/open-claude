@@ -2527,6 +2527,55 @@ def serve_widget(slug: str, subpath: str):
 
 
 # ---------------------------------------------------------------------------
+# GET /plugins/<slug>/dist/<path:subpath> — v2 plugin bundle serving (Step 2)
+#
+# Mirrors the widget endpoint above but serves from plugins/{slug}/dist/ so
+# that v2 bundles built to dist/ by Vite are reachable via dynamic import().
+# Same security model: login required, realpath containment, MIME whitelist.
+# ---------------------------------------------------------------------------
+
+@bp.route("/plugins/<slug>/dist/<path:subpath>", methods=["GET"])
+@login_required
+def serve_plugin_bundle(slug: str, subpath: str):
+    """Serve v2 plugin page bundles from plugins/{slug}/dist/ (Step 2)."""
+    plugin_dir = PLUGINS_DIR / slug
+    dist_root = os.path.realpath(str(plugin_dir / "dist"))
+    requested = os.path.realpath(os.path.join(dist_root, subpath))
+
+    # Containment check — must stay inside plugins/{slug}/dist/
+    if not requested.startswith(dist_root + os.sep):
+        abort(404)
+
+    if not os.path.isfile(requested):
+        abort(404)
+
+    ext = os.path.splitext(requested)[1].lower()
+    mime_map = {
+        ".js": "application/javascript; charset=utf-8",
+        ".mjs": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+    }
+    mime = mime_map.get(ext)
+    if not mime:
+        abort(404)
+
+    from flask import make_response
+    resp = make_response(open(requested, "rb").read())
+    resp.headers["Content-Type"] = mime
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Cache-Control"] = "public, max-age=3600, immutable"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'none'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "connect-src 'self'; "
+        "style-src 'unsafe-inline' 'self'; "
+        "img-src 'self' data:"
+    )
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # GET /api/plugins/<slug>/update/preview — read-only diff before applying update
 #
 # AC1.2.1: returns added/removed/modified breakdown
