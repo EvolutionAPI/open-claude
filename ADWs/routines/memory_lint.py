@@ -36,7 +36,7 @@ Be concise. Only flag real problems, not hypothetical ones."""
 def main():
     banner("🔍 Memory Lint", "Health check • Contradictions • Gaps • Stale data | @clawdia")
     results = []
-    results.append(run_claude(PROMPT, log_name="memory-lint", timeout=600, agent="clawdia-assistant"))
+    results.append(run_claude(PROMPT, log_name="memory-lint", timeout=600, agent="clawdia-assistant", daily_output_kind="memory-lint"))
     summary(results, "Memory Lint")
 
 if __name__ == "__main__":

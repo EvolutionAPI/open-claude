@@ -31,7 +31,7 @@ Be concise — don't create memories for obvious things or things already docume
 def main():
     banner("🧠 Memory Sync", "Logs • Meetings → Memory | @clawdia")
     results = []
-    results.append(run_claude(PROMPT, log_name="memory-sync", timeout=600, agent="clawdia-assistant"))
+    results.append(run_claude(PROMPT, log_name="memory-sync", timeout=600, agent="clawdia-assistant", daily_output_kind="memory-sync"))
     summary(results, "Memory Sync")
 
 if __name__ == "__main__":

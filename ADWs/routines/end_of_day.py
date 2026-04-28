@@ -8,7 +8,7 @@ from runner import run_skill, banner, summary
 def main():
     banner("🌙 End of Day", "Memória • Logs • Tarefas • Aprendizados | @clawdia")
     results = []
-    results.append(run_skill("prod-end-of-day", log_name="end-of-day", timeout=600, agent="clawdia-assistant", notify_telegram=True))
+    results.append(run_skill("prod-end-of-day", log_name="end-of-day", timeout=600, agent="clawdia-assistant", notify_telegram=True, daily_output_kind="eod"))
     summary(results, "End of Day")
 
 if __name__ == "__main__":

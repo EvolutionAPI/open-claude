@@ -7,7 +7,7 @@ import subprocess
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, date as date_type
 from pathlib import Path
 
 from rich.console import Console
@@ -28,6 +28,63 @@ console = Console(theme=theme)
 WORKSPACE = Path(__file__).parent.parent
 LOGS_DIR = Path(__file__).parent / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# daily-logs post-process helpers
+# ---------------------------------------------------------------------------
+_DAILY_LOGS_DIR = WORKSPACE / "workspace" / "daily-logs"
+_DAILY_STORE_PATH = WORKSPACE / "dashboard" / "backend"
+
+
+def _snapshot_daily_logs() -> dict[str, float]:
+    """Return {path: mtime} for all current files in workspace/daily-logs/."""
+    if not _DAILY_LOGS_DIR.exists():
+        return {}
+    return {
+        str(p): p.stat().st_mtime
+        for p in _DAILY_LOGS_DIR.iterdir()
+        if p.is_file() and p.suffix in (".md", ".html")
+    }
+
+
+def _persist_new_daily_outputs(
+    before: dict[str, float],
+    kind: str,
+    agent: str | None,
+) -> None:
+    """Insert newly written daily-log files into daily_outputs (PG only).
+
+    Diffs the before-snapshot against the current state of daily-logs/.
+    New or modified files are read and stored via daily_output_store.
+    """
+    try:
+        sys.path.insert(0, str(_DAILY_STORE_PATH))
+        from daily_output_store import write_daily_output, get_dialect  # type: ignore[import]
+        if get_dialect() != "postgresql":
+            return  # SQLite — files stay on disk, nothing to do
+        after = _snapshot_daily_logs()
+        for path_str, mtime in after.items():
+            if path_str not in before or before[path_str] != mtime:
+                p = Path(path_str)
+                try:
+                    content = p.read_text(encoding="utf-8")
+                    fmt = p.suffix.lstrip(".")
+                    write_daily_output(
+                        date=date_type.today(),
+                        kind=kind,
+                        content=content,
+                        format=fmt,
+                        agent=agent,
+                    )
+                    console.print(f"  [dim]  → daily_output saved ({p.name})[/dim]")
+                except Exception as exc:
+                    console.print(f"  [warning]  ⚠ daily_output save failed ({p.name}): {exc}[/warning]")
+    except ImportError:
+        pass  # daily_output_store not available — skip silently
+    finally:
+        if str(_DAILY_STORE_PATH) in sys.path:
+            sys.path.remove(str(_DAILY_STORE_PATH))
+
 
 def _timestamp():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -195,7 +252,13 @@ def _get_provider_config() -> tuple[str, dict]:
         return "claude", {}
 
 
-def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent: str = None) -> dict:
+def run_claude(
+    prompt: str,
+    log_name: str = "unnamed",
+    timeout: int = 600,
+    agent: str = None,
+    daily_output_kind: str | None = None,
+) -> dict:
     """
     Execute AI CLI (claude or openclaude) with streaming output.
 
@@ -207,6 +270,9 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
         log_name: Name for logs
         timeout: Timeout in seconds
         agent: Agent name (.claude/agents/*.md) — if None, runs without agent
+        daily_output_kind: When set, files written to workspace/daily-logs/ by the
+            subprocess are snapshotted and persisted to daily_outputs (PG mode).
+            In SQLite mode this is a no-op — files stay on disk as before.
     """
     cli_command, provider_env = _get_provider_config()
 
@@ -216,6 +282,9 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
         agent_label = ""
     provider_label = f"[{cli_command}]" if cli_command != "claude" else ""
     console.print(f"  [step]▶[/step] {log_name} [dim]{agent_label} {provider_label}[/dim]", end="")
+
+    # Snapshot before — so we can detect files written by the subprocess
+    before_snapshot = _snapshot_daily_logs() if daily_output_kind else {}
 
     start_time = datetime.now()
 
@@ -255,6 +324,9 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
                 tokens_total = usage["input_tokens"] + usage["output_tokens"]
                 cost_str = f" | {tokens_total:,}tok | ${usage['cost_usd']:.2f}"
             console.print(f"\r  [success]✓[/success] {log_name} [dim]({duration:.0f}s{cost_str})[/dim]")
+            # Post-process: persist new daily-log files to DB (PG mode only)
+            if daily_output_kind:
+                _persist_new_daily_outputs(before_snapshot, daily_output_kind, agent)
         else:
             console.print(f"\r  [error]✗[/error] {log_name} [dim](exit {process.returncode}, {duration:.0f}s)[/dim]")
             if stderr:
@@ -298,6 +370,7 @@ def run_skill(
     timeout: int = 600,
     agent: str = None,
     notify_telegram: bool | str = False,
+    daily_output_kind: str | None = None,
 ) -> dict:
     """Execute a skill via CLI, optionally with an agent.
 
@@ -307,6 +380,8 @@ def run_skill(
             True            — appends notification instruction; reads chat_id from
                               TELEGRAM_CHAT_ID env var.
             "<chat_id>"     — same as True but overrides the chat_id.
+        daily_output_kind: When set, files written to workspace/daily-logs/ by the
+            skill subprocess are persisted to daily_outputs in PG mode.
     """
     prompt = f"Execute the skill /{skill_name} {args}".strip()
     if notify_telegram:
@@ -325,7 +400,7 @@ def run_skill(
                 f"Nunca chame reply para progresso, confirmação intermediária ou teste.\n"
                 f"---"
             )
-    return run_claude(prompt, log_name or skill_name, timeout, agent=agent)
+    return run_claude(prompt, log_name or skill_name, timeout, agent=agent, daily_output_kind=daily_output_kind)
 
 
 def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:

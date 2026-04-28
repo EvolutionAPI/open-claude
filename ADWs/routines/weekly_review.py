@@ -46,10 +46,10 @@ def main():
 
     if use_team:
         banner("📊 Weekly Review", "Agent Team Mode (parallel) — higher token cost | @clawdia")
-        results = [run_claude(TEAM_PROMPT, log_name="team-weekly-review", timeout=900, agent="clawdia-assistant")]
+        results = [run_claude(TEAM_PROMPT, log_name="team-weekly-review", timeout=900, agent="clawdia-assistant", daily_output_kind="weekly")]
     else:
         banner("📊 Weekly Review", "Meetings • Tasks • Agenda • Memory | @clawdia")
-        results = [run_claude(PROMPT, log_name="weekly-review", timeout=900, agent="clawdia-assistant")]
+        results = [run_claude(PROMPT, log_name="weekly-review", timeout=900, agent="clawdia-assistant", daily_output_kind="weekly")]
 
     summary(results, "Weekly Review" + (" (Team)" if use_team else ""))
 
