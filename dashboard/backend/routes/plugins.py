@@ -2444,6 +2444,16 @@ def writable_data(slug: str, resource_id: str):
     if unknown:
         return jsonify({"error": f"Columns not allowed: {unknown}"}), 400
 
+    # Empty-string → NULL coercion (PG strict-typing fix). Postgres rejects
+    # '' as a value for DATE / INTEGER / NUMERIC / BOOLEAN columns with
+    # InvalidDatetimeFormat / InvalidTextRepresentation. SQLite is lenient
+    # and stores '' as-is, so plugins authored against SQLite ship forms
+    # that submit '' for unfilled optional fields. Coerce '' to None
+    # uniformly so plugin authors don't have to remember to strip.
+    for k in list(body.keys()):
+        if body[k] == "":
+            body[k] = None
+
     if method == "POST":
         # INSERT — use named params to avoid positional ? (portable across dialects)
         cols = [c for c in body if c in allowed_columns]
