@@ -142,7 +142,7 @@ class TestVerification:
         import dashboard.cli.evonexus_migrate as mod
         original_verify = mod._verify
 
-        def _patched_verify(src_eng, dst_eng):
+        def _patched_verify(src_eng, dst_eng, skipped_tables=None):
             # First inject a ghost row to cause real mismatch
             with dst_eng.begin() as dc:
                 dc.execute(text("""
@@ -150,7 +150,7 @@ class TestVerification:
                         onboarding_completed_agents_visit, created_at)
                     VALUES ('ghost', 'h', 'viewer', 1, 0, '2024-01-01T00:00:00')
                 """))
-            return original_verify(src_eng, dst_eng)
+            return original_verify(src_eng, dst_eng, skipped_tables=skipped_tables)
 
         mod._verify = _patched_verify
         try:
