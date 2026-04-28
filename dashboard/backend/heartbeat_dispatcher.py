@@ -160,11 +160,26 @@ def _load_enabled_heartbeats() -> list[dict]:
         conn.close()
 
 
-def _sync_heartbeats_to_db():
-    """Mirror config/heartbeats.yaml into heartbeats table."""
-    import sys
-    import importlib
+def _get_dialect() -> str:
+    """Return active SQLAlchemy dialect name ('postgresql' or 'sqlite')."""
+    from db.engine import get_engine
+    return get_engine().dialect.name
 
+
+def _sync_heartbeats_to_db():
+    """Mirror config/heartbeats.yaml into heartbeats table (SQLite mode only).
+
+    In PostgreSQL mode this is a no-op: the DB is the source of truth and YAML
+    is never read at runtime (PG-NC-3 / ADR pg-native-configs).
+    """
+    import sys
+
+    if _get_dialect() == "postgresql":
+        # PG mode: DB is source of truth — no YAML sync needed.
+        print("[dispatcher] PG mode: skipping YAML sync (DB is source of truth)", flush=True)
+        return
+
+    # SQLite mode: mirror YAML → DB as before.
     # Ensure backend dir is in path
     backend_dir = Path(__file__).resolve().parent
     if str(backend_dir) not in sys.path:
@@ -229,6 +244,109 @@ def _sync_heartbeats_to_db():
         conn.close()
 
 
+def _reload_definitions() -> None:
+    """Reload heartbeat definitions from DB and re-register interval jobs.
+
+    Called by the LISTEN thread when a 'config_changed' notification arrives
+    for the heartbeats table.  Protected by _schedule_lock to avoid races
+    with the running schedule loop.
+    """
+    print("[dispatcher] reloading heartbeat definitions from DB", flush=True)
+    with _schedule_lock:
+        schedule.clear()
+    register_interval_jobs()
+
+
+def _start_listen_thread() -> None:
+    """Start a background thread that LISTENs on 'config_changed' (PG mode only).
+
+    On receiving a notification payload with table='heartbeats', calls
+    _reload_definitions() so the dispatcher picks up additions/removals without
+    a restart.
+
+    Architecture note:
+        This implements a *per-dispatcher* LISTEN connection (1 extra PG conn).
+        ADR PG-NC-8 v2 specifies a single Redis-backed multiplexer as the
+        target architecture to cap PG connections at 1 across all processes.
+        TODO(PG-NC-8): migrate this to Redis pub-sub subscriber once
+        config_multiplexer.py is built (Phase roadmap).
+
+    SQLite: no-op — YAML file changes are not watched here.
+    """
+    if _get_dialect() != "postgresql":
+        return  # SQLite uses YAML reload on each call; no persistent listener.
+
+    try:
+        import psycopg2  # type: ignore[import]
+        import select as _select
+    except ImportError:
+        print(
+            "[dispatcher] WARNING: psycopg2 not installed — LISTEN/NOTIFY hot-reload disabled",
+            flush=True,
+        )
+        return
+
+    _stop_event = threading.Event()
+
+    def _listener() -> None:
+        from db.engine import get_engine
+        raw_url = get_engine().url.render_as_string(hide_password=False)
+        # Convert SQLAlchemy URL scheme to psycopg2-compatible DSN.
+        # e.g. 'postgresql+psycopg2://...' -> 'postgresql://...'
+        dsn = raw_url.replace("postgresql+psycopg2://", "postgresql://")
+
+        conn = None
+        while not _stop_event.is_set():
+            try:
+                conn = psycopg2.connect(dsn)
+                conn.set_isolation_level(
+                    psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT
+                )
+                cur = conn.cursor()
+                cur.execute("LISTEN config_changed;")
+                print("[dispatcher] LISTEN config_changed registered", flush=True)
+
+                while not _stop_event.is_set():
+                    ready = _select.select([conn], [], [], 5.0)
+                    if ready == ([], [], []):
+                        continue  # timeout — loop again
+                    try:
+                        conn.poll()
+                    except Exception as poll_exc:
+                        print(
+                            f"[dispatcher] LISTEN poll error: {poll_exc} — reconnecting",
+                            flush=True,
+                        )
+                        break  # break inner loop → reconnect
+
+                    while conn.notifies:
+                        notif = conn.notifies.pop(0)
+                        try:
+                            payload = json.loads(notif.payload)
+                        except (ValueError, TypeError):
+                            payload = {}
+                        if payload.get("table") == "heartbeats":
+                            _reload_definitions()
+
+            except Exception as exc:
+                print(
+                    f"[dispatcher] LISTEN connection error: {exc} — retrying in 5s",
+                    flush=True,
+                )
+                threading.Event().wait(5)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                conn = None
+
+    t = threading.Thread(target=_listener, daemon=True, name="hb-listen")
+    t.start()
+    print("[dispatcher] LISTEN thread started (PG mode)", flush=True)
+
+
 def register_interval_jobs():
     """Register schedule jobs for all heartbeats with 'interval' wake trigger."""
     _sync_heartbeats_to_db()
@@ -284,7 +402,7 @@ def register_interval_jobs():
 
 
 def start_dispatcher_thread():
-    """Start a background thread that runs the heartbeat schedule loop."""
+    """Start the heartbeat dispatcher and (in PG mode) the LISTEN thread."""
     def _loop():
         import time
         register_interval_jobs()
@@ -296,14 +414,18 @@ def start_dispatcher_thread():
     t.start()
     print("[dispatcher] dispatcher thread started", flush=True)
 
+    # PG mode: start LISTEN thread for hot-reload on DB changes.
+    _start_listen_thread()
+
 
 # ── Config reload (called by plugin_loader after install/uninstall) ──────────
 
 def reload_config() -> dict:
-    """Re-sync heartbeats from config + plugins and re-register interval jobs.
+    """Re-sync heartbeats and re-register interval jobs.
 
-    Called by plugin_loader.PluginInstaller after copying heartbeats to
-    plugins/{slug}/heartbeats.yaml (install) or after removing it (uninstall).
+    In SQLite mode: re-syncs from YAML (called by plugin_loader after install/uninstall).
+    In PG mode: re-reads from DB directly (YAML is never consulted).
+
     Safe to call while the dispatcher is running — uses _schedule_lock.
 
     Returns:
@@ -312,8 +434,11 @@ def reload_config() -> dict:
     import logging
     logger = logging.getLogger(__name__)
 
-    logger.info("[reload_config] Re-syncing heartbeats (core + plugins)")
-    _sync_heartbeats_to_db()
+    if _get_dialect() == "postgresql":
+        logger.info("[reload_config] PG mode: reloading heartbeats from DB")
+    else:
+        logger.info("[reload_config] SQLite mode: re-syncing heartbeats from YAML")
+        _sync_heartbeats_to_db()
 
     with _schedule_lock:
         schedule.clear()
