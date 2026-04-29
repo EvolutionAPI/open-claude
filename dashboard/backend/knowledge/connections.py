@@ -1,7 +1,8 @@
-"""CRUD operations for knowledge_connections (SQLite local store).
+"""CRUD operations for knowledge_connections (host DB — SQLite or Postgres).
 
-All functions take a sqlite3.Connection as the first argument so that callers
-(Flask routes, tests) control transaction lifecycle.
+All functions take a SQLAlchemy Connection as the first argument so the same
+code path works on the dashboard's SQLite backend and on the Postgres backend
+selected via DATABASE_URL. Callers control transaction lifecycle.
 
 Public API:
     list_connections(conn) -> list[dict]
@@ -16,13 +17,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import text
 
-def _row_to_dict(row, cursor) -> Dict[str, Any]:
-    """Convert a sqlite3 Row (or tuple) to a dict using cursor.description."""
+
+def _row_to_dict(row) -> Optional[Dict[str, Any]]:
+    """Convert a SQLAlchemy Row to a dict, stripping the encrypted secret."""
     if row is None:
         return None
-    cols = [d[0] for d in cursor.description]
-    d = dict(zip(cols, row))
+    d = dict(row._mapping)
     # connection_string_encrypted must never appear in API responses
     d.pop("connection_string_encrypted", None)
     return d
@@ -30,19 +32,19 @@ def _row_to_dict(row, cursor) -> Dict[str, Any]:
 
 def list_connections(conn) -> List[Dict[str, Any]]:
     """Return all connections, ordered by created_at DESC."""
-    cur = conn.execute(
-        "SELECT * FROM knowledge_connections ORDER BY created_at DESC"
+    result = conn.execute(
+        text("SELECT * FROM knowledge_connections ORDER BY created_at DESC")
     )
-    return [_row_to_dict(row, cur) for row in cur.fetchall()]
+    return [_row_to_dict(row) for row in result.fetchall()]
 
 
 def get_connection(conn, connection_id: str) -> Optional[Dict[str, Any]]:
     """Return a single connection by id, or None if not found."""
-    cur = conn.execute(
-        "SELECT * FROM knowledge_connections WHERE id = ?", (connection_id,)
-    )
-    row = cur.fetchone()
-    return _row_to_dict(row, cur) if row else None
+    row = conn.execute(
+        text("SELECT * FROM knowledge_connections WHERE id = :id"),
+        {"id": connection_id},
+    ).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def create_connection(conn, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -57,31 +59,34 @@ def create_connection(conn, data: Dict[str, Any]) -> Dict[str, Any]:
     connection_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
-    # Validate slug uniqueness
     existing = conn.execute(
-        "SELECT id FROM knowledge_connections WHERE slug = ?", (data["slug"],)
+        text("SELECT id FROM knowledge_connections WHERE slug = :slug"),
+        {"slug": data["slug"]},
     ).fetchone()
     if existing:
         raise ValueError(f"A connection with slug '{data['slug']}' already exists.")
 
     conn.execute(
-        """INSERT INTO knowledge_connections
-           (id, slug, name, connection_string_encrypted, host, port,
-            database_name, username, ssl_mode, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            connection_id,
-            data["slug"],
-            data["name"],
-            data.get("connection_string_encrypted"),
-            data.get("host"),
-            data.get("port"),
-            data.get("database_name"),
-            data.get("username"),
-            data.get("ssl_mode"),
-            data.get("status", "disconnected"),
-            now,
+        text(
+            """INSERT INTO knowledge_connections
+               (id, slug, name, connection_string_encrypted, host, port,
+                database_name, username, ssl_mode, status, created_at)
+               VALUES (:id, :slug, :name, :cs, :host, :port,
+                       :database_name, :username, :ssl_mode, :status, :created_at)"""
         ),
+        {
+            "id": connection_id,
+            "slug": data["slug"],
+            "name": data["name"],
+            "cs": data.get("connection_string_encrypted"),
+            "host": data.get("host"),
+            "port": data.get("port"),
+            "database_name": data.get("database_name"),
+            "username": data.get("username"),
+            "ssl_mode": data.get("ssl_mode"),
+            "status": data.get("status", "disconnected"),
+            "created_at": now,
+        },
     )
     conn.commit()
     return get_connection(conn, connection_id)
@@ -107,10 +112,12 @@ def update_connection(
     if not updates:
         return get_connection(conn, connection_id)
 
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [connection_id]
+    set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+    params = dict(updates)
+    params["__id"] = connection_id
     conn.execute(
-        f"UPDATE knowledge_connections SET {set_clause} WHERE id = ?", values
+        text(f"UPDATE knowledge_connections SET {set_clause} WHERE id = :__id"),
+        params,
     )
     conn.commit()
     return get_connection(conn, connection_id)
@@ -118,26 +125,29 @@ def update_connection(
 
 def delete_connection(conn, connection_id: str) -> bool:
     """Delete a connection. Returns True if a row was deleted."""
-    cur = conn.execute(
-        "DELETE FROM knowledge_connections WHERE id = ?", (connection_id,)
+    result = conn.execute(
+        text("DELETE FROM knowledge_connections WHERE id = :id"),
+        {"id": connection_id},
     )
     conn.commit()
-    return cur.rowcount > 0
+    return result.rowcount > 0
 
 
 def get_connection_events(
     conn, connection_id: str, limit: int = 50
 ) -> List[Dict[str, Any]]:
     """Return recent events for a connection, newest first."""
-    cur = conn.execute(
-        "SELECT id, connection_id, event_type, details, created_at "
-        "FROM knowledge_connection_events "
-        "WHERE connection_id = ? ORDER BY created_at DESC LIMIT ?",
-        (connection_id, limit),
+    result = conn.execute(
+        text(
+            "SELECT id, connection_id, event_type, details, created_at "
+            "FROM knowledge_connection_events "
+            "WHERE connection_id = :cid ORDER BY created_at DESC LIMIT :lim"
+        ),
+        {"cid": connection_id, "lim": limit},
     )
     rows = []
-    for row in cur.fetchall():
-        d = dict(zip([c[0] for c in cur.description], row))
+    for row in result.fetchall():
+        d = dict(row._mapping)
         if d.get("details") and isinstance(d["details"], str):
             try:
                 d["details"] = json.loads(d["details"])

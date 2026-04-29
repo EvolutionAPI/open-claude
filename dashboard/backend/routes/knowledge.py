@@ -21,11 +21,11 @@ KNOWLEDGE_MASTER_KEY produces a clear 500 rather than a cryptic error.
 import logging
 import os
 import re
-import sqlite3  # noqa: F401 — allowlisted: knowledge module has its own connection abstraction; cross-cutting migration is Step 2 scope
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, request
 from flask_login import current_user
+from sqlalchemy import text
 
 from models import audit
 from routes.auth_routes import require_permission
@@ -108,14 +108,15 @@ _GEMINI_API_KEY_PATTERN = r"^AIzaSy[A-Za-z0-9_-]{33}$"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _db_path() -> str:
-    return current_app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+def _get_db_conn():
+    """Return a SQLAlchemy Connection to the host DB (SQLite or Postgres).
 
-
-def _get_sqlite() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())  # noqa — allowlisted: knowledge module has own SQLite abstraction (OUT-OF-SCOPE for Step 1; dashboard-side shim only)
-    conn.row_factory = sqlite3.Row
-    return conn
+    Works on both backends because all callers in the knowledge module use
+    SQLAlchemy ``text()`` with named placeholders. The caller is responsible
+    for closing the connection (``finally: conn.close()``).
+    """
+    from models import db
+    return db.engine.connect()
 
 
 def _assert_key():
@@ -133,7 +134,7 @@ def _assert_key():
 def list_connections():
     _assert_key()
     from knowledge.connections import list_connections as _list
-    conn = _get_sqlite()
+    conn = _get_db_conn()
     try:
         return jsonify(_list(conn))
     finally:
@@ -178,7 +179,7 @@ def create_connection():
         "status": "disconnected",
     }
 
-    conn = _get_sqlite()
+    conn = _get_db_conn()
     try:
         result = _create(conn, row_data)
         if masked:
@@ -200,7 +201,7 @@ def get_connection(connection_id: str):
     _assert_key()
     from knowledge.connections import get_connection as _get, get_connection_events
 
-    conn = _get_sqlite()
+    conn = _get_db_conn()
     try:
         row = _get(conn, connection_id)
         if row is None:
@@ -223,7 +224,7 @@ def delete_connection(connection_id: str):
     from knowledge.connections import delete_connection as _delete
     from knowledge.connection_pool import dispose_engine
 
-    conn = _get_sqlite()
+    conn = _get_db_conn()
     try:
         deleted = _delete(conn, connection_id)
         if not deleted:
@@ -249,11 +250,11 @@ def test_connection(connection_id: str):
     from sqlalchemy import text
     import time
 
-    conn = _get_sqlite()
+    conn = _get_db_conn()
     try:
         row = conn.execute(
-            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ?",
-            (connection_id,),
+            text("SELECT connection_string_encrypted FROM knowledge_connections WHERE id = :id"),
+            {"id": connection_id},
         ).fetchone()
         if row is None:
             return jsonify({"error": "Connection not found"}), 404
@@ -289,11 +290,11 @@ def configure_connection(connection_id: str):
     from knowledge.auto_migrator import configure_connection as _configure
     from knowledge.crypto import decrypt_secret
 
-    sqlite_conn = _get_sqlite()
+    host_conn = _get_db_conn()
     try:
-        row = sqlite_conn.execute(
-            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ?",
-            (connection_id,),
+        row = host_conn.execute(
+            text("SELECT connection_string_encrypted FROM knowledge_connections WHERE id = :id"),
+            {"id": connection_id},
         ).fetchone()
         if row is None:
             return jsonify({"error": "Connection not found"}), 404
@@ -303,7 +304,7 @@ def configure_connection(connection_id: str):
             return jsonify({"error": "No connection string stored for this connection"}), 400
 
         cs = decrypt_secret(bytes(cs_enc))
-        result = _configure(connection_id, cs, sqlite_conn)
+        result = _configure(connection_id, cs, host_conn)
 
         if result.get("status") == "ready":
             return jsonify(result)
@@ -315,7 +316,7 @@ def configure_connection(connection_id: str):
         return jsonify(result), 500
 
     finally:
-        sqlite_conn.close()
+        host_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -331,11 +332,11 @@ def migrate_connection(connection_id: str):
     from knowledge.connections import update_connection as _update
     from knowledge.crypto import decrypt_secret
 
-    sqlite_conn = _get_sqlite()
+    host_conn = _get_db_conn()
     try:
-        row = sqlite_conn.execute(
-            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ?",
-            (connection_id,),
+        row = host_conn.execute(
+            text("SELECT connection_string_encrypted FROM knowledge_connections WHERE id = :id"),
+            {"id": connection_id},
         ).fetchone()
         if row is None:
             return jsonify({"error": "Connection not found"}), 404
@@ -343,13 +344,13 @@ def migrate_connection(connection_id: str):
         cs = decrypt_secret(bytes(row[0]))
         _run_alembic_upgrade(cs)
         head = get_alembic_head()
-        _update(sqlite_conn, connection_id, {"status": "ready", "schema_version": head})
+        _update(host_conn, connection_id, {"status": "ready", "schema_version": head})
         return jsonify({"migrated": True, "schema_version": head})
 
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     finally:
-        sqlite_conn.close()
+        host_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -364,23 +365,23 @@ def health_check(connection_id: str):
     from knowledge.health_check import check_connection_health
     from knowledge.crypto import decrypt_secret
 
-    sqlite_conn = _get_sqlite()
+    host_conn = _get_db_conn()
     try:
-        row = sqlite_conn.execute(
-            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ?",
-            (connection_id,),
+        row = host_conn.execute(
+            text("SELECT connection_string_encrypted FROM knowledge_connections WHERE id = :id"),
+            {"id": connection_id},
         ).fetchone()
         if row is None:
             return jsonify({"error": "Connection not found"}), 404
 
         cs = decrypt_secret(bytes(row[0]))
-        result = check_connection_health(connection_id, cs, sqlite_conn)
+        result = check_connection_health(connection_id, cs, host_conn)
         return jsonify(result)
 
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     finally:
-        sqlite_conn.close()
+        host_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -474,15 +475,15 @@ def _current_settings() -> dict:
     # Detect if any connection exists — if so, embedder is locked.
     locked = False
     try:
-        conn = _get_sqlite()
+        conn = _get_db_conn()
         try:
             row = conn.execute(
-                "SELECT COUNT(*) FROM knowledge_connections"
+                text("SELECT COUNT(*) FROM knowledge_connections")
             ).fetchone()
             locked = bool(row and row[0] > 0)
         finally:
             conn.close()
-    except sqlite3.Error:
+    except Exception:
         locked = False
 
     openai_key_set = bool(_read_env_clean("OPENAI_API_KEY"))

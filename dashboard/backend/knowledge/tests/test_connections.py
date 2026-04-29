@@ -1,13 +1,16 @@
-"""Unit tests for knowledge/connections.py (SQLite CRUD).
+"""Unit tests for knowledge/connections.py (host DB CRUD).
 
-Uses an in-memory SQLite database — no external dependencies.
+Uses an in-memory SQLite database via SQLAlchemy — no external dependencies.
+The fixture mirrors what routes/knowledge.py provides at runtime
+(a SQLAlchemy Connection), so the same code path is exercised for both
+SQLite and Postgres backends.
 
 Run with:
     pytest dashboard/backend/knowledge/tests/test_connections.py -v
 """
 
-import sqlite3
 import pytest
+from sqlalchemy import create_engine, text
 
 
 # ---------------------------------------------------------------------------
@@ -45,11 +48,15 @@ CREATE TABLE knowledge_connection_events (
 
 @pytest.fixture()
 def db():
-    """Provide an in-memory SQLite connection with the knowledge schema."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA)
+    """Provide a SQLAlchemy Connection on an in-memory SQLite DB with the schema."""
+    engine = create_engine("sqlite:///:memory:")
+    conn = engine.connect()
+    for stmt in filter(None, (s.strip() for s in _SCHEMA.split(";"))):
+        conn.execute(text(stmt))
+    conn.commit()
     yield conn
     conn.close()
+    engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +231,12 @@ def test_events_returned_newest_first(db):
     created = create_connection(db, {"name": "Ev2", "slug": "ev2"})
     cid = created["id"]
     db.execute(
-        "INSERT INTO knowledge_connection_events (connection_id, event_type, details, created_at) VALUES (?, ?, ?, ?)",
-        (cid, "configured", json.dumps({"schema_version": "001"}), "2026-01-01 10:00:00"),
+        text("INSERT INTO knowledge_connection_events (connection_id, event_type, details, created_at) VALUES (:cid, :et, :d, :ts)"),
+        {"cid": cid, "et": "configured", "d": json.dumps({"schema_version": "001"}), "ts": "2026-01-01 10:00:00"},
     )
     db.execute(
-        "INSERT INTO knowledge_connection_events (connection_id, event_type, details, created_at) VALUES (?, ?, ?, ?)",
-        (cid, "drift_detected", json.dumps({"head": "002"}), "2026-01-02 10:00:00"),
+        text("INSERT INTO knowledge_connection_events (connection_id, event_type, details, created_at) VALUES (:cid, :et, :d, :ts)"),
+        {"cid": cid, "et": "drift_detected", "d": json.dumps({"head": "002"}), "ts": "2026-01-02 10:00:00"},
     )
     db.commit()
     events = get_connection_events(db, cid)
