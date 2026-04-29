@@ -58,11 +58,16 @@ dashboard/data/
 dashboard/backend/*.db
 dashboard/backend/*.db-shm
 dashboard/backend/*.db-wal
+dashboard/node_modules/
 dashboard/frontend/node_modules/
 dashboard/terminal-server/node_modules/
 dashboard/frontend/dist/
 dashboard/packages/ui/dist/
 dashboard/packages/*/node_modules/
+
+# ── Workspace trash + scratch ────────
+workspace/.trash/
+123-bad/
 
 # ── Evo Method (separate project) ────────
 _evo/
