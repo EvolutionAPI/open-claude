@@ -165,7 +165,12 @@ export default function KnowledgeUpload() {
 
         const res = await fetch(
           `${API}/api/knowledge/connections/${activeConnectionId}/documents`,
-          { method: 'POST', body: formData, credentials: 'include' }
+          {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          }
         )
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
