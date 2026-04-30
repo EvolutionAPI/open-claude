@@ -25,6 +25,7 @@ interface SelectedSnapshot {
 
 interface RestoreSelectSnapshotProps {
   repoUrl: string
+  token: string
   onNext: (snapshot: SelectedSnapshot) => void
   onBack: () => void
 }
@@ -62,7 +63,7 @@ function SnapshotItem({
   )
 }
 
-export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: RestoreSelectSnapshotProps) {
+export default function RestoreSelectSnapshot({ repoUrl, token, onNext, onBack }: RestoreSelectSnapshotProps) {
   const { t } = useTranslation()
   const [data, setData] = useState<SnapshotData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -71,11 +72,27 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
   const [error, setError] = useState('')
 
   useEffect(() => {
-    api.get('/brain-repo/snapshots')
-      .then((d: SnapshotData) => setData(d))
-      .catch(() => setError(t('restore.selectSnapshot.failed')))
-      .finally(() => setLoading(false))
-  }, [repoUrl, t])
+    const loadSnapshots = async () => {
+      try {
+        setLoading(true)
+        setError('')
+        // ✅ Primeiro: conectar o repositório
+        await api.post('/brain-repo/connect', { token, repo_url: repoUrl })
+        
+        // ✅ Depois: carregar os snapshots
+        const d = await api.get('/brain-repo/snapshots') as SnapshotData
+        setData(d)
+      } catch (err) {
+        setError(t('restore.selectSnapshot.failed'))
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    if (token && repoUrl) {
+      loadSnapshots()
+    }
+  }, [repoUrl, token, t])
 
   const handleNext = () => {
     if (!selected) {
