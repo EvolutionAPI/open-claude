@@ -21,12 +21,14 @@ export default function RestoreFlow({ onComplete, onBack }: RestoreFlowProps) {
   const [step, setStep] = useState<RestoreStep>('select-repo')
   const [repoUrl, setRepoUrl] = useState('')
   const [snapshot, setSnapshot] = useState<SelectedSnapshot | null>(null)
+  const [token, setToken] = useState('')
 
   if (step === 'select-repo') {
     return (
       <RestoreSelectRepo
-        onNext={(url: string) => {
+        onNext={(url: string, pat: string) => {
           setRepoUrl(url)
+          setToken(pat)
           setStep('select-snapshot')
         }}
         onBack={onBack}
@@ -38,6 +40,7 @@ export default function RestoreFlow({ onComplete, onBack }: RestoreFlowProps) {
     return (
       <RestoreSelectSnapshot
         repoUrl={repoUrl}
+        token={token}
         onNext={(s: SelectedSnapshot) => {
           setSnapshot(s)
           setStep('confirm')

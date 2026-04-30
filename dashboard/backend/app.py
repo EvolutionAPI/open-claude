@@ -433,7 +433,7 @@ with app.app_context():
             );
             CREATE TABLE IF NOT EXISTS plugin_audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                plugin_id TEXT NOT NULL,
+                slug TEXT NOT NULL,
                 action TEXT NOT NULL,
                 payload TEXT,
                 success INTEGER NOT NULL DEFAULT 1,
@@ -450,8 +450,9 @@ with app.app_context():
                 PRIMARY KEY (plugin_slug, handler_path)
             );
             CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins_installed(status);
-            CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_plugin_audit_slug ON plugin_audit_log(slug);
             CREATE INDEX IF NOT EXISTS idx_hook_cb_disabled ON plugin_hook_circuit_state(disabled_until);
+
         """)
         _conn.commit()
     # --- End plugins migration ---

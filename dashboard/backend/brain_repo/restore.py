@@ -16,7 +16,14 @@ _SWAP_DIRS = ["memory", "workspace", "customizations", "config-safe"]
 
 
 def _event(step: str, progress: int, message: str, error: bool = False) -> dict:
-    return {"step": step, "progress": progress, "message": message, "error": error}
+    event_type = "error" if error else "progress"
+    return {
+        "type": event_type,
+        "step": step,
+        "progress": progress,
+        "message": message,
+        "error": error
+    }
 
 
 def _cleanup_staging(staging: Path) -> None:
@@ -47,6 +54,9 @@ def execute_restore(
     """
     from brain_repo import git_ops, manifest as manifest_mod, migrations, secrets_scanner  # type: ignore[import]
 
+    # ✅ Cria o diretório pai primeiro
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+
     staging = STAGING_DIR / f"restore-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     staging.mkdir(parents=True, exist_ok=True)
 
@@ -57,10 +67,16 @@ def execute_restore(
         # If ref is not HEAD/default branch, checkout that specific ref
         if ref and ref not in ("HEAD", "main", "master"):
             ref_staging = staging / "_ref_extract"
+            ref_staging.mkdir(parents=True, exist_ok=True)  # ✅ CREATE THE DIRECTORY FIRST
             git_ops.checkout_ref(staging, ref, ref_staging)
             # Use extracted ref content instead of full clone
-            shutil.rmtree(staging, ignore_errors=True)
-            ref_staging.rename(staging)
+            # ✅ Move o conteúdo de ref_staging para staging
+            for item in ref_staging.iterdir():
+                dest = staging / item.name
+                if dest.exists():
+                    shutil.rmtree(dest, ignore_errors=True)
+                shutil.move(str(item), str(dest))
+            shutil.rmtree(ref_staging, ignore_errors=True)
     except Exception as exc:
         yield _event("clone", 5, f"Clone failed: {exc}", error=True)
         _cleanup_staging(staging)
@@ -194,4 +210,4 @@ def execute_restore(
 
     # ---------------------------------------------------------------- 10. complete
     _cleanup_staging(staging)
-    yield _event("complete", 100, "Restore complete")
+    yield {"type": "complete", "step": "complete", "progress": 100, "message": "Restore complete", "error": False}

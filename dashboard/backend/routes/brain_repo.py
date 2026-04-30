@@ -325,7 +325,7 @@ def connect():
         create_repo - Name of a new private repo to create (mutually exclusive with repo_url)
     """
     data = request.get_json() or {}
-    token = data.get("token", "").strip()
+    token = data.get("token", "").strip() or request.args.get("token", "").strip()
     repo_url = data.get("repo_url", "").strip()
     create_repo = data.get("create_repo", "").strip()
 
@@ -526,6 +526,9 @@ def snapshots():
     token = _decrypt_token(config)
     if not token:
         abort(400, description="Could not decrypt stored token")
+
+    if not config.repo_owner or not config.repo_name:
+        abort(400, description="Repository info not fully configured — please reconnect the brain repo")
 
     try:
         from brain_repo.github_api import list_snapshots
