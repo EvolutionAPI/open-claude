@@ -61,6 +61,28 @@ def _cors_allowed_origins():
     return "*" if not _is_production() else []
 
 app = Flask(__name__, static_folder=None)
+
+class ProxyFixWSGI:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+
+    def __call__(self, environ, start_response):
+        if environ.get('HTTP_UPGRADE', '').lower() == 'websocket':
+            environ['wsgi.websocket'] = True
+        return self.wsgi_app(environ, start_response)
+
+app.wsgi_app = ProxyFixWSGI(app.wsgi_app)
+
+class ProxyFixWSGI:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+    def __call__(self, environ, start_response):
+        print('PROXY_FIX:', environ.get('HTTP_UPGRADE', ''), flush=True)
+        if environ.get('HTTP_UPGRADE', '').lower() == 'websocket':
+            environ['wsgi.websocket'] = True
+        return self.wsgi_app(environ, start_response)
+
+app.wsgi_app = ProxyFixWSGI(app.wsgi_app)
 # Persist secret key so sessions survive restarts
 _secret_key = os.environ.get("EVONEXUS_SECRET_KEY")
 if not _secret_key:
@@ -959,6 +981,11 @@ app.register_blueprint(mempalace_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(terminal_proxy_bp)
+
+@app.route('/terminal/ws')
+def proxy_ws_test():
+    print("HIT PROXY_WS_TEST!!!", flush=True)
+    return "test"
 
 # Mount the terminal-server WebSocket proxy on the same Sock instance the
 # rest of the app uses. Done after the blueprint is registered so route
