@@ -17,7 +17,7 @@ import json
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +34,21 @@ def _sql(stmt: str):
     return text(stmt)
 
 
+def _json_safe(value: Any) -> Any:
+    """Return a JSON-serializable copy of values commonly returned by psycopg."""
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def _row_to_dict(row) -> Dict[str, Any]:
     d = dict(row._mapping)
     for col in ("tags", "metadata"):
@@ -42,7 +57,7 @@ def _row_to_dict(row) -> Dict[str, Any]:
                 d[col] = json.loads(d[col])
             except (ValueError, TypeError):
                 pass
-    return d
+    return _json_safe(d)
 
 
 def _get_engine(connection_id: str):
@@ -81,6 +96,9 @@ def upload_document(
     file_path = Path(file_path)
     if metadata is None:
         metadata = {}
+    metadata = _json_safe(metadata)
+    space_id = str(space_id)
+    unit_id = str(unit_id) if unit_id is not None else None
 
     document_id = str(uuid.uuid4())
     doc_title = metadata.get("title") or file_path.stem

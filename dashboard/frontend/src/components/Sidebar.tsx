@@ -73,6 +73,7 @@ const navGroups: NavGroup[] = [
       { to: '/memory', labelKey: 'memory', icon: Brain, resource: 'memory' },
       { to: '/mempalace', labelKey: 'mempalace', icon: Library, resource: 'mempalace' },
       { to: '/knowledge', labelKey: 'knowledge', icon: Database, resource: 'knowledge' },
+      { to: '/agent-knowledge', labelKey: 'agentKnowledge', icon: Bot, resource: 'knowledge' },
       { to: '/costs', labelKey: 'costs', icon: DollarSign, resource: 'costs' },
     ],
   },

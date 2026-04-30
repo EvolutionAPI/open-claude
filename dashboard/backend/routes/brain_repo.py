@@ -240,6 +240,76 @@ def _decrypt_token(config: BrainRepoConfig) -> str:
 
 # ── Status ────────────────────────────────────────────
 
+def _repo_name_from_url(repo_url: str) -> str:
+    cleaned = repo_url.strip().rstrip("/")
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    return cleaned.rsplit("/", 1)[-1] if cleaned else ""
+
+
+def _repo_owner_from_url(repo_url: str) -> str:
+    cleaned = repo_url.strip().rstrip("/")
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    if "/" not in cleaned:
+        return ""
+    owner = cleaned.rsplit("/", 2)[-2]
+    if ":" in owner:
+        owner = owner.rsplit(":", 1)[-1]
+    return owner
+
+
+def _enqueue_bootstrap_for_config(
+    config: BrainRepoConfig,
+    token: str,
+    *,
+    sync_after: bool = False,
+    workspace: Path | None = None,
+    tag_name: str | None = None,
+    commit_message: str | None = None,
+) -> bool:
+    """Repair/init the local clone for a connected Brain Repo config."""
+    if not config.repo_url:
+        abort(400, description="Brain repo URL not configured")
+
+    repo_name = config.repo_name or _repo_name_from_url(config.repo_url)
+    if not repo_name:
+        abort(400, description="Brain repo name not configured")
+
+    repo_owner = config.repo_owner or _repo_owner_from_url(config.repo_url)
+    try:
+        from brain_repo.github_api import get_github_username
+        github_username = get_github_username(token)
+    except Exception:
+        github_username = repo_owner
+
+    config.repo_name = repo_name
+    config.repo_owner = repo_owner
+    config.local_path = None
+    config.last_error = None
+    db.session.commit()
+
+    try:
+        from brain_repo import job_runner
+        from flask import current_app
+    except ImportError:
+        abort(500, description="job_runner module unavailable")
+
+    return job_runner.enqueue_bootstrap(
+        current_app._get_current_object(),  # type: ignore[attr-defined]
+        current_user.id,
+        token=token,
+        repo_url=config.repo_url,
+        repo_name=repo_name,
+        owner_username=current_user.username or repo_owner,
+        github_username=github_username,
+        sync_after=sync_after,
+        workspace=workspace,
+        tag_name=tag_name,
+        commit_message=commit_message,
+    )
+
+
 @bp.route("/api/brain-repo/status")
 @login_required
 def status():
@@ -392,15 +462,27 @@ def connect():
     else:
         # Validate existing repo is private
         try:
-            from brain_repo.github_api import get_repo_info
+            from brain_repo.github_api import get_repo_info, get_github_username
             ok_private, repo_info = get_repo_info(token, repo_url)
         except ImportError:
             ok_private, repo_info = True, {}  # graceful fallback
 
         if not ok_private:
             abort(400, description="Repository must be private")
-        repo_owner = repo_info.get("owner", {}).get("login", "")
-        repo_name = repo_info.get("name", "")
+        repo_owner = repo_info.get("owner", {}).get("login", "") or _repo_owner_from_url(repo_url)
+        repo_name = repo_info.get("name", "") or _repo_name_from_url(repo_url)
+        try:
+            github_username = get_github_username(token)
+        except Exception:
+            github_username = repo_owner
+        bootstrap_pending = True
+        bootstrap_params = {
+            "token": token,
+            "repo_url": repo_url,
+            "repo_name": repo_name,
+            "owner_username": current_user.username or repo_owner,
+            "github_username": github_username,
+        }
 
     # Encrypt and store token.
     #
@@ -451,6 +533,8 @@ def connect():
     config.repo_url = repo_url
     config.repo_owner = repo_owner
     config.repo_name = repo_name
+    if bootstrap_pending:
+        config.local_path = None
     # local_path stays NULL when bootstrap is deferred — it gets filled in by
     # job_runner.run_bootstrap_pipeline after the push succeeds. UI reads
     # sync_in_progress + local_path==null as "initializing".
@@ -628,30 +712,66 @@ def sync_force():
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
 
-    local_path = config.local_path
-    if not local_path:
-        abort(400, description="local_path not configured — repo not yet cloned")
-
-    repo_dir = Path(local_path)
-    if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
-        abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
-
-    # Quick token-decryption probe so bad keys fail fast (before enqueueing).
-    # The pipeline re-decrypts inside the thread — we just surface the error
-    # synchronously here so the UI can react inline.
     token = _decrypt_token(config)
     if not token:
-        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
-
-    try:
-        from brain_repo import job_runner
-    except ImportError:
-        abort(500, description="job_runner module unavailable")
+        abort(500, description="Could not decrypt stored token - re-connect the brain repo")
 
     workspace = Path(__file__).resolve().parent.parent.parent.parent
     now = datetime.now(timezone.utc)
     # Seconds in the tag name avoids "tag already exists" on rapid re-clicks
     tag_name = f"milestone/manual-{now.strftime('%Y-%m-%d-%H-%M-%S')}"
+    sync_commit_message = f"manual sync {now.isoformat()}"
+
+    local_path = config.local_path
+    if not local_path:
+        enqueued = _enqueue_bootstrap_for_config(
+            config,
+            token,
+            sync_after=True,
+            workspace=workspace,
+            tag_name=tag_name,
+            commit_message=sync_commit_message,
+        )
+        if not enqueued:
+            return jsonify({
+                "ok": False,
+                "error": "Another sync is already running for this user.",
+                "code": "SYNC_IN_PROGRESS",
+            }), 409
+        return jsonify({
+            "ok": True,
+            "status": "queued",
+            "job": "bootstrap",
+            "message": "Local brain repo clone queued. Sync will run after initialization.",
+        }), 202
+
+    repo_dir = Path(local_path)
+    if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
+        enqueued = _enqueue_bootstrap_for_config(
+            config,
+            token,
+            sync_after=True,
+            workspace=workspace,
+            tag_name=tag_name,
+            commit_message=sync_commit_message,
+        )
+        if not enqueued:
+            return jsonify({
+                "ok": False,
+                "error": "Another sync is already running for this user.",
+                "code": "SYNC_IN_PROGRESS",
+            }), 409
+        return jsonify({
+            "ok": True,
+            "status": "queued",
+            "job": "bootstrap",
+            "message": "Local brain repo clone repaired. Sync will run after initialization.",
+        }), 202
+
+    try:
+        from brain_repo import job_runner
+    except ImportError:
+        abort(500, description="job_runner module unavailable")
 
     from flask import current_app
     enqueued = job_runner.enqueue_sync(
@@ -660,7 +780,7 @@ def sync_force():
         workspace,
         kind=job_runner.JOB_KIND_SYNC,
         tag_name=tag_name,
-        commit_message=f"manual sync {now.isoformat()}",
+        commit_message=sync_commit_message,
     )
     if not enqueued:
         return jsonify({
@@ -699,26 +819,67 @@ def tag_milestone():
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
 
+    token = _decrypt_token(config)
+    if not token:
+        abort(500, description="Could not decrypt stored token - re-connect the brain repo")
+
+    workspace = Path(__file__).resolve().parent.parent.parent.parent
+    tag = f"milestone/{name}"
+    now = datetime.now(timezone.utc)
+    milestone_commit_message = f"milestone: {name} ({now.isoformat()})"
+
     local_path = config.local_path
     if not local_path:
-        abort(400, description="local_path not configured — repo not yet cloned")
+        enqueued = _enqueue_bootstrap_for_config(
+            config,
+            token,
+            sync_after=True,
+            workspace=workspace,
+            tag_name=tag,
+            commit_message=milestone_commit_message,
+        )
+        if not enqueued:
+            return jsonify({
+                "ok": False,
+                "error": "Another sync is already running for this user.",
+                "code": "SYNC_IN_PROGRESS",
+            }), 409
+        return jsonify({
+            "ok": True,
+            "status": "queued",
+            "job": "bootstrap",
+            "tag": tag,
+            "message": "Local brain repo clone queued. Milestone sync will run after initialization.",
+        }), 202
 
     repo_dir = Path(local_path)
     if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
-        abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
-
-    token = _decrypt_token(config)
-    if not token:
-        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
+        enqueued = _enqueue_bootstrap_for_config(
+            config,
+            token,
+            sync_after=True,
+            workspace=workspace,
+            tag_name=tag,
+            commit_message=milestone_commit_message,
+        )
+        if not enqueued:
+            return jsonify({
+                "ok": False,
+                "error": "Another sync is already running for this user.",
+                "code": "SYNC_IN_PROGRESS",
+            }), 409
+        return jsonify({
+            "ok": True,
+            "status": "queued",
+            "job": "bootstrap",
+            "tag": tag,
+            "message": "Local brain repo clone repaired. Milestone sync will run after initialization.",
+        }), 202
 
     try:
         from brain_repo import job_runner
     except ImportError:
         abort(500, description="job_runner module unavailable")
-
-    workspace = Path(__file__).resolve().parent.parent.parent.parent
-    tag = f"milestone/{name}"
-    now = datetime.now(timezone.utc)
 
     from flask import current_app
     enqueued = job_runner.enqueue_sync(
@@ -727,7 +888,7 @@ def tag_milestone():
         workspace,
         kind=job_runner.JOB_KIND_MILESTONE,
         tag_name=tag,
-        commit_message=f"milestone: {name} ({now.isoformat()})",
+        commit_message=milestone_commit_message,
     )
     if not enqueued:
         return jsonify({

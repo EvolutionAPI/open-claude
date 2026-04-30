@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useConfirm } from '../components/ConfirmDialog'
 import { api } from '../lib/api'
-import { Users as UsersIcon, Plus, Pencil, Trash2, X } from 'lucide-react'
+import { Users as UsersIcon, Plus, Pencil, Trash2, X, RotateCcw } from 'lucide-react'
 
 interface User {
   id: string
@@ -139,7 +139,7 @@ export default function UsersPage() {
   const handleDeactivate = async (u: User) => {
     const ok = await confirm({
       title: 'Desativar usuário',
-      description: `Desativar "${u.username}"?`,
+      description: `Desativar "${u.username}"? O usuário não poderá fazer login, mas seus dados serão preservados.`,
       confirmText: 'Desativar',
       variant: 'danger',
     })
@@ -147,8 +147,23 @@ export default function UsersPage() {
     try {
       await api.delete(`/users/${u.id}`)
       fetchUsers()
-    } catch {
-      /* ignore */
+    } catch (ex: unknown) {
+      setError(ex instanceof Error ? ex.message : 'Falha ao desativar')
+    }
+  }
+
+  const handleReactivate = async (u: User) => {
+    const ok = await confirm({
+      title: 'Reativar usuário',
+      description: `Reativar "${u.username}"? O usuário poderá fazer login novamente.`,
+      confirmText: 'Reativar',
+    })
+    if (!ok) return
+    try {
+      await api.post(`/users/${u.id}/reactivate`)
+      fetchUsers()
+    } catch (ex: unknown) {
+      setError(ex instanceof Error ? ex.message : 'Falha ao reativar')
     }
   }
 
@@ -171,6 +186,14 @@ export default function UsersPage() {
           <Plus size={16} /> Add User
         </button>
       </div>
+
+      {/* Global error banner */}
+      {error && !modalOpen && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="text-red-400 hover:text-red-300 ml-4"><X size={14} /></button>
+        </div>
+      )}
 
       {loading ? (
         <div className="space-y-2">
@@ -229,17 +252,25 @@ export default function UsersPage() {
                         <button
                           onClick={() => openEdit(u)}
                           className="p-1.5 rounded-lg text-[#667085] hover:text-[#e6edf3] hover:bg-white/5 transition-colors"
-                          title="Edit"
+                          title="Editar"
                         >
                           <Pencil size={14} />
                         </button>
-                        {u.is_active && (
+                        {u.is_active ? (
                           <button
                             onClick={() => handleDeactivate(u)}
                             className="p-1.5 rounded-lg text-[#667085] hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                            title="Deactivate"
+                            title="Desativar"
                           >
                             <Trash2 size={14} />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleReactivate(u)}
+                            className="p-1.5 rounded-lg text-[#667085] hover:text-[#00FFA7] hover:bg-[#00FFA7]/10 transition-colors"
+                            title="Reativar"
+                          >
+                            <RotateCcw size={14} />
                           </button>
                         )}
                       </div>

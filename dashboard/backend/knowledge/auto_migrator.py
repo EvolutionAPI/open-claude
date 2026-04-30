@@ -331,7 +331,7 @@ _OPENAI_MODEL_DIMS = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
 }
-_PROVIDER_DEFAULT_DIMS = {"local": 768, "openai": 1536}
+_PROVIDER_DEFAULT_DIMS = {"local": 768, "openai": 1536, "gemini": 768}
 
 
 def _clean(name: str) -> str:
@@ -345,6 +345,16 @@ def _get_evonexus_dim(conn) -> int:
     if provider == "openai":
         model = _clean("KNOWLEDGE_OPENAI_MODEL") or "text-embedding-3-small"
         return _OPENAI_MODEL_DIMS.get(model, 1536)
+    if provider == "gemini":
+        raw_dim = _clean("KNOWLEDGE_GEMINI_DIM")
+        if raw_dim:
+            try:
+                dim = int(raw_dim)
+                if dim in {768, 1536, 3072}:
+                    return dim
+            except ValueError:
+                pass
+        return 768
     return _PROVIDER_DEFAULT_DIMS.get(provider, 768)
 
 

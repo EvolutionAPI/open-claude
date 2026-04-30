@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - exercised only when SDK is missing
     genai_types = None  # type: ignore[assignment,misc]
 
 
-_DEFAULT_MODEL = "gemini-embedding-001"
+_DEFAULT_MODEL = "gemini-embedding-2"
 _DEFAULT_DIM = 768
 
 # Allowed dimensions per Gemini MRL guidance.
@@ -53,13 +53,14 @@ _ALLOWED_DIMS = {768, 1536, 3072}
 # output_dimensionality is omitted). Kept separate from _DEFAULT_DIM so the
 # evo-nexus default stays at 768 across both models for storage alignment.
 _MODEL_NATIVE_DIMS = {
-    "gemini-embedding-001": 768,
-    "gemini-embedding-2-preview": 768,
+    "gemini-embedding-2": 3072,
+    "gemini-embedding-001": 3072,
 }
 
 # Models that accept the ``task_type`` parameter. The 2-preview model does
 # not — task optimisation is expressed inline in the prompt instead.
 _MODELS_WITH_TASK_TYPE = {"gemini-embedding-001"}
+_MODELS_WITH_AGGREGATED_INPUTS = {"gemini-embedding-2"}
 
 # Conservative client-side batch size. gemini-embedding-001 has a 2048-token
 # input limit; at ~50 tokens/chunk that's ~40 chunks/call. We stay at 20 for
@@ -106,9 +107,9 @@ class GeminiEmbedder(BaseEmbedder):
             try:
                 dim = int(raw_dim)
             except ValueError:
-                dim = _MODEL_NATIVE_DIMS.get(self._model, _DEFAULT_DIM)
+                dim = _DEFAULT_DIM
         else:
-            dim = _MODEL_NATIVE_DIMS.get(self._model, _DEFAULT_DIM)
+            dim = _DEFAULT_DIM
 
         # Silently coerce invalid dims to the default — we must not raise
         # in __init__ because the settings UI instantiates embedders just to
@@ -164,6 +165,9 @@ class GeminiEmbedder(BaseEmbedder):
         client = genai.Client(api_key=api_key)
         config = self._build_config(task_type)
 
+        if self._model in _MODELS_WITH_AGGREGATED_INPUTS:
+            return self._embed_aggregating_model(client, texts, task_type, config)
+
         all_vectors: List[List[float]] = []
         for i in range(0, len(texts), _BATCH_SIZE):
             batch = texts[i : i + _BATCH_SIZE]
@@ -184,6 +188,31 @@ class GeminiEmbedder(BaseEmbedder):
     # Internals
     # ------------------------------------------------------------------
 
+    def _embed_aggregating_model(
+        self,
+        client: Any,
+        texts: List[str],
+        task_type: Optional[str],
+        config: Optional[Any],
+    ) -> List[List[float]]:
+        """Embed one text per request for Gemini Embedding 2.
+
+        Gemini Embedding 2 aggregates multiple inputs in one request into a
+        single vector. RAG indexing needs one vector per chunk, so this method
+        intentionally performs a separate embed_content call per text.
+        """
+        vectors: List[List[float]] = []
+        for text in texts:
+            response = client.models.embed_content(
+                model=self._model,
+                contents=_format_embedding_2_text(text, task_type),
+                config=config,
+            )
+            if not response.embeddings:
+                raise RuntimeError("Gemini returned no embeddings.")
+            vectors.append(list(response.embeddings[0].values))
+        return vectors
+
     def _build_config(self, task_type: Optional[str]) -> Optional[Any]:
         """Assemble ``EmbedContentConfig`` only when we need to override defaults."""
         kwargs: dict = {}
@@ -200,6 +229,27 @@ class GeminiEmbedder(BaseEmbedder):
         if not kwargs:
             return None
         return genai_types.EmbedContentConfig(**kwargs)
+
+
+def _format_embedding_2_text(text: str, task_type: Optional[str]) -> str:
+    """Apply Google's text-only task prefixes for Gemini Embedding 2."""
+    if task_type == "RETRIEVAL_QUERY":
+        return f"task: search result | query: {text}"
+    if task_type == "RETRIEVAL_DOCUMENT":
+        return f"title: none | text: {text}"
+    if task_type == "QUESTION_ANSWERING":
+        return f"task: question answering | query: {text}"
+    if task_type == "FACT_VERIFICATION":
+        return f"task: fact checking | query: {text}"
+    if task_type == "CODE_RETRIEVAL_QUERY":
+        return f"task: code retrieval | query: {text}"
+    if task_type == "SEMANTIC_SIMILARITY":
+        return f"task: sentence similarity | query: {text}"
+    if task_type == "CLASSIFICATION":
+        return f"task: classification | query: {text}"
+    if task_type == "CLUSTERING":
+        return f"task: clustering | query: {text}"
+    return text
 
 
 def _l2_normalize(vec: List[float]) -> List[float]:

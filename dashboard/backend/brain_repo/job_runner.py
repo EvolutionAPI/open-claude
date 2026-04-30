@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -338,6 +339,87 @@ def _decrypt_snapshot_token(encrypted: bytes) -> str:
 # Top-level pipelines
 # ────────────────────────────────────────────────────────────────────────
 
+def _authenticated_url(repo_url: str, token: str) -> str:
+    """Return repo_url with a one-shot token for git network commands."""
+    if token and "://" in repo_url:
+        scheme, rest = repo_url.split("://", 1)
+        if "@" in rest:
+            rest = rest.split("@", 1)[1]
+        return f"{scheme}://{token}@{rest}"
+    return repo_url
+
+
+def _run_git_checked(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = 60,
+    token: str = "",
+) -> subprocess.CompletedProcess:
+    """Run git and raise a compact, token-masked error on failure."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "")[:500]
+        command = " ".join(args)
+        if token:
+            stderr = stderr.replace(token, "***")
+            command = command.replace(token, "***")
+        raise RuntimeError(f"git {command} failed: {stderr}")
+    return result
+
+
+def _set_clean_origin(repo_dir: Path, repo_url: str) -> None:
+    """Ensure origin is configured without credentials persisted in .git/config."""
+    remotes = _run_git_checked(["remote"], cwd=repo_dir).stdout.splitlines()
+    if "origin" in remotes:
+        _run_git_checked(["remote", "set-url", "origin", repo_url], cwd=repo_dir)
+    else:
+        _run_git_checked(["remote", "add", "origin", repo_url], cwd=repo_dir)
+
+
+def _ensure_checkout_branch(repo_dir: Path) -> None:
+    """Make an empty clone usable without disturbing a normal cloned branch."""
+    head = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=repo_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if head.returncode == 0:
+        branch = _run_git_checked(["branch", "--show-current"], cwd=repo_dir).stdout.strip()
+        if branch:
+            return
+
+    # Empty repositories and detached HEAD checkouts need a branch before the
+    # skeleton commit can be created. GitHub-created repos default to main.
+    _run_git_checked(["checkout", "-B", "main"], cwd=repo_dir)
+
+
+def _clone_brain_repo(repo_url: str, token: str, local_path: Path) -> None:
+    """Create a fresh local working tree for an existing or empty remote repo."""
+    if local_path.exists():
+        shutil.rmtree(local_path, ignore_errors=True)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    auth_url = _authenticated_url(repo_url, token)
+    _run_git_checked(
+        ["clone", auth_url, str(local_path)],
+        timeout=180,
+        token=token,
+    )
+    _set_clean_origin(local_path, repo_url)
+    _ensure_checkout_branch(local_path)
+
+
 def run_sync_pipeline(
     flask_app,
     user_id: int,
@@ -428,58 +510,42 @@ def run_bootstrap_pipeline(
     repo_name: str,
     owner_username: str,
     github_username: str,
+    sync_after: bool = False,
+    workspace: Path | None = None,
+    tag_name: str | None = None,
+    commit_message: str | None = None,
 ) -> None:
-    """Bootstrap a freshly-created empty GitHub repo with the skeleton.
+    """Clone/bootstrap a GitHub brain repo and persist the local working tree.
 
-    Runs the same logic as routes.brain_repo._initialize_remote_brain_repo
-    but inside the job_runner lock so it serializes with sync operations,
-    and persists the final local_path into BrainRepoConfig so the UI stops
-    showing "initializing…".
+    Existing valid brain repos are cloned as-is. Empty or incomplete repos get
+    the standard skeleton before local_path is persisted to BrainRepoConfig.
     """
-    import subprocess
     from models import BrainRepoConfig, db  # type: ignore[import]
 
     with _job_lock:
         error: str | None = None
         local_path_str: str | None = None
         try:
-            workspace = Path(__file__).resolve().parent.parent.parent.parent
-            base_dir = workspace / "dashboard" / "data" / "brain-repos"
+            repo_root = Path(__file__).resolve().parent.parent.parent.parent
+            workspace_root = workspace or repo_root
+            base_dir = repo_root / "dashboard" / "data" / "brain-repos"
             base_dir.mkdir(parents=True, exist_ok=True)
             local_path = base_dir / repo_name
 
-            if local_path.exists():
-                shutil.rmtree(local_path, ignore_errors=True)
-
             from brain_repo import git_ops, manifest  # type: ignore[import]
 
-            local_path.mkdir(parents=True, exist_ok=True)
-
-            subprocess.run(
-                ["git", "init", "-b", "main"],
-                cwd=local_path, check=True, capture_output=True, timeout=30,
-            )
+            _clone_brain_repo(repo_url, token, local_path)
             _check_cancel(flask_app, user_id)
 
-            # Token-embedded remote for the bootstrap push. A later follow-up
-            # should move this to `git credential helper` so the PAT never
-            # hits .git/config, but that's a separate change.
-            if "://" in repo_url:
-                scheme, rest = repo_url.split("://", 1)
-                auth_url = f"{scheme}://{token}@{rest}"
-            else:
-                auth_url = repo_url
-            subprocess.run(
-                ["git", "remote", "add", "origin", auth_url],
-                cwd=local_path, check=True, capture_output=True, timeout=30,
-            )
-            _check_cancel(flask_app, user_id)
-
-            manifest.initialize_brain_repo(local_path, {
-                "workspace_name": owner_username or "",
-                "owner_username": owner_username or "",
-                "github_username": github_username or "",
-            })
+            manifest_data = manifest.read_manifest(local_path)
+            schema_ok, _migration_needed = manifest.validate_schema(manifest_data)
+            marker_exists = (local_path / ".evo-brain").exists()
+            if not marker_exists or not schema_ok:
+                manifest.initialize_brain_repo(local_path, {
+                    "workspace_name": owner_username or "",
+                    "owner_username": owner_username or "",
+                    "github_username": github_username or "",
+                })
 
             author_name = github_username or owner_username or "EvoNexus"
             author_email = (
@@ -496,10 +562,38 @@ def run_bootstrap_pipeline(
             )
             _check_cancel(flask_app, user_id)
 
-            committed = git_ops.commit_all(local_path, "feat(brain-repo): initial structure")
-            if committed:
+            if sync_after:
+                copied, dropped = _mirror_workspace(
+                    flask_app,
+                    user_id,
+                    workspace_root,
+                    local_path,
+                )
+                log.info(
+                    "bootstrap+sync: mirrored %d files, removed %d with secrets",
+                    copied,
+                    dropped,
+                )
+
+            msg = commit_message or (
+                f"manual sync {datetime.now(timezone.utc).isoformat()}"
+                if sync_after
+                else "feat(brain-repo): initial structure"
+            )
+            committed = git_ops.commit_all(local_path, msg)
+
+            if tag_name:
                 _check_cancel(flask_app, user_id)
-                pushed, push_err = git_ops.push(local_path, token, with_tags=False)
+                git_ops.create_tag(
+                    local_path,
+                    tag_name,
+                    f"Bootstrap sync: {tag_name} ({datetime.now(timezone.utc).isoformat()})",
+                    force=True,
+                )
+
+            if committed or tag_name:
+                _check_cancel(flask_app, user_id)
+                pushed, push_err = git_ops.push(local_path, token, with_tags=bool(tag_name))
                 if not pushed:
                     log.warning("bootstrap push failed for %s: %s", repo_name, push_err)
                     error = f"bootstrap push failed: {push_err}"
@@ -564,6 +658,10 @@ def enqueue_bootstrap(
     repo_name: str,
     owner_username: str,
     github_username: str,
+    sync_after: bool = False,
+    workspace: Path | None = None,
+    tag_name: str | None = None,
+    commit_message: str | None = None,
 ) -> bool:
     """Spawn daemon thread running run_bootstrap_pipeline. Returns False if busy."""
     if not _acquire_db_lock(flask_app, user_id, JOB_KIND_BOOTSTRAP):
@@ -578,6 +676,10 @@ def enqueue_bootstrap(
             "repo_name": repo_name,
             "owner_username": owner_username,
             "github_username": github_username,
+            "sync_after": sync_after,
+            "workspace": workspace,
+            "tag_name": tag_name,
+            "commit_message": commit_message,
         },
         name=f"brain-repo-bootstrap-{user_id}",
         daemon=True,

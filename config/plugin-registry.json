@@ -1,0 +1,40 @@
+{
+  "plugins": [
+    {
+      "id": "observability-scout",
+      "name": "Observability Scout",
+      "version": "1.0.0",
+      "category": "observability",
+      "description": "Installs a read-only agent pack for platform telemetry and incident triage.",
+      "agents": [
+        {
+          "name": "observability-scout",
+          "description": "Read-only observability analyst for EvoNexus. Uses metrics, health, costs, and provider routing data to identify regressions.",
+          "model": "haiku",
+          "color": "cyan",
+          "memory": "project",
+          "disallowedTools": ["Write", "Edit", "Bash", "NotebookEdit"],
+          "prompt": "You are Observability Scout.\nAnalyze EvoNexus platform health, provider routing, queue/cache status, and cost trends.\nRecommend concrete fixes with clear severity. Do not edit files."
+        }
+      ]
+    },
+    {
+      "id": "provider-router",
+      "name": "Provider Router",
+      "version": "1.0.0",
+      "category": "platform",
+      "description": "Installs a read-only agent pack for provider failover and routing audits.",
+      "agents": [
+        {
+          "name": "provider-router",
+          "description": "Read-only provider routing specialist for EvoNexus. Reviews failover order, provider health, and selected model mode.",
+          "model": "haiku",
+          "color": "violet",
+          "memory": "project",
+          "disallowedTools": ["Write", "Edit", "Bash", "NotebookEdit"],
+          "prompt": "You are Provider Router.\nAudit provider health, failover order, and model compatibility.\nRecommend a safe routing chain and explain why a fallback should or should not be activated."
+        }
+      ]
+    }
+  ]
+}

@@ -57,6 +57,7 @@ const KnowledgeUpload = lazyDefault(() => import('./pages/Knowledge/Upload'))
 const KnowledgeBrowse = lazyDefault(() => import('./pages/Knowledge/Browse'))
 const KnowledgeSearch = lazyDefault(() => import('./pages/Knowledge/Search'))
 const KnowledgeApiKeys = lazyDefault(() => import('./pages/Knowledge/ApiKeys'))
+const AgentKnowledge = lazyDefault(() => import('./pages/AgentKnowledge'))
 
 function FullPageRoute({
   locationKey,
@@ -256,6 +257,7 @@ function AppContent() {
               {hasPermission('heartbeats', 'view') && <Route path="/heartbeats/:id" element={<HeartbeatDetail />} />}
               <Route path="/memory" element={<Memory />} />
               <Route path="/mempalace" element={<MemPalace />} />
+              {hasPermission('knowledge', 'view') && <Route path="/agent-knowledge" element={<AgentKnowledge />} />}
               <Route path="/systems" element={<Systems />} />
               {hasPermission('config', 'view') && <Route path="/settings" element={<Settings />} />}
               {hasPermission('config', 'view') && <Route path="/backups" element={<Backups />} />}

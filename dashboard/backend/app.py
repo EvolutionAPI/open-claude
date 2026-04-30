@@ -8,9 +8,28 @@ from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, send_from_directory, request, jsonify
+from flask import Flask, send_from_directory, request, jsonify, abort
 from flask_cors import CORS
 from flask_login import LoginManager, current_user, login_user
+
+# TKR Security Hardening imports
+try:
+    from runtime_config import load_dashboard_runtime_config
+    _runtime_config = load_dashboard_runtime_config
+except ImportError:
+    _runtime_config = None
+try:
+    from structured_logging import install_request_logging
+except ImportError:
+    install_request_logging = None
+try:
+    from request_security import require_xhr
+except ImportError:
+    require_xhr = None
+try:
+    from session_security import attach_session_token
+except ImportError:
+    attach_session_token = None
 
 # Workspace root: two levels up from backend/
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
@@ -42,6 +61,28 @@ def _cors_allowed_origins():
     return "*" if not _is_production() else []
 
 app = Flask(__name__, static_folder=None)
+
+class ProxyFixWSGI:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+
+    def __call__(self, environ, start_response):
+        if environ.get('HTTP_UPGRADE', '').lower() == 'websocket':
+            environ['wsgi.websocket'] = True
+        return self.wsgi_app(environ, start_response)
+
+app.wsgi_app = ProxyFixWSGI(app.wsgi_app)
+
+class ProxyFixWSGI:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+    def __call__(self, environ, start_response):
+        print('PROXY_FIX:', environ.get('HTTP_UPGRADE', ''), flush=True)
+        if environ.get('HTTP_UPGRADE', '').lower() == 'websocket':
+            environ['wsgi.websocket'] = True
+        return self.wsgi_app(environ, start_response)
+
+app.wsgi_app = ProxyFixWSGI(app.wsgi_app)
 # Persist secret key so sessions survive restarts
 _secret_key = os.environ.get("EVONEXUS_SECRET_KEY")
 if not _secret_key:
@@ -91,7 +132,19 @@ except AttributeError:
     # Flask <2.2 exposed this through app.config; keep compatibility.
     app.config["JSON_AS_ASCII"] = False
 
-CORS(app, origins=_cors_allowed_origins(), supports_credentials=True)
+CORS(
+    app,
+    origins=_cors_allowed_origins(),
+    supports_credentials=True,
+    allow_headers=["Content-Type", "X-Requested-With", "X-CSRF-Token", "Authorization"],
+    expose_headers=["X-CSRF-Token"],
+)
+
+# --------------- Rate limiting (in-memory, single-process Flask) ---------------
+# Vault audit §2.S1 CRITICAL: all public endpoints require rate limiting.
+# The limiter singleton lives in rate_limit.py to avoid circular imports with blueprints.
+from rate_limit import limiter
+limiter.init_app(app)
 
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
@@ -603,6 +656,27 @@ with app.app_context():
         _conn.commit()
     # --- End Wave 2.2r migration ---
 
+    # --- B3 safe_uninstall migration: plugin_orphans table ---
+    _existing_tables_b3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "plugin_orphans" not in _existing_tables_b3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS plugin_orphans (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                tablename TEXT NOT NULL,
+                orphaned_at TEXT NOT NULL,
+                orphaned_by_user_id INTEGER,
+                original_plugin_version TEXT,
+                original_sha256 TEXT,
+                original_publisher_url TEXT,
+                recovered_at TEXT,
+                UNIQUE(slug, tablename)
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_orphans_slug ON plugin_orphans(slug);
+        """)
+        _conn.commit()
+    # --- End B3 safe_uninstall migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -743,6 +817,7 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/needs-setup",
     "/api/auth/setup",
+    "/api/auth/csrf",
     "/api/health",
     "/api/auth/needs-onboarding",
     "/api/config/workspace-status",
@@ -815,6 +890,21 @@ def auth_middleware():
     if not current_user.is_authenticated:
         return jsonify({"error": "Authentication required"}), 401
 
+# --------------- TKR Security Headers ---------------
+@app.after_request
+def attach_security_headers(response):
+    """Attach security-related headers to every response."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # Attach session token if module available
+    if attach_session_token is not None:
+        try:
+            attach_session_token(response)
+        except Exception:
+            pass
+    return response
+
 # --------------- Register blueprints ---------------
 from routes.overview import bp as overview_bp
 from routes.workspace import bp as workspace_bp
@@ -847,9 +937,11 @@ from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
+from routes.agent_knowledge import bp as agent_knowledge_bp
 from routes.databases import bp as databases_bp
 from routes.plugins import bp as plugins_bp
 from routes.mcp_servers import bp as mcp_servers_bp
+from routes.plugin_public_pages import bp as plugin_public_pages_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -890,6 +982,11 @@ app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(terminal_proxy_bp)
 
+@app.route('/terminal/ws')
+def proxy_ws_test():
+    print("HIT PROXY_WS_TEST!!!", flush=True)
+    return "test"
+
 # Mount the terminal-server WebSocket proxy on the same Sock instance the
 # rest of the app uses. Done after the blueprint is registered so route
 # names are unique. Without this, browsers connecting from a host other
@@ -919,9 +1016,19 @@ app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)
 app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
+app.register_blueprint(agent_knowledge_bp)
 app.register_blueprint(databases_bp)
 app.register_blueprint(plugins_bp)
 app.register_blueprint(mcp_servers_bp)
+# B2.0: plugin public pages (unauthenticated, token-bound portals)
+app.register_blueprint(plugin_public_pages_bp)
+
+# TKR Platform routes (observability, cache, queue)
+try:
+    from routes.platform import bp as platform_bp
+    app.register_blueprint(platform_bp)
+except ImportError:
+    pass  # Platform module not available
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp

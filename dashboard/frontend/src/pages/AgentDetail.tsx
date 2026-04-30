@@ -11,6 +11,7 @@ import { trackAgentVisit } from './Agents'
 import { AgentAvatar } from '../components/AgentAvatar'
 import { useAuth } from '../context/AuthContext'
 import { useNotificationBadge } from '../hooks/useNotificationBadge'
+import { TS_HTTP } from '../lib/terminal-url'
 
 interface MemoryFile {
   name: string
@@ -19,16 +20,6 @@ interface MemoryFile {
 }
 
 type Tab = 'sessions' | 'profile' | 'memory'
-
-// Terminal-server URL — always go through the dashboard's /terminal proxy in
-// production builds. Direct cross-port fetches (e.g. localhost:32352 from a
-// page served at localhost:8080) are blocked by the dashboard's
-// `connect-src 'self'` CSP directive even when the network path works.
-// In Vite dev mode (no proxy mounted) we fall back to a direct connection.
-const isViteDev = import.meta.env.DEV
-const TS_HTTP = isViteDev
-  ? `http://${window.location.hostname}:32352`
-  : `${window.location.origin}/terminal`
 
 interface TerminalTab {
   id: string       // sessionId

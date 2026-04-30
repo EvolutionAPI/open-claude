@@ -181,8 +181,8 @@ class TestListEmbedderModels:
         data = resp.get_json()
         assert data["provider"] == "gemini"
         model_ids = [m["id"] for m in data["models"]]
+        assert "gemini-embedding-2" in model_ids
         assert "gemini-embedding-001" in model_ids
-        assert "gemini-embedding-2-preview" in model_ids
 
     def test_filter_by_openai_provider(self, client):
         with patch("routes.knowledge._assert_key", return_value=None):
@@ -353,7 +353,7 @@ class TestPutSettings:
             )
         assert resp.status_code == 400
 
-    def test_gemini_model_2_preview_accepted(self, client, monkeypatch, tmp_path):
+    def test_gemini_model_2_accepted(self, client, monkeypatch, tmp_path):
         monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "gemini")
         env_file = tmp_path / ".env"
         env_file.write_text("")
@@ -368,7 +368,7 @@ class TestPutSettings:
                 "/api/knowledge/settings",
                 json={
                     "embedder_provider": "gemini",
-                    "embedder_model": "gemini-embedding-2-preview",
+                    "embedder_model": "gemini-embedding-2",
                 },
                 headers=_WRITE_HEADERS,
             )

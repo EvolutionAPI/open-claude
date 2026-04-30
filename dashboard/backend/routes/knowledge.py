@@ -68,7 +68,7 @@ _EMBEDDER_DEFAULTS = {
         "vector_dim": 1536,
     },
     "gemini": {
-        "model": "gemini-embedding-001",
+        "model": "gemini-embedding-2",
         "vector_dim": 768,
     },
 }
@@ -90,13 +90,12 @@ _EMBEDDER_MODELS = {
         {"id": "text-embedding-ada-002", "dim": 1536, "legacy": True},
     ],
     "gemini": [
-        {"id": "gemini-embedding-001", "dim": 768, "recommended": True,
-         "supports_task_type": True,
-         "note": "Text-only. Supports task_type for retrieval optimization."},
-        {"id": "gemini-embedding-2-preview", "dim": 768,
+        {"id": "gemini-embedding-2", "dim": 768, "recommended": True,
          "supports_task_type": False,
-         "preview": True,
-         "note": "Multimodal preview. Task hint must be inline in the prompt."},
+         "note": "Stable multimodal Embedding 2. Task hints are encoded as text prefixes for RAG."},
+        {"id": "gemini-embedding-001", "dim": 768,
+         "supports_task_type": True,
+         "note": "Legacy text-only model. Supports task_type for retrieval optimization."},
     ],
 }
 

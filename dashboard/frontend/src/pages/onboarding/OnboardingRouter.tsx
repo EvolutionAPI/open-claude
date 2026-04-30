@@ -20,6 +20,14 @@ interface OnboardingState {
   brain_repo: string | null
 }
 
+interface WorkspaceStatus {
+  workspace_ready: boolean
+  has_provider: boolean
+  active_provider: string | null
+  other_users_configured: boolean
+  has_workspace_config: boolean
+}
+
 export default function OnboardingRouter() {
   const navigate = useNavigate()
   const { t } = useTranslation()
@@ -30,6 +38,7 @@ export default function OnboardingRouter() {
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const [wantBrainRepo, setWantBrainRepo] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
+  const [workspaceReady, setWorkspaceReady] = useState(false)
 
   useEffect(() => {
     // Allow re-entry into a specific sub-flow even after onboarding is completed.
@@ -39,8 +48,13 @@ export default function OnboardingRouter() {
     const params = new URLSearchParams(window.location.search)
     const reconfigure = params.get('reconfigure')
 
-    api.get('/onboarding/state')
-      .then((data: OnboardingState) => {
+    Promise.all([
+      api.get('/onboarding/state'),
+      api.get('/onboarding/workspace-status').catch(() => ({ workspace_ready: false } as WorkspaceStatus)),
+    ])
+      .then(async ([data, wsStatus]: [OnboardingState, WorkspaceStatus]) => {
+        setWorkspaceReady(wsStatus.workspace_ready)
+
         if (reconfigure === 'brain') {
           setFlow('first-time')
           setWantBrainRepo(true)
@@ -52,6 +66,21 @@ export default function OnboardingRouter() {
           navigate('/agents', { replace: true })
           return
         }
+
+        // AUTO-SKIP: If the workspace is already configured by another
+        // user/admin and this user has never started onboarding (state is
+        // null), skip transparently — no wizard needed.  This covers users
+        // created BEFORE the auto-skip logic was added to create_user().
+        if (
+          wsStatus.workspace_ready &&
+          (data.onboarding_state === null || data.onboarding_state === undefined)
+        ) {
+          try { await api.post('/onboarding/skip') } catch { /* ignore */ }
+          await refreshUser()
+          navigate('/agents', { replace: true })
+          return
+        }
+
         if (data.onboarding_state === 'pending') {
           setFlow('first-time')
           setStep(1)
@@ -61,7 +90,7 @@ export default function OnboardingRouter() {
         // No state yet — show welcome
       })
       .finally(() => setLoading(false))
-  }, [navigate])
+  }, [navigate, refreshUser])
 
   const startFirstTime = async () => {
     try {
@@ -101,6 +130,17 @@ export default function OnboardingRouter() {
     navigate('/agents', { replace: true })
   }
 
+  /** "Use existing workspace" — skip onboarding entirely */
+  const handleUseExisting = async () => {
+    try {
+      await api.post('/onboarding/skip')
+    } catch {
+      // ignore
+    }
+    await refreshUser()
+    navigate('/agents', { replace: true })
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#080c14] flex items-center justify-center">
@@ -111,7 +151,14 @@ export default function OnboardingRouter() {
 
   // Welcome screen (no flow chosen yet)
   if (flow === null) {
-    return <Welcome onFirstTime={startFirstTime} onRestore={startRestore} />
+    return (
+      <Welcome
+        onFirstTime={startFirstTime}
+        onRestore={startRestore}
+        onUseExisting={handleUseExisting}
+        workspaceReady={workspaceReady}
+      />
+    )
   }
 
   // Restore flow
@@ -184,3 +231,4 @@ export default function OnboardingRouter() {
 
   return null
 }
+

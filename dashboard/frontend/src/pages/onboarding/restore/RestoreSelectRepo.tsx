@@ -26,6 +26,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
   const [loadingRepos, setLoadingRepos] = useState(false)
   const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null)
   const [error, setError] = useState('')
+  const [advancing, setAdvancing] = useState(false)
 
   const connectToken = async () => {
     if (!token.trim()) {
@@ -60,12 +61,29 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
     }
   }
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (!selectedRepo) {
       setError(t('restore.selectRepo.selectRepo'))
       return
     }
-    onNext(selectedRepo.html_url)
+    if (!token.trim()) {
+      setError(t('restore.selectRepo.tokenRequired'))
+      return
+    }
+
+    setError('')
+    setAdvancing(true)
+    try {
+      await api.post('/brain-repo/connect', {
+        token: token.trim(),
+        repo_url: selectedRepo.html_url,
+      })
+      onNext(selectedRepo.html_url)
+    } catch (ex: unknown) {
+      setError(ex instanceof Error ? ex.message : t('restore.selectRepo.failed'))
+    } finally {
+      setAdvancing(false)
+    }
   }
 
   return (
@@ -178,10 +196,10 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
               </button>
               <button
                 onClick={handleNext}
-                disabled={!selectedRepo}
+                disabled={!selectedRepo || advancing}
                 className="flex-1 py-3 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
               >
-                {t('restore.next')}
+                {advancing ? <Loader2 size={14} className="animate-spin mx-auto" /> : t('restore.next')}
               </button>
             </div>
           </div>

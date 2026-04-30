@@ -1,0 +1,84 @@
+{
+  "projeto": "EvoNexus Multiagentes - Agro Roraima Contábil",
+  "descricao": "Sistema Multiagentes Autônomos (SMA) local-first baseado no framework OpenClaw, focado na gestão contábil, tributária e administrativa do Agronegócio.",
+  "sprints": [
+    {
+      "id": 1,
+      "nome": "Roteamento e Escala de IA",
+      "descricao": "Implementação do Smart Router com suporte a falha e painel de controle.",
+      "entregavel": "Backend, Frontend e Terminal Server integrados com troca de provedor dinâmica.",
+      "risco": "alto",
+      "pre_requisito": null,
+      "features": [
+        {
+          "categoria": "ia_agent",
+          "descricao": "O sistema suporta troca dinâmica de provedores em tempo real.",
+          "steps": [
+            "Usuário seleciona provedor (OpenRouter, Anthropic, Google, etc) no painel administrativo.",
+            "Backend (Flask) recebe a requisição HTTP POST.",
+            "Backend aciona webhook interno de notificação para o Terminal Server.",
+            "Terminal Server invoca `ClaudeBridge.invalidateAllSessions()` e recarrega `providers.json`.",
+            "Novas sub-chamadas passam a utilizar o novo provedor escolhido."
+          ],
+          "edge_cases": [
+            "E se o Provedor 1 e Provedor 2 caírem: Iniciar Roteamento em Cascata (Waterfall Fallback), saltando automaticamente para a próxima API da lista (Google, OpenAI) sem descartar a transação do cliente.",
+            "E se atingir Rate Limit da API: Backend implementa Retry com Backoff Exponencial automático.",
+            "E se houver timeout na API: Interromper a chamada após 60 segundos (Graceful Shutdown) e avançar para o provedor de fallback.",
+            "E se as permissões falharem: Apenas usuários com a role 'Admin' têm permissão de realizar esta troca (Status Code 403 Forbidden para não-admins)."
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "nome": "Auth Hardening e Segurança",
+      "descricao": "Blindagem da API contra ataques de força bruta e controle de acesso.",
+      "entregavel": "Autenticação robusta operando no banco de dados com lockouts gerenciais.",
+      "risco": "medio",
+      "pre_requisito": null,
+      "features": [
+        {
+          "categoria": "auth",
+          "descricao": "Limitação de tentativas de login falhas por usuário ou IP.",
+          "steps": [
+            "Sistema recebe requisição POST /api/login com validação restrita de Input.",
+            "Em caso de senha errada, registro é inserido na tabela `login_throttles` do banco de dados (SQLite/PostgreSQL).",
+            "Bloquear endpoint por 5 minutos após 5 erros seguidos (Status Code 429 Too Many Requests).",
+            "Bloquear endpoint por 30 minutos após 10 erros seguidos (Status Code 429 Too Many Requests)."
+          ],
+          "edge_cases": [
+            "E se houver concorrência massiva no login: O ORM gerencia o pool de conexões para evitar DB Lock.",
+            "E se usuário usar token CSRF expirado: Retornar Status Code 403 (Invalid Token).",
+            "E se a payload for gigantesca num ataque: O servidor barra payloads > 5MB nas rotas públicas de login (Status Code 413 Payload Too Large)."
+          ]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "nome": "SPED EFD-Contribuições",
+      "descricao": "Automação massiva via agente fiscal com base na IN RFB nº 2.305/2024.",
+      "entregavel": "Skill de automação `sped_cli.py` integrada aos agentes de IA com leitura em lote.",
+      "risco": "alto",
+      "pre_requisito": 1,
+      "features": [
+        {
+          "categoria": "api_endpoint",
+          "descricao": "Extração inteligente e massiva de arquivos com compilação de layout padrão SPED.",
+          "steps": [
+            "Agente recebe arquivo ou pasta contendo faturas e recibos.",
+            "Invocação da skill local `sped_cli.py batch-process`.",
+            "Validação automática dos blocos estruturais (ex: 0000, 0001, 0100) via script determinístico.",
+            "Geração de arquivo formatado com delimitador pipe (|)."
+          ],
+          "edge_cases": [
+            "E se os arquivos de faturamento somarem 80MB: O limite configurado para este processamento massivo é de 100MB+, garantindo o parse do lote mensal completo.",
+            "E se faltar metadados num bloco: Aplicar regras de auto-fill ou usar separadores vazios (||) conforme a sintaxe legislativa.",
+            "E se o modelo de IA alucinar nos blocos matemáticos: A execução binária intercepta e o script de conferência (`validate`) emite Status 500 Interno pedindo correção humana.",
+            "E se o servidor ficar sem memória (OOM) devido aos 100MB: Implementar stream de parsing (chunks) no script Python para não sobrecarregar a RAM da VPS."
+          ]
+        }
+      ]
+    }
+  ]
+}

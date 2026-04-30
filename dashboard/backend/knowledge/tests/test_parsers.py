@@ -158,7 +158,7 @@ class TestMarkerParser:
 
 
 class TestMarkerNotInstalled:
-    def test_parse_raises_actionable_error(self, monkeypatch):
+    def test_parse_raises_actionable_error(self, monkeypatch, tmp_path):
         _add_backend()
         import builtins
         real_import = builtins.__import__
@@ -175,12 +175,46 @@ class TestMarkerNotInstalled:
         import knowledge.parsers.marker_parser as mod
         original_converter = mod._converter
         mod._converter = None
+        docx_path = tmp_path / "test.docx"
+        docx_path.write_bytes(b"fake docx")
         try:
             parser = MarkerParser()
             with pytest.raises(MarkerNotInstalledError, match="pip install marker-pdf"):
-                parser.parse(Path("/tmp/test.pdf"))
+                parser.parse(docx_path)
         finally:
             mod._converter = original_converter
+
+
+class TestPdfTextFallback:
+    def test_pdf_text_fallback_runs_before_marker_import(self, monkeypatch, sample_pdf):
+        _add_backend()
+        pytest.importorskip("pypdfium2")
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "marker" or name.startswith("marker."):
+                raise AssertionError("marker should not be imported for searchable PDFs")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        from knowledge.parsers.marker_parser import MarkerParser
+        result = MarkerParser().parse(sample_pdf)
+
+        assert "Hello World" in result["markdown"]
+        assert result["metadata"]["parser_fallback"] == "pypdfium2"
+
+    def test_pypdfium_fallback_records_marker_error(self, sample_pdf):
+        _add_backend()
+        pytest.importorskip("pypdfium2")
+
+        import knowledge.parsers.marker_parser as mod
+        result = mod._maybe_parse_pdf_fallback(sample_pdf, RuntimeError("marker crashed"))
+
+        assert "Hello World" in result["markdown"]
+        assert result["metadata"]["parser_fallback"] == "pypdfium2"
+        assert "marker crashed" in result["metadata"]["marker_error"]
 
 
 # ---------------------------------------------------------------------------

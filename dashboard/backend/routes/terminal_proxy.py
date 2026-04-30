@@ -156,6 +156,10 @@ def register_websocket_proxy(sock) -> None:
         target = f"{TERMINAL_WS_BASE}/ws"
         try:
             upstream = create_connection(target, timeout=10)
+            # `timeout` above should only bound the initial connection. The
+            # websocket-client library keeps it as the socket read timeout too,
+            # so an otherwise healthy but quiet terminal closes after 10s.
+            upstream.settimeout(None)
         except Exception as exc:
             log.warning("terminal_proxy: upstream WS connect failed: %s", exc)
             try:
@@ -190,7 +194,10 @@ def register_websocket_proxy(sock) -> None:
 
         try:
             while not stop.is_set():
-                msg = client_ws.receive(timeout=30)
+                # Keep the tunnel open while the browser is idle. A fixed
+                # receive timeout closes valid agent sessions when the user is
+                # reading output or a hidden tab has throttled timers.
+                msg = client_ws.receive()
                 if msg is None:
                     break
                 upstream.send(msg)

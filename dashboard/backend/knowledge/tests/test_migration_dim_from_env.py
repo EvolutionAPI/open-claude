@@ -101,7 +101,7 @@ class TestResolveEmbedderConfig:
         fn = self._fn()
         provider, model, dim = fn()
         assert provider == "gemini"
-        assert model == "gemini-embedding-001"
+        assert model == "gemini-embedding-2"
         assert dim == 768
 
     def test_gemini_custom_dim_1536(self, monkeypatch):
@@ -132,11 +132,11 @@ class TestResolveEmbedderConfig:
         _, _, dim = fn()
         assert dim == 768
 
-    def test_gemini_2_preview_model(self, monkeypatch):
+    def test_gemini_001_model(self, monkeypatch):
         monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "gemini")
-        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-2-preview")
+        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-001")
         monkeypatch.delenv("KNOWLEDGE_GEMINI_DIM", raising=False)
         fn = self._fn()
         _, model, dim = fn()
-        assert model == "gemini-embedding-2-preview"
-        assert dim == 768  # native default for 2-preview in our config
+        assert model == "gemini-embedding-001"
+        assert dim == 768

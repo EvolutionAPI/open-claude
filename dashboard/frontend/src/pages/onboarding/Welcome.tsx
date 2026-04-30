@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import { CheckCircle2 } from 'lucide-react'
 
 /* ── Animated mesh background (reused from Login.tsx) ── */
 function NetworkCanvas() {
@@ -79,9 +80,11 @@ function NetworkCanvas() {
 interface WelcomeProps {
   onFirstTime: () => void
   onRestore: () => void
+  onUseExisting: () => void
+  workspaceReady: boolean
 }
 
-export default function Welcome({ onFirstTime, onRestore }: WelcomeProps) {
+export default function Welcome({ onFirstTime, onRestore, onUseExisting, workspaceReady }: WelcomeProps) {
   const { t } = useTranslation()
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif] relative">
@@ -103,18 +106,56 @@ export default function Welcome({ onFirstTime, onRestore }: WelcomeProps) {
 
           {/* Content */}
           <div className="px-7 py-6 space-y-3">
-            <p className="text-[12px] text-[#5a6b7f] text-center mb-5">
-              {t('onboarding.welcome.chooseHowToStart')}
-            </p>
+
+            {/* Workspace ready banner + primary action */}
+            {workspaceReady && (
+              <>
+                <div className="flex items-start gap-2.5 p-3 rounded-lg bg-[#00FFA7]/8 border border-[#00FFA7]/20">
+                  <CheckCircle2 size={16} className="text-[#00FFA7] flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-[#a0d8c0] leading-relaxed">
+                    {t('onboarding.welcome.workspaceReadyBanner')}
+                  </p>
+                </div>
+
+                <button
+                  id="btn-use-existing-workspace"
+                  onClick={onUseExisting}
+                  className="w-full py-3.5 px-4 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+                >
+                  <CheckCircle2 size={16} />
+                  {t('onboarding.welcome.useExistingWorkspace')}
+                </button>
+
+                <div className="flex items-center gap-3 py-1">
+                  <div className="flex-1 h-px bg-[#152030]" />
+                  <span className="text-[10px] text-[#2d3d4f] uppercase tracking-wider">
+                    {t('onboarding.welcome.orSetupManually')}
+                  </span>
+                  <div className="flex-1 h-px bg-[#152030]" />
+                </div>
+              </>
+            )}
+
+            {!workspaceReady && (
+              <p className="text-[12px] text-[#5a6b7f] text-center mb-5">
+                {t('onboarding.welcome.chooseHowToStart')}
+              </p>
+            )}
 
             <button
+              id="btn-configure-from-scratch"
               onClick={onFirstTime}
-              className="w-full py-3 px-4 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors"
+              className={`w-full py-3 px-4 rounded-lg text-sm font-semibold transition-colors ${
+                workspaceReady
+                  ? 'border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0]'
+                  : 'bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a]'
+              }`}
             >
               {t('onboarding.welcome.configureFromScratch')}
             </button>
 
             <button
+              id="btn-restore-brain-repo"
               onClick={onRestore}
               className="w-full py-3 px-4 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors"
             >
@@ -137,3 +178,4 @@ export default function Welcome({ onFirstTime, onRestore }: WelcomeProps) {
     </div>
   )
 }
+
