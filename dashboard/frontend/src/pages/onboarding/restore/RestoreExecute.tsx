@@ -73,12 +73,53 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
 
             try {
               const event = JSON.parse(raw) as {
-                type: string
+                type?: string
                 step?: string
                 label?: string
                 status?: string
                 message?: string
                 progress?: number
+                error?: boolean
+              }
+
+              if (!event.type && event.step) {
+                const stepId = event.step
+                setProgress(event.progress ?? 0)
+                if (event.message) setStatusMessage(event.message)
+                setSteps((prev) => {
+                  const status: RestoreStep['status'] = event.error
+                    ? 'error'
+                    : stepId === 'complete'
+                      ? 'done'
+                      : 'running'
+                  const existing = prev.find((s) => s.id === stepId)
+                  if (existing) {
+                    return prev.map((s) =>
+                      s.id === stepId ? { ...s, status, message: event.message } : s
+                    )
+                  }
+                  return [
+                    ...prev,
+                    {
+                      id: stepId,
+                      label: event.label || stepId,
+                      status,
+                      message: event.message,
+                    },
+                  ]
+                })
+
+                if (event.error) {
+                  setFailed(true)
+                  setStatusMessage(event.message || t('restore.execute.failedDefault'))
+                }
+                if (stepId === 'complete') {
+                  setProgress(100)
+                  setDone(true)
+                  setStatusMessage(t('restore.execute.complete'))
+                  setTimeout(() => onComplete(), 2000)
+                }
+                continue
               }
 
               if (event.type === 'step') {

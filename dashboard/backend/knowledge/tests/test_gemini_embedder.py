@@ -4,7 +4,7 @@ Covers:
   * Env-driven configuration (model, dim, API key resolution)
   * Input validation (empty list, missing key, missing SDK)
   * L2 normalization for dim < 3072
-  * Model-specific task_type handling (001 honours it, 2-preview skips)
+  * Model-specific task_type handling (001 honours it, Embedding 2 prefixes text)
   * Client-side batching
 """
 
@@ -58,7 +58,7 @@ class TestGeminiEmbedderConfig:
         mod = _fresh_module()
         e = mod.GeminiEmbedder()
         assert e.dim == 768
-        assert e._model == "gemini-embedding-001"
+        assert e._model == "gemini-embedding-2"
 
     def test_custom_dim_1536(self, monkeypatch):
         monkeypatch.setenv("KNOWLEDGE_GEMINI_DIM", "1536")
@@ -88,10 +88,10 @@ class TestGeminiEmbedderConfig:
         assert mod.GeminiEmbedder().dim == 1536
 
     def test_custom_model(self, monkeypatch):
-        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-2-preview")
+        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-001")
         mod = _fresh_module()
         e = mod.GeminiEmbedder()
-        assert e._model == "gemini-embedding-2-preview"
+        assert e._model == "gemini-embedding-001"
         assert e.dim == 768
 
 
@@ -249,11 +249,10 @@ class TestTaskType:
             kwargs = mock_types.EmbedContentConfig.call_args.kwargs
             assert kwargs.get("task_type") == "RETRIEVAL_QUERY"
 
-    def test_2_preview_skips_task_type(self, monkeypatch):
-        """gemini-embedding-2-preview does not support task_type per the
-        Google docs; our code must not pass it."""
+    def test_embedding_2_prefixes_task_type_and_uses_one_call_per_text(self, monkeypatch):
+        """gemini-embedding-2 prefixes task hints and avoids aggregate calls."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy" + "x" * 33)
-        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-2-preview")
+        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-2")
         monkeypatch.setenv("KNOWLEDGE_GEMINI_DIM", "768")
         mod = _fresh_module()
         with patch.object(mod, "genai") as mock_genai, \
@@ -261,15 +260,22 @@ class TestTaskType:
             client = MagicMock()
             client.models.embed_content.return_value = _mock_embeddings_response(1)
             mock_genai.Client.return_value = client
-            mod.GeminiEmbedder().embed(["q"], task_type="RETRIEVAL_QUERY")
+            result = mod.GeminiEmbedder().embed(["q1", "q2"], task_type="RETRIEVAL_QUERY")
+            assert len(result) == 2
+            assert client.models.embed_content.call_count == 2
+            assert client.models.embed_content.call_args_list[0].kwargs["contents"] == "task: search result | query: q1"
+            assert client.models.embed_content.call_args_list[1].kwargs["contents"] == "task: search result | query: q2"
             # Since dim=768 is the native dim AND task_type is skipped,
             # there is no config to build at all → config=None.
             config = self._captured_config(
                 client.models.embed_content.call_args
             )
-            assert config is None
+            assert config is not None
+            kwargs = mock_types.EmbedContentConfig.call_args.kwargs
+            assert kwargs.get("output_dimensionality") == 768
+            assert "task_type" not in kwargs
             # And EmbedContentConfig was never constructed
-            mock_types.EmbedContentConfig.assert_not_called()
+            mock_types.EmbedContentConfig.assert_called_once()
 
     def test_001_without_task_type_omits_kwarg(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy" + "x" * 33)
@@ -295,6 +301,7 @@ class TestTaskType:
 class TestBatching:
     def test_large_input_is_batched(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy" + "x" * 33)
+        monkeypatch.setenv("KNOWLEDGE_GEMINI_MODEL", "gemini-embedding-001")
         monkeypatch.setenv("KNOWLEDGE_GEMINI_DIM", "768")
         mod = _fresh_module()
         # 50 texts with _BATCH_SIZE=20 → 3 calls (20, 20, 10)

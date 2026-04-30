@@ -144,8 +144,8 @@ def ingest_document(
     try:
         embedder = get_embedder()
         texts = [c["content"] for c in chunks]
-        # task_type is honoured by providers that support it (e.g. Gemini's
-        # gemini-embedding-001). Others (local MPNet, OpenAI) ignore it.
+        # task_type is honoured by providers that support it. Gemini
+        # Embedding 2 converts it into Google's text prefix format.
         vectors = embedder.embed(texts, task_type="RETRIEVAL_DOCUMENT")
     except Exception as exc:
         _mark_error(engine, doc_id, f"Embed error: {exc}")

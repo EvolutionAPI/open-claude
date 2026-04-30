@@ -31,6 +31,7 @@ dependencies = [
     "sqlparse>=0.4,<1.0",
     "jsonschema>=4.21",
     "flask-limiter>=3.5",
+    "websocket-client>=1.8",
 ]
 
 [project.scripts]

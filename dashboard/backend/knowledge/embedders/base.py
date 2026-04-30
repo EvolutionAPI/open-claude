@@ -3,7 +3,7 @@
 Registry logic:
     get_embedder("local")   → LocalEmbedder (sentence-transformers, 768 dim)
     get_embedder("openai")  → OpenAIEmbedder (text-embedding-3-small, 1536 dim)
-    get_embedder("gemini")  → GeminiEmbedder (gemini-embedding-001, MRL 768/1536/3072)
+    get_embedder("gemini")  → GeminiEmbedder (gemini-embedding-2, MRL 768/1536/3072)
     get_embedder()          → reads KNOWLEDGE_EMBEDDER_PROVIDER env var (default "local")
 """
 

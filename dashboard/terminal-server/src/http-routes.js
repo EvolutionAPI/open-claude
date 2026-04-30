@@ -269,6 +269,70 @@ function registerTerminalHttpRoutes(app, server) {
     }
     res.json({ notifications });
   });
+
+  // ── Provider change notification ───────────────────────────
+  // Called by the Flask backend when the user switches the active provider.
+  // Triggers immediate invalidation of all PTY sessions.
+  app.post('/api/provider-changed', async (req, res) => {
+    const { new_provider, old_provider } = req.body || {};
+    console.log(`[http] POST /api/provider-changed: ${old_provider} -> ${new_provider}`);
+
+    try {
+      // Invalidate all active PTY sessions
+      const invalidated = await server.claudeBridge.invalidateAllSessions('provider_changed_api');
+
+      // Mark tracked sessions as inactive
+      for (const [sessionId, session] of server.claudeSessions.entries()) {
+        if (session.active && session.agent === 'claude') {
+          session.active = false;
+          session.agent = null;
+          session.lastActivity = new Date();
+        }
+      }
+
+      await server.saveSessionsToDisk();
+
+      // Broadcast to all WebSocket clients
+      const payload = {
+        type: 'provider_changed',
+        newProvider: new_provider,
+        oldProvider: old_provider,
+        invalidatedSessions: invalidated,
+        message: `Provedor alterado para ${new_provider}. ${invalidated.length} sessao(oes) reiniciada(s).`,
+      };
+      for (const [wsId, wsInfo] of server.webSocketConnections.entries()) {
+        if (wsInfo.ws && wsInfo.ws.readyState === 1) {
+          server.sendToWebSocket(wsInfo.ws, payload);
+        }
+      }
+
+      res.json({
+        success: true,
+        invalidated_sessions: invalidated.length,
+        new_provider,
+      });
+    } catch (err) {
+      console.error('[http] Error handling provider-changed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Current active provider info
+  app.get('/api/provider/active', (req, res) => {
+    try {
+      const { loadProviderConfig, getProviderMode } = require('./provider-config');
+      const config = loadProviderConfig();
+      res.json({
+        active: config.active,
+        provider_id: config.provider_id,
+        cli_command: config.cli_command,
+        mode: getProviderMode(config),
+        provider_name: config.provider_name,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 module.exports = {

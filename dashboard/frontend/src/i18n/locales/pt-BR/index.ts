@@ -191,6 +191,7 @@ const translations = {
       issues: 'Tópicos',
       reports: 'Relatórios',
       mempalace: 'MemPalace',
+      agentKnowledge: 'Base RAG',
       systems: 'Sistemas',
       templates: 'Modelos',
       shareLinks: 'Links compartilhados',

@@ -70,9 +70,8 @@ def _get_query_vector(connection_id: str, query: str) -> List[float]:
 
     embedder = get_embedder()
     # task_type=RETRIEVAL_QUERY pairs with RETRIEVAL_DOCUMENT used during
-    # ingestion for providers that support it (e.g. Gemini's
-    # gemini-embedding-001). Providers that don't support task hints (local
-    # MPNet, OpenAI) ignore this parameter silently.
+    # ingestion. Gemini Embedding 2 converts it into Google's text prefix
+    # format; providers that do not support hints ignore it.
     vectors = embedder.embed([query], task_type="RETRIEVAL_QUERY")
     vector = vectors[0]
 

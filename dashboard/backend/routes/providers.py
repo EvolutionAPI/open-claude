@@ -55,6 +55,16 @@ ALLOWED_ENV_VARS = frozenset({
     "CLOUD_ML_REGION",
 })
 
+DEFAULT_FAILOVER_ORDER = [
+    "openrouter",
+    "anthropic",
+    "openai",
+    "codex_auth",
+    "gemini",
+    "bedrock",
+    "vertex",
+]
+
 
 def _read_config() -> dict:
     """Read providers.json. If missing, copy from providers.example.json."""
@@ -68,7 +78,7 @@ def _read_config() -> dict:
             return json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         pass
-    return {"active_provider": "anthropic", "providers": {}}
+    return {"active_provider": "openrouter", "providers": {}}
 
 
 def _write_config(config: dict):
@@ -80,11 +90,54 @@ def _write_config(config: dict):
     )
 
 
+def _normalize_failover_order(order: list[str] | tuple[str, ...] | None, provider_map: dict, active_provider: str) -> list[str]:
+    """Return a stable failover order with active first and unavailable ids removed."""
+    seen: set[str] = set()
+    normalized: list[str] = []
+
+    def append(provider_id: str | None):
+        if not provider_id or provider_id in seen:
+            return
+        provider = provider_map.get(provider_id)
+        if provider is None or provider.get("coming_soon"):
+            return
+        seen.add(provider_id)
+        normalized.append(provider_id)
+
+    append(active_provider)
+    for provider_id in order or []:
+        append(provider_id)
+    for provider_id in DEFAULT_FAILOVER_ORDER:
+        append(provider_id)
+    for provider_id in provider_map:
+        append(provider_id)
+    return normalized
+
+
+def _ensure_routing(config: dict) -> dict:
+    providers = config.get("providers", {}) or {}
+    active = config.get("active_provider", "openrouter")
+    routing = config.get("routing") if isinstance(config.get("routing"), dict) else {}
+    raw_order = routing.get("failover_order")
+    if not isinstance(raw_order, list):
+        raw_order = DEFAULT_FAILOVER_ORDER
+    normalized = {
+        "enabled": routing.get("enabled", True) is not False,
+        "failover_order": _normalize_failover_order(raw_order, providers, active),
+    }
+    config["routing"] = normalized
+    return normalized
+
+
 def _mask_secret(value: str) -> str:
     """Mask an API key for safe display: sk-or-v1-abc...xyz → sk-or-****xyz."""
     if not value or len(value) < 8:
         return "****" if value else ""
     return value[:6] + "****" + value[-4:]
+
+
+def _is_secret_env_var(name: str) -> bool:
+    return "KEY" in name or "SECRET" in name or "TOKEN" in name
 
 
 def _run_cli_version(command: str, env: dict | None = None) -> dict:
@@ -169,6 +222,32 @@ def _save_codex_auth(tokens: dict):
     CODEX_AUTH_FILE.write_text(json.dumps(auth_data, indent=2), encoding="utf-8")
 
 
+def _notify_terminal_server_provider_change(new_provider: str, old_provider: str):
+    """Notify the terminal-server that the active provider has changed.
+
+    Fire-and-forget: the UI response should not be blocked by this call.
+    The terminal-server will invalidate stale PTY sessions and broadcast
+    a WebSocket event to all connected clients.
+    """
+    import threading
+
+    def _do_notify():
+        import requests as http_req
+        try:
+            http_req.post(
+                "http://localhost:32352/api/provider-changed",
+                json={"new_provider": new_provider, "old_provider": old_provider},
+                timeout=5,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to notify terminal-server of provider change: %s", e
+            )
+
+    threading.Thread(target=_do_notify, daemon=True).start()
+
+
 # ── Endpoints ──────────────────────────────────────────────
 
 
@@ -177,8 +256,9 @@ def _save_codex_auth(tokens: dict):
 def list_providers():
     """List all providers with status info."""
     config = _read_config()
-    active = config.get("active_provider", "anthropic")
+    active = config.get("active_provider", "openrouter")
     providers = config.get("providers", {})
+    routing = _ensure_routing(config)
 
     # Check CLI installation status for both binaries
     claude_status = _check_cli("claude")
@@ -228,6 +308,7 @@ def list_providers():
     return jsonify({
         "providers": result,
         "active_provider": active,
+        "routing": routing,
         "claude_installed": claude_status["installed"],
         "openclaude_installed": openclaude_status["installed"],
     })
@@ -238,7 +319,7 @@ def list_providers():
 def get_active_provider():
     """Get the active provider."""
     config = _read_config()
-    active = config.get("active_provider", "anthropic")
+    active = config.get("active_provider", "openrouter")
     provider = config.get("providers", {}).get(active, {})
     return jsonify({
         "active_provider": active,
@@ -261,8 +342,14 @@ def set_active_provider():
     if provider_id != "none" and provider_id not in config.get("providers", {}):
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
+    old_provider = config.get("active_provider", "openrouter")
     config["active_provider"] = provider_id
+    _ensure_routing(config)
     _write_config(config)
+
+    # Notify terminal-server so it can invalidate stale PTY sessions immediately.
+    if provider_id != old_provider:
+        _notify_terminal_server_provider_change(provider_id, old_provider)
 
     return jsonify({"status": "ok", "active_provider": provider_id})
 
@@ -313,6 +400,11 @@ def update_provider_config(provider_id):
             continue
         # Skip if value looks masked (contains ****)
         if "****" in str(value):
+            continue
+        # Secret inputs are rendered blank when the UI only has a masked value.
+        # Treat blank secret fields as "unchanged" so saving another provider
+        # field does not erase an existing API key/token.
+        if _is_secret_env_var(key) and str(value).strip() == "" and existing.get(key):
             continue
         # Reject values with shell metacharacters
         if not isinstance(value, str) or re.search(r'[;&|`$\n\r]', value):
@@ -685,6 +777,6 @@ def openai_logout():
     if CODEX_AUTH_FILE.is_file():
         CODEX_AUTH_FILE.unlink()
     config = _read_config()
-    config["active_provider"] = "anthropic"
+    config["active_provider"] = "openrouter"
     _write_config(config)
     return jsonify({"status": "ok"})

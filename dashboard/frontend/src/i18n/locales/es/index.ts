@@ -184,6 +184,7 @@ const translations = {
       issues: 'Temas',
       reports: 'Informes',
       mempalace: 'MemPalace',
+      agentKnowledge: 'Base RAG',
       systems: 'Sistemas',
       templates: 'Plantillas',
       shareLinks: 'Enlaces compartidos',

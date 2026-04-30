@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -27,6 +29,21 @@ def _sql(stmt: str):
     return text(stmt)
 
 
+def _json_safe(value: Any) -> Any:
+    """Return a JSON-serializable copy of values commonly returned by psycopg."""
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def _row_to_dict(row) -> Dict[str, Any]:
     """Convert a SQLAlchemy Row to a plain dict."""
     d = dict(row._mapping)
@@ -37,7 +54,7 @@ def _row_to_dict(row) -> Dict[str, Any]:
                 d[col] = json.loads(d[col])
             except (ValueError, TypeError):
                 pass
-    return d
+    return _json_safe(d)
 
 
 def _get_engine(connection_id: str):

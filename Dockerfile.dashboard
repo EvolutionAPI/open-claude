@@ -18,7 +18,7 @@ FROM python:3.12-slim AS runtime
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv

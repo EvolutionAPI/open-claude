@@ -138,8 +138,17 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
     setErrorMsg(null)
     let cancelled = false
     let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-    ;(async () => {
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer) return
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        if (!cancelled) connectSocket()
+      }, 1000)
+    }
+
+    async function connectSocket() {
       // 1) HTTP preflight — fails fast on ECONNREFUSED so we can show a real error
       //    instead of hanging in 'connecting' forever (same pattern as AgentTerminal).
       try {
@@ -156,14 +165,21 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       // 2) Open WS
       ws = new WebSocket(`${TS_WS}/ws`)
       wsRef.current = ws
+      let opened = false
+
+      const isCurrentSocket = () => !cancelled && wsRef.current === ws
 
       ws.onopen = () => {
+        if (!isCurrentSocket()) return
+        opened = true
+        setErrorMsg(null)
         ws!.send(JSON.stringify({ type: 'join_session', sessionId }))
         setStatus('idle')
       }
 
       ws.onmessage = (ev) => {
-        if (cancelled) return
+        if (!isCurrentSocket()) return
+        setErrorMsg(null)
         let msg: any
         try { msg = JSON.parse(ev.data) } catch { return }
 
@@ -273,13 +289,25 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       }
 
       ws.onerror = () => {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg('WebSocket error')
+        if (!isCurrentSocket()) return
+        if (!opened) {
+          setStatus('error')
+          setErrorMsg(`Could not open WebSocket at ${TS_WS}/ws`)
+        }
       }
 
       ws.onclose = () => {
         if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null }
+        if (wsRef.current === ws) {
+          wsRef.current = null
+        } else {
+          return
+        }
+        if (!cancelled) {
+          setStatus('connecting')
+          setErrorMsg(opened ? 'WebSocket disconnected. Reconnecting...' : `Could not open WebSocket at ${TS_WS}/ws`)
+          scheduleReconnect()
+        }
       }
 
       pingRef.current = setInterval(() => {
@@ -287,10 +315,13 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
           ws!.send(JSON.stringify({ type: 'ping' }))
         }
       }, 25000)
-    })()
+    }
+
+    connectSocket()
 
     return () => {
       cancelled = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
       if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null }
       try { ws?.close() } catch {}
       wsRef.current = null

@@ -77,6 +77,16 @@ class MarkerParser(BaseParser):
         """
         file_path = Path(file_path)
 
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        if file_path.suffix.lower() == ".pdf":
+            try:
+                return _parse_pdf_text_fallback(file_path)
+            except Exception:
+                # No searchable text was available; fall through to Marker OCR.
+                pass
+
         try:
             from marker.converters.pdf import PdfConverter  # noqa: F401
         except ImportError as exc:
@@ -84,9 +94,6 @@ class MarkerParser(BaseParser):
                 "marker-pdf is not installed. "
                 "Run: pip install marker-pdf  (or: uv add marker-pdf)"
             ) from exc
-
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
 
         # Run conversion in a thread so we can enforce a timeout
         result_holder: Dict[str, Any] = {}
@@ -105,12 +112,13 @@ class MarkerParser(BaseParser):
         t.join(timeout=_MARKER_TIMEOUT_SECONDS)
 
         if t.is_alive():
-            raise TimeoutError(
+            timeout_error = TimeoutError(
                 f"Marker timed out after {_MARKER_TIMEOUT_SECONDS}s parsing {file_path.name}. "
                 f"Increase MARKER_TIMEOUT_SECONDS to allow more time."
             )
+            return _maybe_parse_pdf_fallback(file_path, timeout_error)
         if "exc" in error_holder:
-            raise error_holder["exc"]
+            return _maybe_parse_pdf_fallback(file_path, error_holder["exc"])
 
         rendered = result_holder["rendered"]
         return _to_parse_result(rendered, file_path)
@@ -146,6 +154,72 @@ def _to_parse_result(rendered: Any, file_path: Path) -> ParseResult:
     }
 
     return ParseResult(markdown=md, pages=pages, metadata=metadata)
+
+
+def _maybe_parse_pdf_fallback(file_path: Path, marker_error: Exception) -> ParseResult:
+    """Use a lightweight PDF text extractor when Marker fails on a PDF."""
+    if file_path.suffix.lower() != ".pdf":
+        raise marker_error
+
+    try:
+        return _parse_pdf_text_fallback(file_path, marker_error)
+    except Exception as fallback_error:
+        raise RuntimeError(
+            f"{marker_error}. PDF text fallback also failed: {fallback_error}"
+        ) from marker_error
+
+
+def _parse_pdf_text_fallback(file_path: Path, marker_error: Optional[Exception] = None) -> ParseResult:
+    """Extract text from searchable PDFs without invoking Marker/Surya models."""
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:
+        raise RuntimeError("pypdfium2 is not installed") from exc
+
+    pdf = pdfium.PdfDocument(str(file_path))
+    pages: List[PageInfo] = []
+    markdown_parts: List[str] = []
+
+    try:
+        page_count = len(pdf)
+        for page_index in range(page_count):
+            page = pdf[page_index]
+            textpage = None
+            try:
+                textpage = page.get_textpage()
+                text = (textpage.get_text_range() or "").strip()
+            finally:
+                if textpage is not None and hasattr(textpage, "close"):
+                    textpage.close()
+                if hasattr(page, "close"):
+                    page.close()
+
+            if not text:
+                continue
+
+            page_number = page_index + 1
+            page_markdown = f"## Page {page_number}\n\n{text}"
+            pages.append({"page_number": page_number, "markdown": page_markdown})
+            markdown_parts.append(page_markdown)
+    finally:
+        if hasattr(pdf, "close"):
+            pdf.close()
+
+    markdown = "\n\n".join(markdown_parts).strip()
+    if not markdown:
+        raise ValueError("No extractable PDF text was found")
+
+    metadata: Dict[str, Any] = {
+        "title": file_path.stem,
+        "author": None,
+        "page_count": len(pages),
+        "source_mime": "application/pdf",
+        "parser_fallback": "pypdfium2",
+    }
+    if marker_error is not None:
+        metadata["marker_error"] = str(marker_error)[:500]
+
+    return ParseResult(markdown=markdown, pages=pages, metadata=metadata)
 
 
 def _guess_mime(path: Path) -> Optional[str]:

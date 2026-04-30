@@ -35,6 +35,7 @@ BLUEPRINT_MODULES = [
     "routes.knowledge_public",
     "routes.knowledge_proxy",
     "routes.knowledge_v1",
+    "routes.agent_knowledge",
     "routes.databases",
 ]
 

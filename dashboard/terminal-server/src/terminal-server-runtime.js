@@ -13,7 +13,7 @@ const SessionStore = require('./utils/session-store');
 const ChatLogger = require('./utils/chat-logger');
 const TerminalAuditLog = require('./utils/terminal-audit-log');
 const { createPlatformEventBroker } = require('./platform-event-broker');
-const { loadProviderConfig, getProviderMode } = require('./provider-config');
+const { loadProviderConfig, getProviderMode, watchProviderChanges } = require('./provider-config');
 
 class TerminalServer {
   constructor(options = {}) {
@@ -59,10 +59,13 @@ class TerminalServer {
     };
     this.ready = this.loadPersistedSessions();
 
+    this.providerWatcher = null;
+
     this.setupExpress();
     this.setupAutoSave();
     this.setupSessionGc();
     this.setupHeartbeatMonitor();
+    this.setupProviderWatcher();
   }
 
   async loadPersistedSessions() {
@@ -107,6 +110,59 @@ class TerminalServer {
     this.wsHeartbeatInterval = setInterval(() => {
       void this.purgeStaleWebSocketConnections();
     }, this.wsHeartbeatSweepIntervalMs);
+  }
+
+  /**
+   * Watch providers.json for active_provider changes.
+   * When the provider switches, invalidate all PTY sessions and
+   * broadcast a provider_changed event to all connected WebSocket clients.
+   */
+  setupProviderWatcher() {
+    this.providerWatcher = watchProviderChanges(async (newProvider, oldProvider) => {
+      console.log(`[provider-watcher] Active provider changed: ${oldProvider} -> ${newProvider}`);
+
+      // 1. Invalidate all active PTY sessions (terminal mode)
+      const invalidatedPty = await this.claudeBridge.invalidateAllSessions('provider_changed');
+
+      // 2. Mark all tracked sessions as inactive
+      for (const [sessionId, session] of this.claudeSessions.entries()) {
+        if (session.active && session.agent === 'claude') {
+          session.active = false;
+          session.agent = null;
+          session.lastActivity = new Date();
+        }
+      }
+
+      // 3. Save updated session state
+      await this.saveSessionsToDisk();
+
+      // 4. Broadcast provider_changed to ALL connected WebSocket clients
+      const payload = {
+        type: 'provider_changed',
+        newProvider,
+        oldProvider,
+        invalidatedSessions: invalidatedPty,
+        message: `Provedor alterado para ${newProvider}. ${invalidatedPty.length} sessao(oes) reiniciada(s).`,
+      };
+
+      for (const [wsId, wsInfo] of this.webSocketConnections.entries()) {
+        if (wsInfo.ws && wsInfo.ws.readyState === 1) {
+          this.sendToWebSocket(wsInfo.ws, payload);
+        }
+      }
+
+      // 5. Also broadcast as global notification
+      this.broadcastToGlobalSubscribers({
+        type: 'notification',
+        id: `provider_changed-${Date.now()}`,
+        event: 'provider_changed',
+        newProvider,
+        oldProvider,
+        createdAt: Date.now(),
+      });
+
+      console.log(`[provider-watcher] Invalidated ${invalidatedPty.length} PTY sessions, notified ${this.webSocketConnections.size} clients`);
+    });
   }
 
   async saveSessionsToDisk() {
@@ -376,6 +432,7 @@ class TerminalServer {
     if (this.sessionGcInterval) clearInterval(this.sessionGcInterval);
     if (this.wsHeartbeatInterval) clearInterval(this.wsHeartbeatInterval);
     if (this.platformEventBroker) this.platformEventBroker.stop();
+    if (this.providerWatcher) this.providerWatcher.stop();
     this.close();
     process.exit(0);
   }
@@ -1005,6 +1062,7 @@ class TerminalServer {
     if (this.sessionGcInterval) clearInterval(this.sessionGcInterval);
     if (this.wsHeartbeatInterval) clearInterval(this.wsHeartbeatInterval);
     if (this.platformEventBroker) this.platformEventBroker.stop();
+    if (this.providerWatcher) this.providerWatcher.stop();
     if (this.wss) this.wss.close();
     if (this.server) this.server.close();
 

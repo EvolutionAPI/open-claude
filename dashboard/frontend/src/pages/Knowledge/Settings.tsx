@@ -55,7 +55,7 @@ const EMBEDDER_OPTIONS: Array<{
     value: 'gemini',
     label: 'Google Gemini',
     desc: '768 / 1536 / 3072 dims (MRL) · Requires a Gemini API key · generous free tier',
-    defaultModel: 'gemini-embedding-001',
+    defaultModel: 'gemini-embedding-2',
   },
 ]
 

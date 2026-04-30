@@ -6,6 +6,7 @@ const {
   resolveProviderModel,
   getProviderMode,
   getProviderCandidates,
+  isProviderReady,
 } = require('./provider-config');
 
 class ClaudeBridge {
@@ -20,6 +21,31 @@ class ClaudeBridge {
    */
   _loadProviderConfig() {
     return loadProviderConfig();
+  }
+
+  _selectProviderForCode() {
+    const activeProviderConfig = this._loadProviderConfig();
+    const activeId = activeProviderConfig.provider_id || activeProviderConfig.active;
+    const providerCandidates = getProviderCandidates('code', activeId);
+    const providerConfig = providerCandidates[0] || activeProviderConfig;
+    const providerMode = getProviderMode(providerConfig);
+    const providerModel = resolveProviderModel(providerConfig);
+
+    if (providerConfig.provider_id && providerConfig.provider_id !== activeId) {
+      console.log(`[failover] Selected provider ${providerConfig.provider_id} after ${activeId} was unavailable`);
+    }
+
+    return {
+      providerConfig,
+      providerMode,
+      providerModel,
+      providerFingerprint: [
+        providerConfig.provider_id || providerConfig.active || 'none',
+        providerConfig.cli_command || 'claude',
+        providerMode || 'unknown',
+        providerModel || '',
+      ].join('|'),
+    };
   }
 
   findClaudeCommand(cliCommand = 'claude') {
@@ -76,16 +102,26 @@ class ClaudeBridge {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
       if (existing.active) {
-        // Idempotent: a duplicate startSession can arrive when the WebSocket
-        // reconnects through a reverse proxy (Traefik) and the frontend
-        // re-sends start_claude before learning the session is still alive.
-        // Returning the existing session instead of throwing prevents a
-        // confusing "Session already exists" toast on the user's terminal
-        // while keeping the original PTY intact.
-        console.log(`[bridge] startSession(${sessionId}) — already active, returning existing session`);
-        return existing;
+        const desiredProvider = this._selectProviderForCode();
+        if (existing.providerFingerprint === desiredProvider.providerFingerprint) {
+          // Idempotent: a duplicate startSession can arrive when the WebSocket
+          // reconnects through a reverse proxy (Traefik) and the frontend
+          // re-sends start_claude before learning the session is still alive.
+          // Returning the existing session instead of throwing prevents a
+          // confusing "Session already exists" toast on the user's terminal
+          // while keeping the original PTY intact.
+          console.log(`[bridge] startSession(${sessionId}) - already active on ${desiredProvider.providerFingerprint}, returning existing session`);
+          return existing;
+        }
+
+        if (existing.providerFingerprint !== desiredProvider.providerFingerprint) {
+          console.log(
+            `[bridge] Provider changed for ${sessionId}: ` +
+            `${existing.providerFingerprint || 'unknown'} -> ${desiredProvider.providerFingerprint}; restarting PTY`
+          );
+        }
       }
-      // Orphaned dead session — clean up and restart
+      // Orphaned dead session or provider change: clean up and restart.
       if (existing.process) {
         try { existing.process.kill('SIGKILL'); } catch (_) {}
       }
@@ -107,15 +143,12 @@ class ClaudeBridge {
       // Reload provider config fresh on every session start
       // so switching provider in the dashboard takes effect immediately.
       // TKR Customization: Use failover provider chain for resilience
-      const activeProviderConfig = this._loadProviderConfig();
-      const providerCandidates = getProviderCandidates('code', activeProviderConfig.provider_id || activeProviderConfig.active);
-      const providerConfig = providerCandidates[0] || activeProviderConfig;
-      const providerMode = getProviderMode(providerConfig);
-      const providerModel = resolveProviderModel(providerConfig);
-
-      if (providerConfig.provider_id && providerConfig.provider_id !== (activeProviderConfig.provider_id || activeProviderConfig.active)) {
-        console.log(`[failover] Selected provider ${providerConfig.provider_id} after ${activeProviderConfig.provider_id || activeProviderConfig.active} was unavailable`);
-      }
+      const {
+        providerConfig,
+        providerMode,
+        providerModel,
+        providerFingerprint,
+      } = this._selectProviderForCode();
 
       // Block session if no provider is active
       if (!providerConfig.active || providerConfig.active === 'none') {
@@ -123,6 +156,11 @@ class ClaudeBridge {
         if (onOutput) onOutput(msg);
         if (onExit) onExit(1, null);
         return;
+      }
+      if (!isProviderReady(providerConfig)) {
+        throw new Error(
+          `Provider "${providerConfig.active}" nao esta configurado. Configure API key/OAuth em Providers antes de abrir o Terminal.`
+        );
       }
       if (providerConfig.active !== 'anthropic' && providerMode !== 'code') {
         throw new Error(
@@ -234,7 +272,13 @@ class ClaudeBridge {
         workingDir,
         created: new Date(),
         active: true,
-        killTimeout: null
+        killTimeout: null,
+        provider_id: providerConfig.provider_id || providerConfig.active,
+        provider_name: providerConfig.provider_name || providerConfig.active,
+        provider_cli: providerConfig.cli_command,
+        provider_model: providerModel || null,
+        provider_mode: providerMode,
+        providerFingerprint
       };
 
       this.sessions.set(sessionId, session);
@@ -371,6 +415,36 @@ class ClaudeBridge {
       created: session.created,
       active: session.active
     }));
+  }
+
+  /**
+   * Invalidate all active sessions — used when the active provider changes.
+   * Kills every PTY process so the next session start uses the new provider's CLI.
+   * Returns the list of session IDs that were invalidated.
+   */
+  async invalidateAllSessions(reason = 'provider_changed') {
+    const invalidated = [];
+    for (const [sessionId, session] of this.sessions.entries()) {
+      if (session.active) {
+        console.log(`[bridge] Invalidating session ${sessionId} (reason: ${reason})`);
+        invalidated.push(sessionId);
+        try {
+          if (session.process) {
+            session.process.kill('SIGTERM');
+            setTimeout(() => {
+              try {
+                if (session.active && session.process) {
+                  session.process.kill('SIGKILL');
+                }
+              } catch {}
+            }, 2000);
+          }
+        } catch (err) {
+          console.warn(`[bridge] Error killing session ${sessionId}:`, err.message);
+        }
+      }
+    }
+    return invalidated;
   }
 
   async cleanup() {
