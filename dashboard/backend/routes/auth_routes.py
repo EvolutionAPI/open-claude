@@ -289,7 +289,31 @@ def create_user():
 
     if not username or not password:
         abort(400, description="Username and password required")
-    if User.query.filter_by(username=username).first():
+    existing = User.query.filter_by(username=username).first()
+    if existing:
+        if not existing.is_active:
+            # Reactivate a previously deactivated user instead of blocking
+            existing.is_active = True
+            existing.display_name = _as_text(data.get("display_name")).strip() or username
+            existing.email = _as_text(data.get("email")).strip() or existing.email
+            existing.role = role
+            existing.set_password(password)
+            # Auto-skip onboarding for reactivated users in configured workspaces
+            try:
+                from routes.providers import _read_config, PROVIDERS_CONFIG
+                from routes._helpers import WORKSPACE
+                if PROVIDERS_CONFIG.is_file():
+                    config = _read_config()
+                    active_provider = config.get("active_provider")
+                    has_provider = bool(active_provider and active_provider != "none")
+                    has_workspace = (WORKSPACE / "config" / "workspace.yaml").exists()
+                    if has_provider and has_workspace:
+                        existing.onboarding_state = "skipped"
+            except Exception:
+                pass
+            db.session.commit()
+            audit(current_user, "user_reactivated", f"user:{existing.id}", f"role={role}")
+            return jsonify(existing.to_dict()), 200
         abort(400, description="Username already exists")
     valid_roles = [r.name for r in Role.query.all()]
     if role not in valid_roles:
@@ -368,7 +392,34 @@ def deactivate_user(user_id):
     user.is_active = False
     db.session.commit()
     audit(current_user, "user_deactivated", f"user:{user.id}")
-    return jsonify({"message": "User deactivated"})
+    return jsonify({"status": "ok", "message": "User deactivated", "user": user.to_dict()})
+
+
+@bp.route("/api/users/<int:user_id>/reactivate", methods=["POST"])
+@login_required
+@require_permission("users", "manage")
+def reactivate_user(user_id):
+    """Reactivate a previously deactivated user."""
+    user = User.query.get_or_404(user_id)
+    if user.is_active:
+        return jsonify({"status": "ok", "message": "User is already active", "user": user.to_dict()})
+    user.is_active = True
+    # Auto-skip onboarding for reactivated users in configured workspaces
+    try:
+        from routes.providers import _read_config, PROVIDERS_CONFIG
+        from routes._helpers import WORKSPACE
+        if PROVIDERS_CONFIG.is_file():
+            config = _read_config()
+            active_provider = config.get("active_provider")
+            has_provider = bool(active_provider and active_provider != "none")
+            has_workspace = (WORKSPACE / "config" / "workspace.yaml").exists()
+            if has_provider and has_workspace:
+                user.onboarding_state = "skipped"
+    except Exception:
+        pass
+    db.session.commit()
+    audit(current_user, "user_reactivated", f"user:{user.id}")
+    return jsonify({"status": "ok", "message": "User reactivated", "user": user.to_dict()})
 
 
 # ── Audit (admin only) ───────────────────────────────
