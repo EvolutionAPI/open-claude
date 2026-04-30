@@ -71,6 +71,60 @@ def skip():
     db.session.commit()
     return jsonify({"onboarding_state": "skipped"})
 
+
+@bp.route("/api/onboarding/workspace-status")
+@login_required
+def workspace_status():
+    """Check if the workspace is already configured by another user.
+
+    Returns a JSON object indicating whether the workspace is ready for use
+    without requiring the full onboarding wizard. This is the key endpoint
+    that enables multi-user onboarding: if the workspace is already set up
+    by an admin, new users can skip straight to the dashboard.
+
+    IMPORTANT: _read_config() returns a default fallback of
+    {"active_provider": "anthropic"} even when no providers.json exists on
+    disk.  We must check the FILE exists to avoid false positives.
+    """
+    from pathlib import Path
+    from routes._helpers import WORKSPACE
+    from routes.providers import PROVIDERS_CONFIG
+
+    # Only trust the config if providers.json actually exists on disk.
+    # The fallback default makes active_provider="anthropic" even when
+    # nobody has configured anything yet.
+    providers_file_exists = PROVIDERS_CONFIG.is_file()
+    config = _read_config() if providers_file_exists else {}
+    active_provider = config.get("active_provider")
+    has_provider = bool(
+        providers_file_exists
+        and active_provider
+        and active_provider != "none"
+    )
+
+    # Check if any other user has completed onboarding
+    other_completed = User.query.filter(
+        User.id != current_user.id,
+        User.onboarding_state.in_(["completed", "skipped"])
+    ).count() > 0
+
+    # Check if workspace.yaml exists (created during initial setup)
+    workspace_yaml = WORKSPACE / "config" / "workspace.yaml"
+    has_workspace = workspace_yaml.exists()
+
+    # Workspace is ready if the providers.json FILE truly exists with a
+    # non-none active_provider AND either another user completed onboarding
+    # or the workspace config file exists.
+    workspace_ready = has_provider and (other_completed or has_workspace)
+
+    return jsonify({
+        "workspace_ready": workspace_ready,
+        "has_provider": has_provider,
+        "active_provider": active_provider,
+        "other_users_configured": other_completed,
+        "has_workspace_config": has_workspace,
+    })
+
 @bp.route("/api/onboarding/provider", methods=["POST"])
 @login_required
 def set_provider():

@@ -196,6 +196,7 @@ const translations = {
       issues: 'Topics',
       reports: 'Reports',
       mempalace: 'MemPalace',
+      agentKnowledge: 'Agent RAG',
       systems: 'Systems',
       templates: 'Templates',
       shareLinks: 'Share Links',
@@ -925,6 +926,9 @@ const translations = {
         configureFromScratch: 'Configure from scratch',
         restoreBrainRepo: 'Restore brain repo',
         restoreHint: "If you've previously set up EvoNexus with a brain repo, use \"Restore\" to recover your configuration.",
+        useExistingWorkspace: 'Use existing workspace',
+        workspaceReadyBanner: 'This workspace is already configured by your team. You can start using it right away — no setup needed.',
+        orSetupManually: 'or set up manually',
       },
       provider: {
         title: 'Choose your AI provider',

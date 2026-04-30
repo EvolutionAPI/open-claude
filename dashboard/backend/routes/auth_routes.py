@@ -303,6 +303,24 @@ def create_user():
         role=role,
         created_by=current_user.id,
     )
+    # Auto-skip onboarding when the workspace is already configured.
+    # This prevents new team members from being forced through the full
+    # setup wizard when the system is already operational.
+    # NOTE: _read_config() returns a fallback default with
+    # active_provider="anthropic" even when providers.json doesn't exist.
+    # We must check the FILE itself to avoid false positives.
+    try:
+        from routes.providers import _read_config, PROVIDERS_CONFIG
+        from routes._helpers import WORKSPACE
+        if PROVIDERS_CONFIG.is_file():
+            config = _read_config()
+            active_provider = config.get("active_provider")
+            has_provider = bool(active_provider and active_provider != "none")
+            has_workspace = (WORKSPACE / "config" / "workspace.yaml").exists()
+            if has_provider and has_workspace:
+                user.onboarding_state = "skipped"
+    except Exception:
+        pass  # Never block user creation if check fails
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
