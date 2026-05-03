@@ -719,16 +719,274 @@ function TrustTab({ showToast }: { showToast: (msg: string, type?: ToastType) =>
   )
 }
 
+// ── Tab: Claude Sessions ────────────────────────────────────────────────────
+function SessionsTab({ showToast }: { showToast: (msg: string, type?: ToastType) => void }) {
+  type SessionsConfig = {
+    default_resume_for_new_triggers: boolean
+    auto_cleanup_days: number
+    force_compaction_turns: number
+    cleanup_hour_local: number
+    storage: { path: string; session_count: number; size_bytes: number }
+    active_threads: number
+  }
+  type SessionThread = {
+    id: number
+    trigger_id: number
+    trigger_name: string | null
+    trigger_slug: string | null
+    dedup_key: string
+    claude_session_id: string | null
+    last_used_at: string | null
+    created_at: string | null
+    age_seconds: number | null
+    stale: boolean
+  }
+
+  const [cfg, setCfg] = useState<SessionsConfig | null>(null)
+  const [threads, setThreads] = useState<SessionThread[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const [c, s] = await Promise.all([
+        api.get('/settings/sessions') as Promise<SessionsConfig>,
+        api.get('/sessions') as Promise<{ sessions: SessionThread[] }>,
+      ])
+      setCfg(c)
+      setThreads(s.sessions || [])
+    } catch (e) {
+      showToast(`Erro ao carregar sessions: ${String(e)}`, 'error')
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const save = async (patch: Partial<SessionsConfig>) => {
+    setSaving(true)
+    try {
+      await api.put('/settings/sessions', patch)
+      showToast('Configuração guardada', 'success')
+      load()
+    } catch (e) {
+      showToast(`Erro: ${String(e)}`, 'error')
+    }
+    setSaving(false)
+  }
+
+  const resetThread = async (id: number) => {
+    if (!confirm('Reset session for this thread? Next webhook will start fresh.')) return
+    try {
+      await api.delete(`/sessions/${id}`)
+      showToast('Session reset', 'success')
+      load()
+    } catch (e) {
+      showToast(`Erro: ${String(e)}`, 'error')
+    }
+  }
+
+  const cleanupStale = async () => {
+    if (!confirm(`Delete all session threads older than ${cfg?.auto_cleanup_days ?? 7} days?`)) return
+    try {
+      const r = await api.post('/sessions/cleanup-stale', {}) as { deleted: number }
+      showToast(`Cleaned up ${r.deleted} stale sessions`, 'success')
+      load()
+    } catch (e) {
+      showToast(`Erro: ${String(e)}`, 'error')
+    }
+  }
+
+  const fmtAge = (sec: number | null): string => {
+    if (sec == null) return '?'
+    if (sec < 60) return `${sec}s`
+    if (sec < 3600) return `${Math.floor(sec / 60)}m`
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h`
+    return `${Math.floor(sec / 86400)}d`
+  }
+
+  const fmtBytes = (b: number): string => {
+    if (b < 1024) return `${b} B`
+    if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`
+    if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`
+    return `${(b / 1073741824).toFixed(2)} GB`
+  }
+
+  if (loading || !cfg) return <div className="text-[#667085] text-sm py-8">Loading...</div>
+
+  return (
+    <div className="space-y-6">
+      {/* Defaults */}
+      <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5">
+        <h2 className="text-sm font-semibold text-white mb-4">Defaults for new triggers</h2>
+
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={cfg.default_resume_for_new_triggers}
+            onChange={(e) => save({ default_resume_for_new_triggers: e.target.checked })}
+            disabled={saving}
+            className="mt-1 rounded border-[#21262d] bg-[#0d1117] text-[#00FFA7] focus:ring-[#00FFA7]/50"
+          />
+          <div className="flex-1">
+            <div className="text-sm text-[#e6edf3]">Enable session resume by default</div>
+            <p className="text-xs text-[#667085] mt-1">
+              When checked, every new trigger gets <code className="text-[#00FFA7]/70">resume_sessions=true</code> by default.
+              Existing triggers keep their current setting (you can flip them individually on the Triggers page).
+            </p>
+          </div>
+        </label>
+      </div>
+
+      {/* Auto-cleanup */}
+      <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5">
+        <h2 className="text-sm font-semibold text-white mb-4">Auto-cleanup</h2>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs text-[#667085] mb-1.5">Delete sessions older than (days)</label>
+            <input
+              type="number" min={1} max={365}
+              value={cfg.auto_cleanup_days}
+              onChange={(e) => save({ auto_cleanup_days: parseInt(e.target.value) || 7 })}
+              disabled={saving}
+              className="w-full px-3 py-2 bg-[#0d1117] border border-[#21262d] rounded-lg text-sm text-[#e6edf3] focus:border-[#00FFA7]/50 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-[#667085] mb-1.5">Daily cleanup hour (0-23, local time)</label>
+            <input
+              type="number" min={0} max={23}
+              value={cfg.cleanup_hour_local}
+              onChange={(e) => save({ cleanup_hour_local: parseInt(e.target.value) || 3 })}
+              disabled={saving}
+              className="w-full px-3 py-2 bg-[#0d1117] border border-[#21262d] rounded-lg text-sm text-[#e6edf3] focus:border-[#00FFA7]/50 focus:outline-none"
+            />
+          </div>
+        </div>
+
+        <button
+          onClick={cleanupStale}
+          disabled={saving}
+          className="mt-3 px-4 py-2 rounded-lg bg-[#21262d] border border-[#344054] text-[#e6edf3] hover:bg-[#344054] transition-colors text-sm"
+        >
+          Cleanup stale now
+        </button>
+      </div>
+
+      {/* Compaction */}
+      <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5">
+        <h2 className="text-sm font-semibold text-white mb-4">Compaction</h2>
+
+        <label className="block text-xs text-[#667085] mb-1.5">Force compaction at (turns)</label>
+        <input
+          type="number" min={1} max={500}
+          value={cfg.force_compaction_turns}
+          onChange={(e) => save({ force_compaction_turns: parseInt(e.target.value) || 50 })}
+          disabled={saving}
+          className="w-full max-w-[200px] px-3 py-2 bg-[#0d1117] border border-[#21262d] rounded-lg text-sm text-[#e6edf3] focus:border-[#00FFA7]/50 focus:outline-none"
+        />
+        <p className="text-xs text-[#667085] mt-2">
+          When a session reaches this many turns, the next webhook summarises the
+          conversation history into a compact form before continuing — keeps context
+          window from blowing up on long-running threads.
+        </p>
+      </div>
+
+      {/* Storage */}
+      <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5">
+        <h2 className="text-sm font-semibold text-white mb-4">Storage</h2>
+
+        <div className="grid grid-cols-3 gap-4 text-sm">
+          <div>
+            <div className="text-xs text-[#667085]">Path</div>
+            <code className="text-[#e6edf3] text-xs break-all">{cfg.storage.path}</code>
+          </div>
+          <div>
+            <div className="text-xs text-[#667085]">Session files</div>
+            <div className="text-[#e6edf3]">{cfg.storage.session_count}</div>
+          </div>
+          <div>
+            <div className="text-xs text-[#667085]">Disk usage</div>
+            <div className="text-[#e6edf3]">{fmtBytes(cfg.storage.size_bytes)}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Active threads */}
+      <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold text-white">Active session threads ({threads.length})</h2>
+          <button
+            onClick={load}
+            className="text-xs text-[#667085] hover:text-[#00FFA7] transition-colors"
+          >
+            Refresh
+          </button>
+        </div>
+
+        {threads.length === 0 ? (
+          <div className="text-[#667085] text-sm py-4 text-center">
+            No active sessions. They'll appear once a resume-enabled trigger fires.
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-[#21262d] text-left text-xs text-[#667085]">
+                <th className="py-2 px-2 font-medium">Trigger</th>
+                <th className="py-2 px-2 font-medium">Thread key</th>
+                <th className="py-2 px-2 font-medium">Last used</th>
+                <th className="py-2 px-2 font-medium">Session ID</th>
+                <th className="py-2 px-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {threads.map((t) => (
+                <tr key={t.id} className={`border-b border-[#21262d]/50 ${t.stale ? 'opacity-60' : ''}`}>
+                  <td className="py-2 px-2 text-[#e6edf3]">
+                    {t.trigger_name || `#${t.trigger_id}`}
+                  </td>
+                  <td className="py-2 px-2 text-[#e6edf3] font-mono text-xs">
+                    {t.dedup_key}
+                  </td>
+                  <td className="py-2 px-2 text-[#667085] text-xs">
+                    {fmtAge(t.age_seconds)} ago
+                    {t.stale && <span className="ml-2 px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400 text-[10px]">stale</span>}
+                  </td>
+                  <td className="py-2 px-2 text-[#667085] font-mono text-[10px]">
+                    {t.claude_session_id ? `${t.claude_session_id.slice(0, 12)}...` : '—'}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    <button
+                      onClick={() => resetThread(t.id)}
+                      className="text-xs text-[#667085] hover:text-red-400 transition-colors"
+                    >
+                      Reset
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
 // ── Main Settings page ──────────────────────────────────────────────────────
 const TABS = [
   { key: 'workspace', labelKey: 'settings.tabs.workspace' },
   { key: 'routines', labelKey: 'settings.tabs.routines' },
   { key: 'notifications', labelKey: 'settings.tabs.notifications' },
+  { key: 'sessions', labelKey: 'settings.tabs.sessions' },
   { key: 'trust', labelKey: 'settings.tabs.trust' },
   { key: 'reference', labelKey: 'settings.tabs.reference' },
 ] as const
 
-type TabKey = 'workspace' | 'routines' | 'notifications' | 'trust' | 'reference'
+type TabKey = 'workspace' | 'routines' | 'notifications' | 'sessions' | 'trust' | 'reference'
 
 export default function Settings() {
   const { t } = useTranslation()
@@ -760,7 +1018,8 @@ export default function Settings() {
                 : 'text-[#667085] border-transparent hover:text-[#e6edf3] hover:border-[#21262d]'
             }`}
           >
-            {t(tab.labelKey)}
+            {/* Fallback to key if i18n key not yet defined */}
+            {t(tab.labelKey, { defaultValue: tab.key.charAt(0).toUpperCase() + tab.key.slice(1) })}
           </button>
         ))}
       </div>
@@ -769,6 +1028,7 @@ export default function Settings() {
       {activeTab === 'workspace' && <WorkspaceTab showToast={showToast} />}
       {activeTab === 'routines' && <RoutinesTab showToast={showToast} />}
       {activeTab === 'notifications' && <NotificationsTab />}
+      {activeTab === 'sessions' && <SessionsTab showToast={showToast} />}
       {activeTab === 'trust' && <TrustTab showToast={showToast} />}
       {activeTab === 'reference' && <ReferenceTab />}
 

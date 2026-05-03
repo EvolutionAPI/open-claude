@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [unreleased]
 
+### Added — clickup-session-resume
+
+Per-trigger opt-in for `claude --resume` continuation across consecutive
+webhooks of the same logical thread (e.g. ClickUp task, GitHub PR). Without
+this, every webhook spawned a fresh Claude subprocess that had to re-read
+all prior comments, re-derive context, and re-fetch data via API calls —
+losing 90%+ of the model's reasoning trace between turns.
+
+- **`Trigger.resume_sessions BOOLEAN`** column (default false) — opt-in
+  per trigger. Existing triggers keep current "fresh subprocess" behaviour.
+- **`trigger_session_threads`** table (Alembic migration `0012`) maps
+  `(trigger_id, dedup_key) → claude_session_id`. The dedup_key is
+  extracted per-source: ClickUp task_id, GitHub PR number, Linear issue
+  id (extensible via `_extract_dedup_key` in `routes/triggers.py`).
+- **`run_claude(..., resume_session_id=...)`** in `ADWs/runner.py` —
+  prepends `--resume <id>` to the CLI invocation. Captures `session_id`
+  from output JSON and returns it in the result dict for upsert. Falls
+  back gracefully when resume fails (stale session): retries once
+  without resume.
+- **Settings UI** at `/settings → Sessions` tab:
+  - Default-on toggle for new triggers
+  - Auto-cleanup window (days) + daily cleanup hour
+  - Force compaction turn count
+  - Storage stats (disk usage of `~/.claude/projects/`)
+  - Live list of active session threads with manual reset + bulk
+    cleanup-stale actions
+- **Trigger UI** — checkbox "Enable session resume" on the trigger
+  edit form, with explanatory tooltip.
+- **Endpoints**:
+  - `GET/PUT /api/settings/sessions` — global config
+  - `GET /api/sessions` — list active threads
+  - `DELETE /api/sessions/<id>` — manual reset
+  - `POST /api/sessions/cleanup-stale` — bulk delete stale rows
+
+Incident driving this: 2026-05-02 ClickUp task 86c9kyquv. User asked
+for a marketing report, then 30 min later asked to "implement
+recommendation 3". The fresh Oracle had to re-read the entire Google
+Doc and re-derive what "rec 3" meant — wasting ~$2 of tokens that
+the prior Oracle already had cached in context.
+
+### Added — postgres-compat (carried from prior unreleased)
+
 PostgreSQL is now a first-class storage option alongside SQLite. Two
 features land together: **postgres-compat** (dual-backend schema, data
 migration tool) and **pg-native-configs** (configs live in DB when on PG,

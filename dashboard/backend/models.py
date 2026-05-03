@@ -275,6 +275,17 @@ class Trigger(db.Model):
     agent = db.Column(db.String(50), nullable=True)
     secret = db.Column(db.String(128), nullable=False)
     enabled = db.Column(db.Boolean, default=True)
+    # Session resume opt-in — when True, consecutive webhooks for the same
+    # logical thread (e.g. ClickUp task) reuse a Claude session via
+    # `--resume <session_id>` instead of starting fresh. The dedup key is
+    # extracted per source (see _extract_dedup_key in routes/triggers.py).
+    # Sessions are persisted in trigger_session_threads.
+    resume_sessions = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+        server_default=db.text("false"),
+    )
     from_yaml = db.Column(db.Boolean, default=False)
     remote_trigger_id = db.Column(db.String(100), nullable=True)
     source_plugin = db.Column(db.Text, nullable=True)
@@ -314,6 +325,7 @@ class Trigger(db.Model):
             "action_payload": self.action_payload,
             "agent": self.agent,
             "enabled": self.enabled,
+            "resume_sessions": bool(self.resume_sessions),
             "from_yaml": self.from_yaml,
             "remote_trigger_id": self.remote_trigger_id,
             "source_plugin": self.source_plugin,
@@ -325,6 +337,73 @@ class Trigger(db.Model):
         if include_secret:
             d["secret"] = self.secret
         return d
+
+
+class TriggerSessionThread(db.Model):
+    """Maps (trigger, logical-thread) → Claude session_id for `--resume`.
+
+    The dedup_key is a string extracted from the incoming webhook event
+    that identifies a continuous logical thread:
+      - ClickUp:  task_id  ("86c9kyquv")
+      - GitHub:   PR/issue number ("123")
+      - Linear:   issue id
+
+    When the same key fires again on the same trigger, the dispatcher
+    looks up the row, passes claude_session_id to `run_claude` via
+    `--resume`, and updates last_used_at.
+
+    Rows are kept until explicit cleanup (admin UI or auto-cleanup job).
+    Stale-session detection lives in the cleanup job — see
+    routes/settings.py session_cleanup endpoint.
+    """
+
+    __tablename__ = "trigger_session_threads"
+
+    id = db.Column(db.Integer, primary_key=True)
+    trigger_id = db.Column(
+        db.Integer,
+        db.ForeignKey("triggers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dedup_key = db.Column(db.Text, nullable=False)
+    claude_session_id = db.Column(db.Text, nullable=True)
+    last_used_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "trigger_id",
+            "dedup_key",
+            name="uq_trigger_session_threads_trigger_key",
+        ),
+        db.Index(
+            "ix_trigger_session_threads_trigger_last_used",
+            "trigger_id",
+            "last_used_at",
+        ),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "trigger_id": self.trigger_id,
+            "dedup_key": self.dedup_key,
+            "claude_session_id": self.claude_session_id,
+            "last_used_at": self.last_used_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            if self.last_used_at
+            else None,
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            if self.created_at
+            else None,
+        }
 
 
 class TriggerExecution(db.Model):

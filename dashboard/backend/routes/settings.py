@@ -508,3 +508,208 @@ def reload_scheduler():
 
     audit(current_user, "scheduler_reloaded", "config", "Sent reload signal to scheduler")
     return jsonify({"status": "reloaded"})
+
+
+# ── Claude Sessions settings + admin ────────────────────────────────────────
+#
+# Session resume is opt-in per trigger (Trigger.resume_sessions column).
+# These endpoints expose:
+#   1) Global defaults — auto-cleanup window, default-on for new triggers
+#   2) Sessions admin — list active threads, manual reset for stuck ones
+#
+# Storage: settings come from config/sessions.yaml (created on first PUT,
+# default-empty until then). The trigger_session_threads table is the
+# source of truth for active sessions; this UI surface just lets operators
+# inspect and reset them without touching the DB directly.
+
+_SESSIONS_CONFIG_PATH = WORKSPACE / "config" / "sessions.yaml"
+_SESSIONS_DEFAULTS = {
+    "default_resume_for_new_triggers": False,
+    "auto_cleanup_days": 7,
+    "force_compaction_turns": 50,
+    "cleanup_hour_local": 3,  # 03:00 in workspace timezone
+}
+
+
+def _load_sessions_config() -> dict:
+    """Load sessions.yaml with defaults filled in for missing keys."""
+    cfg = _load_yaml(_SESSIONS_CONFIG_PATH) or {}
+    return {**_SESSIONS_DEFAULTS, **cfg}
+
+
+@bp.route("/api/settings/sessions")
+@login_required
+def get_sessions_settings():
+    """Return Claude Sessions global config + storage stats."""
+    _require_manage()
+    cfg = _load_sessions_config()
+
+    # Storage stats — best-effort directory size of ~/.claude/projects/
+    storage = {"path": "~/.claude/projects/", "session_count": 0, "size_bytes": 0}
+    try:
+        from pathlib import Path as _P
+        proj_dir = _P.home() / ".claude" / "projects"
+        if proj_dir.exists():
+            count = 0
+            total = 0
+            for p in proj_dir.rglob("*.jsonl"):
+                count += 1
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+            storage["session_count"] = count
+            storage["size_bytes"] = total
+    except Exception:
+        pass
+
+    # Active threads count from DB
+    try:
+        from models import TriggerSessionThread
+        active_threads = TriggerSessionThread.query.count()
+    except Exception:
+        active_threads = 0
+
+    return jsonify({
+        **cfg,
+        "storage": storage,
+        "active_threads": active_threads,
+    })
+
+
+@bp.route("/api/settings/sessions", methods=["PUT", "PATCH"])
+@login_required
+def update_sessions_settings():
+    """Update Claude Sessions global config."""
+    from models import audit
+    _require_manage()
+
+    data = request.get_json() or {}
+    cfg = _load_sessions_config()
+
+    # Validate + apply
+    if "default_resume_for_new_triggers" in data:
+        cfg["default_resume_for_new_triggers"] = bool(data["default_resume_for_new_triggers"])
+    if "auto_cleanup_days" in data:
+        try:
+            n = int(data["auto_cleanup_days"])
+            if n < 1 or n > 365:
+                return jsonify({"error": "auto_cleanup_days must be 1-365"}), 400
+            cfg["auto_cleanup_days"] = n
+        except (TypeError, ValueError):
+            return jsonify({"error": "auto_cleanup_days must be int"}), 400
+    if "force_compaction_turns" in data:
+        try:
+            n = int(data["force_compaction_turns"])
+            if n < 1 or n > 500:
+                return jsonify({"error": "force_compaction_turns must be 1-500"}), 400
+            cfg["force_compaction_turns"] = n
+        except (TypeError, ValueError):
+            return jsonify({"error": "force_compaction_turns must be int"}), 400
+    if "cleanup_hour_local" in data:
+        try:
+            n = int(data["cleanup_hour_local"])
+            if n < 0 or n > 23:
+                return jsonify({"error": "cleanup_hour_local must be 0-23"}), 400
+            cfg["cleanup_hour_local"] = n
+        except (TypeError, ValueError):
+            return jsonify({"error": "cleanup_hour_local must be int"}), 400
+
+    # Persist (drop derived keys before save)
+    persist = {k: v for k, v in cfg.items() if k in _SESSIONS_DEFAULTS}
+    _SESSIONS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _dump_yaml(_SESSIONS_CONFIG_PATH, persist)
+    audit(current_user, "update_sessions_settings", "config", str(persist))
+
+    return jsonify({"status": "ok", **persist})
+
+
+@bp.route("/api/sessions")
+@login_required
+def list_sessions():
+    """List active session threads — for admin UI."""
+    _require_manage()
+    from models import TriggerSessionThread, Trigger
+    from datetime import datetime, timezone
+
+    cfg = _load_sessions_config()
+    stale_days = cfg.get("auto_cleanup_days", 7)
+
+    rows = (
+        TriggerSessionThread.query
+        .order_by(TriggerSessionThread.last_used_at.desc())
+        .limit(500)
+        .all()
+    )
+    out = []
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        trig = Trigger.query.get(r.trigger_id)
+        last_used = r.last_used_at
+        # Normalize to aware datetime for comparison (SQLite returns naive)
+        if last_used and last_used.tzinfo is None:
+            last_used = last_used.replace(tzinfo=timezone.utc)
+        age_seconds = int((now - last_used).total_seconds()) if last_used else None
+        is_stale = bool(age_seconds is not None and age_seconds > stale_days * 86400)
+        out.append({
+            **r.to_dict(),
+            "trigger_name": trig.name if trig else None,
+            "trigger_slug": trig.slug if trig else None,
+            "age_seconds": age_seconds,
+            "stale": is_stale,
+        })
+    return jsonify({"sessions": out, "stale_threshold_days": stale_days})
+
+
+@bp.route("/api/sessions/<int:thread_id>", methods=["DELETE"])
+@login_required
+def reset_session(thread_id: int):
+    """Delete a single session thread row → next webhook starts a fresh
+    Claude session for that thread. The underlying ~/.claude/projects/
+    JSONL file is NOT deleted (Claude CLI manages those itself); we just
+    forget the mapping so we won't pass `--resume` next time.
+    """
+    from models import audit, db, TriggerSessionThread
+    _require_manage()
+
+    row = TriggerSessionThread.query.get_or_404(thread_id)
+    trigger_id = row.trigger_id
+    dedup_key = row.dedup_key
+    db.session.delete(row)
+    db.session.commit()
+    audit(
+        current_user,
+        "reset_session",
+        "trigger_session_threads",
+        f"trigger_id={trigger_id} dedup_key={dedup_key}",
+    )
+    return jsonify({"status": "reset", "thread_id": thread_id})
+
+
+@bp.route("/api/sessions/cleanup-stale", methods=["POST"])
+@login_required
+def cleanup_stale_sessions():
+    """Bulk-delete session threads older than auto_cleanup_days."""
+    from models import audit, db, TriggerSessionThread
+    from datetime import datetime, timedelta, timezone
+    _require_manage()
+
+    cfg = _load_sessions_config()
+    days = cfg.get("auto_cleanup_days", 7)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # SQLite stores naive UTC; cast cutoff to naive for cross-dialect filter.
+    naive_cutoff = cutoff.replace(tzinfo=None)
+    q = TriggerSessionThread.query.filter(
+        TriggerSessionThread.last_used_at < naive_cutoff
+    )
+    count = q.count()
+    q.delete(synchronize_session=False)
+    db.session.commit()
+    audit(
+        current_user,
+        "cleanup_stale_sessions",
+        "trigger_session_threads",
+        f"deleted={count} cutoff_days={days}",
+    )
+    return jsonify({"status": "ok", "deleted": count, "cutoff_days": days})
