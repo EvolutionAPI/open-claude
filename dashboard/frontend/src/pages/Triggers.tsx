@@ -16,6 +16,7 @@ interface TriggerItem {
   action_payload: string
   agent: string | null
   enabled: boolean
+  resume_sessions: boolean
   from_yaml: boolean
   execution_count: number
   created_at: string
@@ -60,7 +61,7 @@ const STATUS_COLORS: Record<string, string> = {
 const emptyForm = {
   name: '', type: 'webhook' as string, source: 'github' as string,
   event_filter: '{}', action_type: 'skill' as string, action_payload: '',
-  agent: '', enabled: true,
+  agent: '', enabled: true, resume_sessions: false,
 }
 
 export default function Triggers() {
@@ -120,6 +121,7 @@ export default function Triggers() {
       event_filter: JSON.stringify(t.event_filter, null, 2),
       action_type: t.action_type, action_payload: t.action_payload,
       agent: t.agent || '', enabled: t.enabled,
+      resume_sessions: !!t.resume_sessions,
     })
     setShowModal(true)
   }
@@ -458,6 +460,22 @@ export default function Triggers() {
                 <input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })}
                   className="rounded border-[#21262d] bg-[#0d1117] text-[#00FFA7] focus:ring-[#00FFA7]/50" />
                 <label className="text-xs text-[#667085]">Enabled</label>
+              </div>
+
+              <div className="flex items-start gap-2 pt-1 border-t border-[#21262d]/50 mt-2">
+                <input type="checkbox" checked={form.resume_sessions}
+                  onChange={e => setForm({ ...form, resume_sessions: e.target.checked })}
+                  className="mt-0.5 rounded border-[#21262d] bg-[#0d1117] text-[#00FFA7] focus:ring-[#00FFA7]/50" />
+                <div className="flex-1">
+                  <label className="text-xs font-medium text-[#e6edf3] block">Enable session resume</label>
+                  <p className="text-[10px] text-[#667085] leading-snug mt-0.5">
+                    Consecutive webhooks for the same logical thread (ClickUp task,
+                    GitHub PR) reuse the prior Claude session via <code className="text-[#00FFA7]/70">--resume</code>.
+                    Preserves full context window across turns. Recommended for
+                    long-running multi-comment workflows. Sessions auto-cleanup
+                    per global settings.
+                  </p>
+                </div>
               </div>
             </div>
 

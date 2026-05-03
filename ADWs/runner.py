@@ -184,13 +184,31 @@ def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=N
 _ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
 
 
-def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: dict) -> subprocess.Popen:
+def _spawn_cli(
+    cli_command: str,
+    prompt: str,
+    agent: str | None,
+    provider_env: dict,
+    resume_session_id: str | None = None,
+) -> subprocess.Popen:
     """Spawn a CLI process using only hardcoded command strings.
 
     Uses a dictionary lookup so that the subprocess argument is always
     a static string, satisfying semgrep/opengrep subprocess injection rules.
+
+    Args:
+        resume_session_id: when set, prepends `--resume <id>` so the CLI
+            continues an existing Claude session (preserves context window
+            across consecutive webhooks for the same logical thread).
+            If the session has expired or been cleaned, the CLI will error
+            and the caller is responsible for retrying without resume.
     """
     base_args = ["--print", "--dangerously-skip-permissions", "--output-format", "json"]
+    if resume_session_id:
+        # `--resume` only meaningful with the Anthropic CLI ("claude").
+        # OpenClaude (Codex/OpenAI) doesn't expose session resume yet —
+        # caller is expected to gate this branch by provider.
+        base_args.extend(["--resume", resume_session_id])
     if agent:
         base_args.extend(["--agent", agent])
     base_args.append(prompt)
@@ -258,6 +276,7 @@ def run_claude(
     timeout: int = 600,
     agent: str = None,
     daily_output_kind: str | None = None,
+    resume_session_id: str | None = None,
 ) -> dict:
     """
     Execute AI CLI (claude or openclaude) with streaming output.
@@ -273,8 +292,28 @@ def run_claude(
         daily_output_kind: When set, files written to workspace/daily-logs/ by the
             subprocess are snapshotted and persisted to daily_outputs (PG mode).
             In SQLite mode this is a no-op — files stay on disk as before.
+        resume_session_id: when set and the active provider is the Anthropic
+            CLI, the subprocess receives `--resume <id>` so the model
+            continues a previously-stored conversation. The CLI uses the
+            id to load the conversation history from
+            ~/.claude/projects/<workspace>/<session>.jsonl. If the session
+            no longer exists, the CLI errors with non-zero exit and the
+            caller should retry without resume. The captured session_id
+            from the output JSON is returned in the result so callers can
+            persist it for next time.
+
+    Returns dict with keys:
+        success, stdout, stderr, returncode, duration, usage,
+        session_id  — Claude session_id captured from output JSON
+                       (None if not available, e.g. JSON parse failure
+                       or non-Anthropic provider).
     """
     cli_command, provider_env = _get_provider_config()
+
+    # `--resume` is Claude-CLI specific. Silently drop for other providers
+    # so callers can pass it unconditionally without checking provider.
+    if resume_session_id and cli_command != "claude":
+        resume_session_id = None
 
     if agent:
         agent_label = f"@{agent}"
@@ -289,7 +328,10 @@ def run_claude(
     start_time = datetime.now()
 
     try:
-        process = _spawn_cli(cli_command, prompt, agent, provider_env)
+        process = _spawn_cli(
+            cli_command, prompt, agent, provider_env,
+            resume_session_id=resume_session_id,
+        )
 
         stdout_lines = []
         line_count = 0
@@ -304,13 +346,19 @@ def run_claude(
         stdout = "".join(stdout_lines)
         duration = (datetime.now() - start_time).total_seconds()
 
-        # Parse JSON output to extract result and usage
+        # Parse JSON output to extract result, usage, and session_id
         usage = None
         result_text = stdout
+        captured_session_id = None
         try:
             json_result = json.loads(stdout)
             usage = _parse_usage(json_result)
             result_text = json_result.get("result", stdout)
+            # Claude CLI returns session_id in the output JSON regardless
+            # of whether --resume was used (it always uses some session,
+            # just creates a new one when --resume is absent). Capturing
+            # it here lets the caller persist it for next-time --resume.
+            captured_session_id = json_result.get("session_id")
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -323,7 +371,8 @@ def run_claude(
             if usage:
                 tokens_total = usage["input_tokens"] + usage["output_tokens"]
                 cost_str = f" | {tokens_total:,}tok | ${usage['cost_usd']:.2f}"
-            console.print(f"\r  [success]✓[/success] {log_name} [dim]({duration:.0f}s{cost_str})[/dim]")
+            resume_str = " (resumed)" if resume_session_id else ""
+            console.print(f"\r  [success]✓[/success] {log_name} [dim]({duration:.0f}s{cost_str}){resume_str}[/dim]")
             # Post-process: persist new daily-log files to DB (PG mode only)
             if daily_output_kind:
                 _persist_new_daily_outputs(before_snapshot, daily_output_kind, agent)
@@ -340,6 +389,7 @@ def run_claude(
             "returncode": process.returncode,
             "duration": duration,
             "usage": usage,
+            "session_id": captured_session_id,
         }
 
     except subprocess.TimeoutExpired:
@@ -347,7 +397,7 @@ def run_claude(
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\r  [error]✗[/error] {log_name} [warning](timeout {timeout}s)[/warning]")
         _log_to_file(log_name, prompt, "", f"Timeout after {timeout}s", -1, duration)
-        return {"success": False, "stdout": "", "stderr": f"Timeout after {timeout}s", "returncode": -1, "duration": duration}
+        return {"success": False, "stdout": "", "stderr": f"Timeout after {timeout}s", "returncode": -1, "duration": duration, "session_id": None}
 
     except KeyboardInterrupt:
         process.kill()
@@ -360,7 +410,7 @@ def run_claude(
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\r  [error]✗[/error] {log_name} [error]({e})[/error]")
         _log_to_file(log_name, prompt, "", str(e), -3, duration)
-        return {"success": False, "stdout": "", "stderr": str(e), "returncode": -3, "duration": duration}
+        return {"success": False, "stdout": "", "stderr": str(e), "returncode": -3, "duration": duration, "session_id": None}
 
 
 def run_skill(
@@ -371,6 +421,7 @@ def run_skill(
     agent: str = None,
     notify_telegram: bool | str = False,
     daily_output_kind: str | None = None,
+    resume_session_id: str | None = None,
 ) -> dict:
     """Execute a skill via CLI, optionally with an agent.
 
@@ -382,6 +433,7 @@ def run_skill(
             "<chat_id>"     — same as True but overrides the chat_id.
         daily_output_kind: When set, files written to workspace/daily-logs/ by the
             skill subprocess are persisted to daily_outputs in PG mode.
+        resume_session_id: forwarded to run_claude — see its docstring.
     """
     prompt = f"Execute the skill /{skill_name} {args}".strip()
     if notify_telegram:
@@ -400,7 +452,14 @@ def run_skill(
                 f"Nunca chame reply para progresso, confirmação intermediária ou teste.\n"
                 f"---"
             )
-    return run_claude(prompt, log_name or skill_name, timeout, agent=agent, daily_output_kind=daily_output_kind)
+    return run_claude(
+        prompt,
+        log_name or skill_name,
+        timeout,
+        agent=agent,
+        daily_output_kind=daily_output_kind,
+        resume_session_id=resume_session_id,
+    )
 
 
 def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:

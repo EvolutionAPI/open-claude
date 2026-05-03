@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 from flask_login import current_user
-from models import db, Trigger, TriggerExecution, has_permission, audit
+from models import db, Trigger, TriggerExecution, TriggerSessionThread, has_permission, audit
 
 bp = Blueprint("triggers", __name__)
 
@@ -154,6 +154,7 @@ def create_trigger():
         agent=data.get("agent"),
         secret=Trigger.generate_secret(),
         enabled=data.get("enabled", True),
+        resume_sessions=bool(data.get("resume_sessions", False)),
         created_by=current_user.id if current_user.is_authenticated else None,
     )
     db.session.add(trigger)
@@ -182,9 +183,12 @@ def update_trigger(trigger_id):
     if err:
         return jsonify({"error": err}), 400
 
-    for field in ("name", "type", "source", "action_type", "action_payload", "agent", "enabled"):
+    for field in ("name", "type", "source", "action_type", "action_payload", "agent", "enabled", "resume_sessions"):
         if field in data:
-            setattr(trigger, field, data[field])
+            value = data[field]
+            if field == "resume_sessions":
+                value = bool(value)
+            setattr(trigger, field, value)
 
     if "event_filter" in data:
         ef = data["event_filter"]
@@ -491,6 +495,122 @@ def _matches_filter(event_data: dict, filter_config: dict) -> bool:
     return True
 
 
+def _extract_dedup_key(trigger: Trigger, event_data: dict) -> str | None:
+    """Extract a stable string key identifying the logical thread of work
+    this webhook belongs to.
+
+    Used by the session-resume flow: webhooks with the same dedup_key
+    (and same trigger) are considered consecutive turns of the same
+    conversation and reuse the prior Claude session via `--resume`.
+
+    Per-source extractors:
+      - ClickUp (source=custom + slug contains 'clickup'): task.id
+      - GitHub: pull_request.number / issue.number
+      - Linear: issue.id
+      - Default: returns None → caller treats as "always fresh session"
+
+    Returns None if no key can be derived (not an error — just signals
+    "don't try to resume for this event").
+    """
+    src = (trigger.source or "").lower()
+    slug = (trigger.slug or "").lower()
+    data = event_data.get("data", {}) if isinstance(event_data, dict) else {}
+
+    # ClickUp — webhooks land on source=custom; the slug usually contains
+    # 'clickup' (e.g. 'plugin-clickup-inbox-clickup-webhook').
+    if src == "custom" and "clickup" in slug:
+        # ClickUp v2 webhooks put task_id at data.task_id; v3 webhooks put
+        # the full task at data.task.id. Try both.
+        candidate = (
+            data.get("task_id")
+            or (data.get("task", {}) or {}).get("id")
+            or event_data.get("task_id")
+        )
+        return str(candidate) if candidate else None
+
+    # GitHub — PR/issue events
+    if src == "github":
+        pr = event_data.get("pull_request", {}) if isinstance(event_data, dict) else {}
+        issue = event_data.get("issue", {}) if isinstance(event_data, dict) else {}
+        candidate = pr.get("number") or issue.get("number")
+        return str(candidate) if candidate else None
+
+    # Linear — issue events
+    if src == "linear":
+        candidate = data.get("id") or event_data.get("id")
+        return str(candidate) if candidate else None
+
+    # Default: no extractor for this source. Sessions won't be resumed.
+    return None
+
+
+def _lookup_resume_session(trigger_id: int, dedup_key: str | None) -> str | None:
+    """Find a prior Claude session_id for this (trigger, thread) combo.
+
+    Returns None when:
+      - dedup_key is None (no extractor for this source)
+      - no row exists in trigger_session_threads
+      - the row exists but claude_session_id is null/empty
+
+    Caller is expected to handle the case where the returned session_id
+    is stale (claude CLI errors with `--resume`); in that case retry
+    without resume to start a fresh session.
+    """
+    if not dedup_key:
+        return None
+    row = TriggerSessionThread.query.filter_by(
+        trigger_id=trigger_id,
+        dedup_key=dedup_key,
+    ).first()
+    if not row:
+        return None
+    return row.claude_session_id or None
+
+
+def _persist_resume_session(
+    trigger_id: int,
+    dedup_key: str | None,
+    claude_session_id: str | None,
+) -> None:
+    """Upsert (trigger_id, dedup_key) → claude_session_id.
+
+    Called after a successful Claude run when resume_sessions is on for
+    the trigger. If no session_id was captured (e.g. JSON parse failure),
+    we still bump last_used_at on any existing row so cleanup keeps the
+    thread alive.
+
+    Silently no-ops when:
+      - dedup_key is None
+      - claude_session_id is None AND no row exists yet
+    """
+    if not dedup_key:
+        return
+    row = TriggerSessionThread.query.filter_by(
+        trigger_id=trigger_id,
+        dedup_key=dedup_key,
+    ).first()
+    now = datetime.now(timezone.utc)
+    if row:
+        if claude_session_id:
+            row.claude_session_id = claude_session_id
+        row.last_used_at = now
+    else:
+        if not claude_session_id:
+            return
+        row = TriggerSessionThread(
+            trigger_id=trigger_id,
+            dedup_key=dedup_key,
+            claude_session_id=claude_session_id,
+            last_used_at=now,
+            created_at=now,
+        )
+        db.session.add(row)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
 # ── Trigger Execution ──────────────────────────────────────────────────────
 
 
@@ -526,12 +646,26 @@ def _execute_trigger(trigger_id: int, execution_id: int, event_data: dict):
 
         event_context = json.dumps(event_data, ensure_ascii=False)[:1000]
 
+        # ── Session resume lookup (only for prompt-type triggers) ──
+        # When trigger.resume_sessions=True we try to continue a prior
+        # Claude session for the same logical thread (e.g. ClickUp task).
+        # The dedup_key extractor decides what counts as "same thread"
+        # per source. If no session exists yet (first webhook for this
+        # thread, or extractor returned None), runs fresh and the
+        # captured session_id will be persisted at the end.
+        resume_session_id = None
+        dedup_key = None
+        if trigger.resume_sessions and trigger.action_type in ("prompt", "skill"):
+            dedup_key = _extract_dedup_key(trigger, event_data)
+            resume_session_id = _lookup_resume_session(trigger.id, dedup_key)
+
         if trigger.action_type == "skill":
             result = run_skill(
                 trigger.action_payload,
                 log_name=f"trigger-{trigger.slug}",
                 timeout=600,
                 agent=trigger.agent or None,
+                resume_session_id=resume_session_id,
             )
         elif trigger.action_type == "prompt":
             payload_with_context = f"{trigger.action_payload}\n\nEvent data: {event_context}"
@@ -540,7 +674,22 @@ def _execute_trigger(trigger_id: int, execution_id: int, event_data: dict):
                 log_name=f"trigger-{trigger.slug}",
                 timeout=600,
                 agent=trigger.agent or None,
+                resume_session_id=resume_session_id,
             )
+            # If resume failed (session expired/cleaned), retry once without
+            # resume so we don't hard-fail the webhook on a stale session.
+            if (
+                resume_session_id
+                and not result.get("success")
+                and "session" in (result.get("stderr", "") or "").lower()
+            ):
+                result = run_claude(
+                    payload_with_context,
+                    log_name=f"trigger-{trigger.slug}-retry-fresh",
+                    timeout=600,
+                    agent=trigger.agent or None,
+                    resume_session_id=None,
+                )
         elif trigger.action_type == "script":
             # F1: Validate script path is within ADWs/routines/
             script_path = (WORKSPACE / "ADWs" / "routines" / trigger.action_payload).resolve()
@@ -566,6 +715,19 @@ def _execute_trigger(trigger_id: int, execution_id: int, event_data: dict):
         execution.result_summary = (result.get("stdout", "") or "")[:5000]
         if not result.get("success"):
             execution.error = (result.get("stderr", "") or "")[:2000]
+
+        # ── Persist Claude session_id for next-time --resume ──
+        # We persist on BOTH success and failure: even a failed run
+        # often produced partial context the next attempt can build on.
+        # The captured session_id comes from the CLI's output JSON
+        # (set in runner.run_claude). Only persisted if the trigger
+        # has resume_sessions on AND we got a non-empty session_id.
+        if trigger.resume_sessions and result.get("session_id") and dedup_key:
+            _persist_resume_session(
+                trigger_id=trigger.id,
+                dedup_key=dedup_key,
+                claude_session_id=result.get("session_id"),
+            )
 
     except subprocess.TimeoutExpired:
         execution.status = "failed"
